@@ -17,13 +17,15 @@ class PPO:
                  use_clipped_value_loss=True,
                  norm_adv=True,
                  writer=None,
-                 global_step_ref=None):
+                 global_step_ref=None,
+                 total_training_steps=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
 
         self.clip_param = clip_param
         self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
+        self.initial_entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
         self.norm_adv = norm_adv
@@ -32,6 +34,7 @@ class PPO:
 
         self.writer = writer
         self.global_step_ref = global_step_ref
+        self.total_training_steps = total_training_steps
 
         self.train_log_interval = 1000
         self._clip_frac_buffer = []
@@ -50,6 +53,7 @@ class PPO:
         mean, std, value = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
         dist = Normal(mean, std)
         action = dist.sample()
+        action = torch.clamp(action, 0, 1)
         action_log_probs = dist.log_prob(action).sum(dim=[1, 2])
         entropy = dist.entropy().sum(dim=[1, 2])
 
@@ -116,6 +120,10 @@ class PPO:
             value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
         else:
             value_loss = (0.5 * (returns - values) ** 2).mean()
+
+        # entropy_coef decay
+        progress = self.global_step_ref[0] / self.total_training_steps
+        self.entropy_coef = self.initial_entropy_coef * (1 - progress)
 
         loss = value_loss * self.value_loss_coef + action_loss - self.entropy_coef * entropy
 

@@ -80,7 +80,8 @@ for layer_id in range(num_layers):
         initial_lr=ppo_config["initial_lr"],
         max_grad_norm=ppo_config["max_grad_norm"],
         writer=writer,
-        global_step_ref=global_step
+        global_step_ref=global_step,
+        total_training_steps=ppo_config["num_episodes"] * ppo_config["steps_per_episode"]
     )
 
     agents[layer_id] = IndustrialAgent(alg, "ppo", env.num_pad_tasks)
