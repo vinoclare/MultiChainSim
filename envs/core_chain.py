@@ -188,49 +188,55 @@ class Layer:
 
     def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> Tuple[List[Task], float]:
         """
-        actions: shape (num_workers, num_pad_tasks), value ∈ [0, 1]
-        每个值表示候选的“分配比例”，最终将裁剪为可执行量
+        全局排序分配任务：不再按 worker 顺序，而是将所有 (worker, task, ratio) flatten 后统一排序。
         """
         assigned_tasks = set()
         task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
         total_assign_amount = 0.0
 
+        # 记录所有可分配项 (worker_id, task_idx, ratio)
+        dispatch_list = []
         for worker_id, allocation in enumerate(actions):
-            worker = self.workers[worker_id]
-
             for task_idx, ratio in enumerate(allocation):
                 if ratio <= 0:
                     continue
                 if task_idx >= len(self.task_queue):
                     continue
+                dispatch_list.append((worker_id, task_idx, ratio))
 
-                task = self.task_queue[task_idx]
-                if task.status != "waiting" or task.failed or task.unassigned_amount <= 0:
-                    continue
+        # 按 ratio 降序排序（更强烈意图优先执行）
+        dispatch_list.sort(key=lambda x: -x[2])
 
-                task_type = task.task_type
+        for worker_id, task_idx, ratio in dispatch_list:
+            worker = self.workers[worker_id]
+            task = self.task_queue[task_idx]
 
-                # worker 的剩余容量
-                cap_left = worker.capacity_map.get(task_type, 0) - worker.current_load_map.get(task_type, 0)
-                total_left = worker.max_total_load - worker.total_current_load
+            if task.status != "waiting" or task.failed or task.unassigned_amount <= 0:
+                continue
 
-                if cap_left <= 0 or total_left <= 0:
-                    continue
+            task_type = task.task_type
 
-                # 候选分配量 = 比例 × 剩余任务量
-                ratio = min(max(ratio, 0.0), 1.0)
-                proposed_amount = ratio * task_start_unassigned[task_idx]
+            # worker 的剩余容量
+            cap_left = worker.capacity_map.get(task_type, 0) - worker.current_load_map.get(task_type, 0)
+            total_left = worker.max_total_load - worker.total_current_load
 
-                # 实际可执行分配量 = 不超过四者中最小值
-                assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
+            if cap_left <= 0 or total_left <= 0:
+                continue
 
-                if assign_amount <= 0:
-                    continue
+            # 候选分配量 = 比例 × 任务初始未分配量
+            ratio = min(max(ratio, 0.0), 1.0)
+            proposed_amount = ratio * task_start_unassigned[task_idx]
 
-                success = worker.assign_task(task, assign_amount, current_time)
-                if success:
-                    assigned_tasks.add(task)
-                    total_assign_amount += assign_amount
+            # 实际可执行分配量
+            assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
+
+            if assign_amount <= 0:
+                continue
+
+            success = worker.assign_task(task, assign_amount, current_time)
+            if success:
+                assigned_tasks.add(task)
+                total_assign_amount += assign_amount
 
         # 清除完成、失败或被分配完的任务，只保留 still waiting 的任务
         self.task_queue = [

@@ -57,6 +57,7 @@ class PPOIndustrialModel(nn.Module):
         # —— Actor —— #
         # 每个 (worker, task) 对应 3 路特征拼接： worker, task, global
         self.actor_head = nn.Linear(3 * D, 1)
+        self.std_head = nn.Linear(3 * hidden_dim, 1)
         self.log_std = nn.Parameter(torch.zeros(1, n_worker, num_pad_tasks))
 
         # —— Critic —— #
@@ -112,8 +113,9 @@ class PPOIndustrialModel(nn.Module):
         fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
         mean = self.actor_head(fusion).squeeze(-1)       # (B, W, T)
         mean = torch.sigmoid(mean)
-        std = torch.exp(self.log_std).expand_as(mean)  # (B, W, T)
-        std = torch.clamp(std, min=1e-6)
+        raw_std = self.std_head(fusion).squeeze(-1)      # (B, W, T)
+        std = F.softplus(raw_std) * 0.5 + 1e-3
+        std = torch.clamp(std, min=1e-6, max=2.0)
 
         # 应用 valid mask（可选）
         if valid_mask is not None:

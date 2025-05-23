@@ -65,6 +65,10 @@ class MultiplexEnv(gym.Env):
             self.alpha = np.random.uniform(0.5, 1.5)
             self.beta = np.random.uniform(0.5, 1.5)
             self.task_schedule = generate_task_schedule(self.config)
+            self.original_schedule_dict = {
+                t: [task.to_dict() for task in task_list]
+                for t, task_list in self.task_schedule.items()
+            }
         else:
             self.task_schedule = {
                 int(t): [Task.from_dict(d) for d in task_list]

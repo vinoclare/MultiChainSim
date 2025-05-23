@@ -41,6 +41,7 @@ hidden_dim = ppo_config["hidden_dim"]
 eval_interval = ppo_config["eval_interval"]
 eval_episodes = ppo_config["eval_episodes"]
 log_interval = ppo_config["log_interval"]
+reset_schedule_every = env_config["reset_schedule_every"]
 
 agents = {}
 buffers = {}
@@ -199,7 +200,10 @@ for episode in range(num_episodes):
     if episode % eval_interval == 0:
         evaluate_policy(agents, eval_env, eval_episodes, writer, episode * max_steps)
 
-    obs = env.reset()
+    if episode % reset_schedule_every == 0:
+        obs = env.reset(with_new_schedule=True)
+    else:
+        obs = env.reset(with_new_schedule=False)
     episode_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
 
     for step in range(steps_per_episode):
