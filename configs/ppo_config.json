@@ -1,0 +1,18 @@
+{
+  "num_episodes": 100000,
+  "steps_per_episode": 50,
+  "eval_interval": 20,
+  "eval_episodes": 5,
+  "log_interval": 20,
+  "update_epochs": 4,
+  "gamma": 0.99,
+  "lam": 0.95,
+  "batch_size": 256,
+  "hidden_dim": 256,
+  "clip_param": 0.2,
+  "value_loss_coef": 0.5,
+  "entropy_coef": 0.01,
+  "initial_lr": 2.5e-4,
+  "max_grad_norm": 0.5,
+  "return_normalization": false
+}

@@ -1,0 +1,23 @@
+{
+  "task_types": ["A"],
+  "task_route": [0],
+  "task_amount_range": [1, 2],
+  "max_steps": 50,
+  "task_arrival_mode": "poisson",
+  "task_arrival_rate": 1.0,
+  "task_timeout_range": [20, 30],
+  "num_layers": 1,
+  "workers_per_layer": [2],
+  "worker_cost_range": [1.0, 1.5],
+  "worker_utility_range": [2.0, 3.0],
+  "worker_task_capacity_range": [3, 5],
+  "worker_total_capacity_range": [6, 10],
+  "worker_failure_range": [0.0, 0.0],
+  "task_schedule_load_path": "",
+  "is_save_schedule": false,
+  "alpha": 1.0,
+  "beta": 1.0,
+  "num_pad_tasks": 5,
+  "assign_reward_coef": 0.05,
+  "wait_penalty_coef": 0.01
+}

@@ -2,7 +2,7 @@ import gym
 from gym import spaces
 import numpy as np
 from typing import Dict, Any
-from .core_chain import IndustrialChain
+from .core_chain import IndustrialChain, Task
 from .env_init import load_env_config, generate_task_schedule, generate_worker_layer_config
 
 
@@ -21,106 +21,197 @@ class MultiplexEnv(gym.Env):
         self.beta = self.config.get("beta", 1.0)
 
         self.num_layers = self.config["num_layers"]
-        self.max_tasks = 100  # 最大任务队列长度
+        self.num_pad_tasks = self.config.get("num_pad_tasks", 10)
+
+        num_task_types = len(self.config["task_types"])
 
         self.observation_space = spaces.Dict({
             layer_id: spaces.Dict({
-                "task_queue": spaces.Box(low=0, high=1, shape=(self.max_tasks, 3), dtype=np.float32),
-                "worker_loads": spaces.Box(low=0, high=1, shape=(len(self.worker_config[layer_id]),), dtype=np.float32)
+                "task_queue": spaces.Box(
+                    low=0, high=1,
+                    shape=(self.num_pad_tasks, 4 + num_task_types),
+                    dtype=np.float32
+                ),
+                "worker_loads": spaces.Box(
+                    low=0, high=1,
+                    shape=(len(self.worker_config[layer_id]), num_task_types + 1),
+                    dtype=np.float32
+                ),
+                "worker_profile": spaces.Box(
+                    low=0, high=np.inf,
+                    shape=(len(self.worker_config[layer_id]), 2 * num_task_types),
+                    dtype=np.float32
+                ),
             }) for layer_id in range(self.num_layers)
         })
+        self.observation_space.spaces["global_context"] = spaces.Box(
+            low=0, high=1, shape=(1,), dtype=np.float32
+        )
 
         self.action_space = spaces.Dict({
-            layer_id: spaces.Box(low=0, high=10, shape=(len(self.worker_config[layer_id]), self.max_tasks), dtype=np.int32)
+            layer_id: spaces.Box(low=0, high=10, shape=(len(self.worker_config[layer_id]), self.num_pad_tasks), dtype=np.int32)
             for layer_id in range(self.num_layers)
         })
 
+        self.original_schedule_dict = {
+            t: [task.to_dict() for task in task_list]
+            for t, task_list in self.task_schedule.items()
+        }
+
     def reset(self, with_new_schedule=False):
-        if with_new_schedule:
-            self.task_schedule = generate_task_schedule(self.config)
-            self.alpha = np.random.uniform(0.5, 1.5)
-            self.beta = np.random.uniform(0.5, 1.5)
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
+        if with_new_schedule:
+            self.alpha = np.random.uniform(0.5, 1.5)
+            self.beta = np.random.uniform(0.5, 1.5)
+            self.task_schedule = generate_task_schedule(self.config)
+        else:
+            self.task_schedule = {
+                int(t): [Task.from_dict(d) for d in task_list]
+                for t, task_list in self.original_schedule_dict.items()
+            }
         return self._get_obs()
 
     def step(self, action_dict: Dict[int, Any]):
         # 任务注入
         new_tasks = self.task_schedule.get(self.current_step, [])
         self.chain.insert_tasks(new_tasks)
-        # 动作检查与裁剪（防止越界、非法值）
-        checked_action_dict = self._sanitize_action(action_dict)
-        self.chain.apply_action(checked_action_dict)
+        assign_stats = self.chain.apply_action(action_dict)
         self.chain.step()
         self.current_step += 1
         obs = self._get_obs()
-        reward = self._get_reward()
+        reward = self._get_reward(assign_stats=assign_stats)
         done = self.current_step >= self.max_steps
         info = self._get_info()
         return obs, reward, done, info
 
-    def _sanitize_action(self, action_dict: Dict[int, Any]) -> Dict[int, Any]:
-        # 动作安全检查，防止越界和非法输入
-        checked = {}
-        for layer_id, matrix in action_dict.items():
-            n_worker = len(self.worker_config[layer_id])
-            # 裁剪到预期形状
-            mat = np.array(matrix)
-            mat = mat[:n_worker, :self.max_tasks]
-            mat = np.clip(mat, 0, 10)  # 可自定义最大分配量
-            checked[layer_id] = mat.tolist()
-        return checked
-
     def _get_obs(self):
+        """
+        返回完整的 observation dict，结构：
+        {
+          0: {"task_queue": ..., "worker_loads": ..., "worker_profile": ...},
+          1: { ... },
+          ...,
+          "global_context": np.array([load_ratio], dtype=np.float32)
+        }
+        """
         obs = {}
+        num_task_types = len(self.config["task_types"])
+
         for layer_id, layer in enumerate(self.chain.layers):
-            task_features = np.zeros((self.max_tasks, 3), dtype=np.float32)
-            for i, task in enumerate(layer.task_queue[:self.max_tasks]):
-                type_vec = [0.0, 0.0, 0.0]
-                # one-hot 任务类型示例
-                if task.task_type == "A":
-                    type_vec[0] = 1.0
-                elif task.task_type == "B":
-                    type_vec[1] = 1.0
-                elif task.task_type == "C":
-                    type_vec[2] = 1.0
-                task_features[i] = np.array([
-                    task.amount / 10.0,
-                    (self.current_step - task.arrival_time) / self.max_steps,
-                    type_vec[np.argmax(type_vec)]  # 可替换为 full one-hot
+            # —— 构造 task_queue 特征 (num_pad_tasks, 4 + n_task_types) ——
+            task_features = np.zeros((self.num_pad_tasks, 4 + num_task_types), dtype=np.float32)
+            for i, task in enumerate(layer.task_queue[:self.num_pad_tasks]):
+                # 未分配量
+                norm_unassigned = task.unassigned_amount / max(self.config["task_amount_range"])
+                # 剩余时间
+                rem_time = max(0, task.timeout - (self.current_step - task.arrival_time))
+                norm_remain = rem_time / max(self.config["task_timeout_range"])
+                # 等待时间 = 当前步 - 到达步
+                wait_time = self.current_step - task.arrival_time
+                norm_wait = wait_time / max(self.config["max_steps"], 1)
+                # 类型 one-hot
+                one_hot = np.zeros(num_task_types, dtype=np.float32)
+                idx = self.config["task_types"].index(task.task_type)
+                one_hot[idx] = 1.0
+                # 有效标志
+                valid_flag = 1.0
+
+                task_features[i] = np.concatenate([
+                    [norm_unassigned, norm_remain, norm_wait, valid_flag],
+                    one_hot
                 ])
-            worker_loads = np.array([
-                w.total_current_load / max(w.max_total_load, 1)
-                for w in layer.workers
-            ], dtype=np.float32)
+
+            # —— 构造 worker_loads 特征 (n_worker, 2*n_task_type + 2) ——
+            loads = []
+            for w in layer.workers:
+                # 每类任务的剩余容量比（余量/最大容量） + 总负载比例
+                per_type_remain = []
+                for t in self.config["task_types"]:
+                    cap = w.capacity_map.get(t, 1)
+                    used = w.current_load_map.get(t, 0.0)
+                    per_type_remain.append((cap - used) / max(cap, 1))
+                # 总负载剩余比例
+                tot_remain = (w.max_total_load - w.total_current_load) / max(w.max_total_load, 1)
+
+                # 拼成长度 = n_task_type + 1
+                loads.append(per_type_remain + [tot_remain])
+
+            worker_loads = np.array(loads, dtype=np.float32)
+
+            # —— 构造 worker_profile 特征 (n_worker, 2*n_task_type) ——
+            profiles = []
+            for w in layer.workers:
+                avg_cost, avg_util = w.get_profile()
+                avg_cost = [ac / max(self.config["worker_cost_range"]) for ac in avg_cost]
+                avg_util = [au / max(self.config["worker_utility_range"]) for au in avg_util]
+                profiles.append(avg_cost + avg_util)
+            worker_profile = np.array(profiles, dtype=np.float32)
+
             obs[layer_id] = {
-                "task_queue": task_features,
-                "worker_loads": worker_loads
+                "task_queue":   task_features,
+                "worker_loads": worker_loads,
+                "worker_profile": worker_profile
             }
+
+        # —— 全局上下文 global_context (1,) ——
+        load_ratio = self.chain.get_system_load_ratio()
+        obs["global_context"] = np.array([load_ratio], dtype=np.float32)
+
         return obs
 
-    def _get_reward(self):
-        kpi = self.chain.collect_kpis()
-        # 结构化reward返回
+    def _get_reward(self, assign_stats=None):
+        if assign_stats is None:
+            assign_stats = {}
+        assign_coef = self.config.get("assign_reward_coef", 0.1)
+        wait_penalty_coef = self.config.get("wait_penalty_coef", 0.01)
+        max_wait = self.config.get("max_steps", 50)
+
+        step_kpis = self.chain.collect_step_kpis()
+
+        layer_rewards = {}
+        total_reward = 0.0
+        total_cost = 0.0
+        total_util = 0.0
+
+        for layer_id, kpi in step_kpis.items():
+            step_cost = kpi.get("step_cost", 0.0)
+            step_util = kpi.get("step_utility", 0.0)
+
+            # 分配奖励（按分配量）
+            assign_bonus = assign_coef * assign_stats.get(layer_id, 0.0)
+
+            # 等待惩罚（每个未完成任务）
+            wait_penalty = 0.0
+            for task in self.chain.layers[layer_id].task_queue:
+                wait_time = self.current_step - task.arrival_time
+                wait_penalty += wait_penalty_coef * wait_time / max_wait
+
+            reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
+
+            layer_rewards[layer_id] = {
+                "cost": step_cost,
+                "utility": step_util,
+                "reward": reward,
+                "assign_bonus": assign_bonus,
+                "wait_penalty": wait_penalty
+            }
+
+            total_reward += reward
+            total_cost += step_cost
+            total_util += step_util
+
         reward_detail = {
-            "layer_rewards": {},
+            "layer_rewards": layer_rewards,
             "global_summary": {
-                "total_cost": kpi["avg_cost"] * kpi["tasks_done"],
-                "avg_util": kpi["avg_utility"],
-                "total_failures": kpi.get("total_failures", 0)
+                "total_cost": total_cost,
+                "total_utility": total_util,
+                "alpha": self.alpha,
+                "beta": self.beta
             }
         }
-        # 每层可按需扩展
-        for layer_id, layer in enumerate(self.chain.layers):
-            layer_kpi = layer.get_kpi_snapshot()
-            reward_detail["layer_rewards"][layer_id] = {
-                "cost": layer_kpi["avg_cost"],
-                "utility": layer_kpi["avg_util"],
-                "utilization": layer_kpi["utilization"]
-            }
-        # 兼容RL接口返回单值reward
-        reward_scalar = self.beta * kpi["avg_utility"] - self.alpha * kpi["avg_cost"]
-        return reward_scalar, reward_detail
+
+        return total_reward, reward_detail
 
     def _get_info(self):
         # 输出详细KPI与episode参数，方便后续分析
@@ -133,4 +224,27 @@ class MultiplexEnv(gym.Env):
         return info
 
     def render(self, mode='human'):
-        print(f"Step {self.current_step}: {self.chain.collect_kpis()}")
+        print(f"\n========== Step {self.current_step} ==========")
+
+        # 实时单位时间指标（step_kpis）
+        print("Step-wise KPIs:")
+        for layer_id, kpi in self.chain.step_kpis.items():
+            step_cost = kpi.get("step_cost", 0.0)
+            step_util = kpi.get("step_utility", 0.0)
+            step_reward = self.beta * step_util - self.alpha * step_cost
+            print(f"  Layer {layer_id}: "
+                  f"Cost = {step_cost:.2f}, Utility = {step_util:.2f}, Reward = {step_reward:.2f}")
+
+        # 累计指标（cumulative_kpis）
+        kpis = self.chain.cumulative_kpis
+        print("\nCumulative KPIs:")
+        print(f"  Total Time: {kpis['time']}")
+        print(f"  Tasks Done: {kpis['tasks_done']}, Total Failures: {kpis['total_failures']}")
+        print(f"  Total Cost: {kpis['total_cost']:.2f}, Total Utility: {kpis['total_utility']:.2f}")
+        print(f"  Alpha: {self.alpha:.2f}, Beta: {self.beta:.2f}")
+
+        print("\nPer-layer cumulative stats:")
+        for layer_id, stats in kpis["per_layer"].items():
+            print(f"  Layer {layer_id}: "
+                  f"Tasks = {stats['tasks_done']}, Failures = {stats['failures']}, "
+                  f"Cost = {stats['cost']:.2f}, Utility = {stats['utility']:.2f}")

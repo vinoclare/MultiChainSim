@@ -72,9 +72,14 @@ class Worker:
         self.failure_prob_map = failure_prob_map or {k: 0.1 for k in cost_map}
         self.exec_time_coef = exec_time_coef or {k: 1.0 for k in cost_map}
 
-        self.processing_tasks: List[Tuple[Task, float, float, float]] = []  # (task, amount, remaining_time)
+        self.processing_tasks: List[Tuple[Task, float, float, float]] = []  # (task, total_amount, current_amount, unit_per_step)
         self.task_history: List[Tuple[Task, float]] = []
         self.time = 0
+        self.failure_exec_cost_base = 12.0
+
+        self.total_cost_map = {t: 0.0 for t in cost_map}
+        self.total_util_map = {t: 0.0 for t in utility_map}
+        self.count_map = {t: 0 for t in cost_map}
 
     def can_accept_amount(self, task: Task, amount: float) -> bool:
         type_cap = self.capacity_map.get(task.task_type, 0)
@@ -90,9 +95,8 @@ class Worker:
             #     f"[ASSIGN FAIL] Layer {self.layer_id} Task {task.id} to Worker {self.id} @ Layer {self.layer_id} — amount={amount}, type_load={self.current_load_map.get(task.task_type, 0)}, type_cap={self.capacity_map.get(task.task_type, 0)}, total_load={self.total_current_load}, current_load={self.total_current_load}, max={self.max_total_load}")
             return False
 
-        exec_time = amount * self.exec_time_coef.get(task.task_type, 1.0)
-        unit_per_step = amount / exec_time
-        self.processing_tasks.append((task, amount, exec_time, unit_per_step))
+        unit_per_step = 1 / self.exec_time_coef.get(task.task_type, 1.0)
+        self.processing_tasks.append((task, amount, amount, unit_per_step))
         self.current_load_map[task.task_type] += amount
         self.total_current_load += amount
 
@@ -101,34 +105,45 @@ class Worker:
         task.start_time = task.start_time or current_time
         return True
 
-    def step(self) -> List[Tuple[Task, float]]:
+    def step(self) -> List[Tuple[Task, float, float, float]]:
         finished = []
         new_queue = []
 
-        for task, amount, remaining_time, unit_per_step in self.processing_tasks:
+        for task, total_amount, current_amount, unit_per_step in self.processing_tasks:
+            # task: 任务
+            # total_amount: 任务被分配到该Worker的总量
+            # current_amount: 任务剩余可执行量
+            # unit_per_step: 单位时间内可执行量
             p = self.failure_prob_map.get(task.task_type, 0.001)
             if random.random() < p:
                 task.status = "failed"
                 task.failed = True
                 task.remaining_amount = 0
-                self.task_history.append((task, amount))
-                self.current_load_map[task.task_type] -= amount
-                self.total_current_load -= amount
-                finished.append((task, amount))
+                self.task_history.append((task, total_amount))
+                self.current_load_map[task.task_type] -= total_amount
+                self.total_current_load -= total_amount
+                cost = self.failure_exec_cost_base
+                self.cost_map[task.task_type] += cost
+                self.count_map[task.task_type] += 1
+                utility = 0.0
+                finished.append((task, total_amount, cost, utility))
                 continue
 
-            remaining_time -= 1
-            task.remaining_amount -= unit_per_step
-            task.remaining_amount = max(task.remaining_amount, 0)
-            # print(
-            #     f"[Worker {self.id}] executed {unit_per_step:.2f} units of task {task.id}, remaining_amount = {task.remaining_amount:.2f}")
-            if remaining_time <= 0:
-                self.task_history.append((task, amount))
-                self.current_load_map[task.task_type] -= amount
-                self.total_current_load -= amount
-                finished.append((task, amount))
+            performed_amount = min(unit_per_step, current_amount)
+            task.remaining_amount -= performed_amount
+            current_amount -= performed_amount
+            if current_amount <= 0:
+                self.task_history.append((task, total_amount))
+                self.current_load_map[task.task_type] -= total_amount
+                self.total_current_load -= total_amount
+                cost = self.get_cost(task, total_amount)
+                utility = self.get_utility(task, total_amount)
+                finished.append((task, total_amount, cost, utility))
+                self.total_cost_map[task.task_type] += cost
+                self.total_util_map[task.task_type] += utility
+                self.count_map[task.task_type] += 1
             else:
-                new_queue.append((task, amount, remaining_time, unit_per_step))
+                new_queue.append((task, total_amount, current_amount, unit_per_step))
 
         self.processing_tasks = new_queue
         return finished
@@ -139,6 +154,25 @@ class Worker:
     def get_utility(self, task: Task, amount: float) -> float:
         return self.utility_map.get(task.task_type, 1.0) * amount
 
+    def get_profile(self) -> Tuple[List[float], List[float]]:
+        """
+        直接返回历史平均 cost 和 utility，不再遍历 task_history。
+        输出：
+          avg_cost_list, avg_util_list
+        顺序与 self.cost_map.keys() 保持一致。
+        """
+        avg_cost = []
+        avg_util = []
+        for t in self.cost_map:
+            cnt = self.count_map.get(t, 0)
+            if cnt > 0:
+                avg_cost.append(self.total_cost_map[t] / cnt)
+                avg_util.append(self.total_util_map[t] / cnt)
+            else:
+                avg_cost.append(0.0)
+                avg_util.append(0.0)
+        return avg_cost, avg_util
+
 
 class Layer:
     def __init__(self, layer_id: int, worker_configs: List[dict]):
@@ -146,37 +180,67 @@ class Layer:
         self.workers = [Worker(id=i, layer_id=layer_id, **cfg) for i, cfg in enumerate(worker_configs)]
         self.task_queue: List[Task] = []
 
+        self.failure_base_cost = 10.0
+        self.failure_utility = 0.0
+
     def add_task(self, task: Task):
         self.task_queue.append(task)
-        # print(f"[Layer {self.layer_id}] 接收到任务 {task.id}")
 
-    def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> List[Task]:
+    def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> Tuple[List[Task], float]:
+        """
+        actions: shape (num_workers, num_pad_tasks), value ∈ [0, 1]
+        每个值表示候选的“分配比例”，最终将裁剪为可执行量
+        """
         assigned_tasks = set()
+        task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
+        total_assign_amount = 0.0
 
         for worker_id, allocation in enumerate(actions):
             worker = self.workers[worker_id]
-            for task_idx, amount in enumerate(allocation):
-                if amount <= 0:
+
+            for task_idx, ratio in enumerate(allocation):
+                if ratio <= 0:
                     continue
                 if task_idx >= len(self.task_queue):
                     continue
 
                 task = self.task_queue[task_idx]
-                if task.status != "waiting":
+                if task.status != "waiting" or task.failed or task.unassigned_amount <= 0:
                     continue
 
-                success = worker.assign_task(task, amount, current_time)
+                task_type = task.task_type
+
+                # worker 的剩余容量
+                cap_left = worker.capacity_map.get(task_type, 0) - worker.current_load_map.get(task_type, 0)
+                total_left = worker.max_total_load - worker.total_current_load
+
+                if cap_left <= 0 or total_left <= 0:
+                    continue
+
+                # 候选分配量 = 比例 × 剩余任务量
+                ratio = min(max(ratio, 0.0), 1.0)
+                proposed_amount = ratio * task_start_unassigned[task_idx]
+
+                # 实际可执行分配量 = 不超过四者中最小值
+                assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
+
+                if assign_amount <= 0:
+                    continue
+
+                success = worker.assign_task(task, assign_amount, current_time)
                 if success:
                     assigned_tasks.add(task)
-                    # print(
-                    #     f"[DISPATCH] Layer {self.layer_id} | Assigned {amount} of Task {task.id} to Worker {worker.id}")
+                    total_assign_amount += assign_amount
 
-        # 保留未完成任务，过滤已完全完成或失败的任务
-        self.task_queue = [t for t in self.task_queue if t.unassigned_amount > 0 and not t.failed]
-        return list(assigned_tasks)
+        # 清除完成、失败或被分配完的任务，只保留 still waiting 的任务
+        self.task_queue = [
+            t for t in self.task_queue
+            if t.status == "waiting" and not t.failed and t.unassigned_amount > 0
+        ]
+        return list(assigned_tasks), total_assign_amount
 
-    def step(self, current_time: int) -> List[Task]:
-        finished = []
+    def step(self, current_time: int) -> List[Tuple[Task, float, float, float]]:
+        finished: List[Tuple[Task, float, float, float]] = []
         for worker in self.workers:
             worker.time = current_time
             finished += worker.step()
@@ -187,18 +251,18 @@ class Layer:
             if current_time - task.arrival_time >= task.timeout:
                 task.status = "failed"
                 task.failed = True
-                timeout_failed.append((task, 0))  # 执行量为 0
+                timeout_failed.append((task, 0.0, self.failure_base_cost, self.failure_utility))
                 self.task_queue.remove(task)
         finished += timeout_failed
 
         # 收集所有超时失败的任务 ID
-        timeout_task_ids = {task.id for task, _ in timeout_failed}
+        timeout_task_ids = {task.id for task, _, _, _ in timeout_failed}
 
         # 清除所有 worker 中已分配但该任务已超时的条目
         for worker in self.workers:
             worker.processing_tasks = [
-                (t, a, r, u)
-                for (t, a, r, u) in worker.processing_tasks
+                (t, ta, ca, u)
+                for (t, ta, ca, u) in worker.processing_tasks
                 if t.id not in timeout_task_ids
             ]
         return finished
@@ -225,7 +289,22 @@ class IndustrialChain:
         self.layers: List[Layer] = [Layer(layer_id=i, worker_configs=worker_layer_configs[i])
                                     for i in range(len(worker_layer_configs))]
         self.time = 0
+        self.step_kpis = {}
         self.finished_tasks: List[Task] = []
+
+        self.cumulative_kpis = {
+            "time": 0,
+            "tasks_done": 0,
+            "total_failures": 0,
+            "total_cost": 0.0,
+            "total_utility": 0.0,
+            "per_layer": {i: {
+                "tasks_done": 0,
+                "failures": 0,
+                "cost": 0.0,
+                "utility": 0.0
+            } for i in range(len(worker_layer_configs))}
+        }
 
     def insert_tasks(self, task_list: List[Task]):
         for task in task_list:
@@ -233,57 +312,83 @@ class IndustrialChain:
             self.layers[layer_id].add_task(task)
             task.trajectory.append((layer_id, self.time))
 
-    def apply_action(self, action_dict: Dict[int, List[List[float]]]):
+    def apply_action(self, action_dict: Dict[int, List[List[float]]]) -> Dict[int, float]:
+        assign_stats = {}
         for layer_id, actions in action_dict.items():
-            self.layers[layer_id].dispatch_tasks(actions, self.time)
+            _, total_assigned = self.layers[layer_id].dispatch_tasks(actions, self.time)
+            assign_stats[layer_id] = total_assigned
+        return assign_stats
 
     def step(self):
-        for layer in self.layers:
+        self.step_kpis = {}
+        all_finished = []
+
+        # 第一步：先让所有 layer 执行 step，收集结果，不做任何任务推进
+        for layer_id, layer in enumerate(self.layers):
             finished = layer.step(self.time)
-            for task, _ in finished:
-                if task.failed:
+            step_cost = sum(c for _, _, c, _ in finished)
+            step_util = sum(u for _, _, _, u in finished)
+            self.step_kpis[layer_id] = {
+                "step_cost": step_cost,
+                "step_utility": step_util,
+            }
+
+            self.cumulative_kpis["total_cost"] += step_cost
+            self.cumulative_kpis["total_utility"] += step_util
+            self.cumulative_kpis["per_layer"][layer_id]["cost"] += step_cost
+            self.cumulative_kpis["per_layer"][layer_id]["utility"] += step_util
+
+            for item in finished:
+                all_finished.append((layer_id, *item))
+
+        # 第二步：统一处理所有 finished 任务，避免推进后被立即执行
+        for layer_id, task, amount, cost, util in all_finished:
+            if task.status == "done":
+                continue
+
+            self.cumulative_kpis["tasks_done"] += 1
+            self.cumulative_kpis["per_layer"][layer_id]["tasks_done"] += 1
+
+            if task.failed:
+                self.cumulative_kpis["total_failures"] += 1
+                self.cumulative_kpis["per_layer"][layer_id]["failures"] += 1
+                self.finished_tasks.append(task)
+                continue
+
+            # 这里只处理完成任务（remaining_amount <= 0）
+            if task.remaining_amount <= 0:
+                task.status = "done"
+                task.finish_time = self.time + 1
+                task.current_layer_index += 1
+
+                if task.current_layer_index < len(task.route):
+                    next_layer = task.route[task.current_layer_index]
+                    task.remaining_amount = task.amount
+                    task.unassigned_amount = task.amount
+                    task.status = "waiting"
+                    task.assigned_worker = []
+                    task.trajectory.append((next_layer, self.time))
+                    self.layers[next_layer].add_task(task)
+                else:
                     self.finished_tasks.append(task)
-                    continue
-                if task.remaining_amount <= 0:
-                    task.status = "done"
-                    task.finish_time = self.time + 1
-                    task.current_layer_index += 1
-                    if task.current_layer_index < len(task.route):
-                        next_layer = task.route[task.current_layer_index]
-                        task.remaining_amount = task.amount
-                        task.unassigned_amount = task.amount
-                        task.status = "waiting"
-                        task.trajectory.append((next_layer, self.time))
-                        self.layers[next_layer].add_task(task)
-                        # print(f"[Step {self.time}] Task {task.id} 完成，推进到下一层")
-                    else:
-                        self.finished_tasks.append(task)
+
         self.time += 1
+        self.cumulative_kpis["time"] = self.time
+
+    def collect_step_kpis(self) -> Dict[int, Dict[str, float]]:
+        return self.step_kpis
 
     def collect_kpis(self) -> Dict:
-        all_tasks = self.finished_tasks
-        total_tasks = len(all_tasks)
-        failure_base_cost = 5.0
-        failure_cost_ratio_range = (0.1, 0.5)
+        return self.cumulative_kpis
 
-        success_tasks = [t for t in all_tasks if not t.failed]
-        fail_tasks = [t for t in all_tasks if t.failed]
-
-        success_cost = sum(t.amount for t in success_tasks)
-        fail_cost = 0.0
-
-        for t in fail_tasks:
-            cost_ratio = random.uniform(*failure_cost_ratio_range)
-            fail_cost += failure_base_cost + cost_ratio * t.amount
-
-        total_cost = success_cost + fail_cost
-        total_util = sum(t.amount for t in success_tasks)
-        fail_count = len(fail_tasks)
-
-        return {
-            "time": self.time,
-            "tasks_done": total_tasks,
-            "total_failures": fail_count,
-            "avg_cost": total_cost / total_tasks if total_tasks else 0,
-            "avg_utility": total_util / total_tasks if total_tasks else 0
-        }
+    def get_system_load_ratio(self) -> float:
+        """
+        计算全系统的当前总负载 / 最大总容量，作为 global_context。
+        """
+        total_load = 0.0
+        total_cap = 0.0
+        for layer in self.layers:
+            for w in layer.workers:
+                total_load += w.total_current_load
+                total_cap += w.max_total_load
+        return (total_load / total_cap) if total_cap > 0 else 0.0
