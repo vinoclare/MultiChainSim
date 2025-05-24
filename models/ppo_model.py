@@ -125,7 +125,6 @@ class PPOIndustrialModel(nn.Module):
         fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
         fusion = self.fusion_norm(fusion)
         mean = self.actor_head(fusion).squeeze(-1)       # (B, W, T)
-        mean = torch.sigmoid(mean)
         log_std = self.std_head(fusion).squeeze(-1)      # (B, W, T)
         log_std = log_std.clamp(-20, 2)
         std = torch.exp(log_std)

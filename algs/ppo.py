@@ -52,9 +52,15 @@ class PPO:
 
         mean, std, value = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
         dist = Normal(mean, std)
-        action = dist.sample()
-        action = torch.clamp(action, 0, 1)
-        action_log_probs = dist.log_prob(action).sum(dim=[1, 2])
+        raw_action = dist.rsample()
+        tanh_action = torch.tanh(raw_action)
+        action = 0.5 * (tanh_action + 1.0)
+
+        log_prob = dist.log_prob(raw_action)
+        squash_correction = torch.log(1 - tanh_action ** 2 + 1e-6)
+        log_prob = log_prob - squash_correction
+        action_log_probs = log_prob.sum(dim=[1, 2])
+
         entropy = dist.entropy().sum(dim=[1, 2])
 
         return value, action, action_log_probs, entropy
@@ -66,7 +72,9 @@ class PPO:
         global_context = global_context.to(self.device)
 
         mean, _, _ = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
-        return mean  # deterministic policy
+        action = torch.tanh(mean)
+        action = 0.5 * (action + 1.0)
+        return action  # deterministic policy
 
     def value(self, task_obs, worker_loads):
         task_obs = task_obs.to(self.device)
