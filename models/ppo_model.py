@@ -11,12 +11,14 @@ class RowWiseEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, output_dim)
         )
+        self.ln = nn.LayerNorm(output_dim)
 
     def forward(self, x):
         # x: (B, N, D_in) → (B, N, D_out)
         B, N, D = x.shape
         x = x.view(B * N, D)
         x = self.mlp(x)
+        x = self.ln(x)
         return x.view(B, N, -1)
 
 
@@ -42,10 +44,18 @@ class PPOIndustrialModel(nn.Module):
         self.worker_profile_encoder = RowWiseEncoder(worker_profile_input_dim, D, D)
 
         # 融合 worker_load + worker_profile → D→D
-        self.fc_worker = nn.Linear(2 * D, D)
+        self.fc_worker = nn.Sequential(
+            nn.Linear(2 * D, D),
+            nn.ReLU(),
+            nn.LayerNorm(D)
+        )
 
         # 处理 task 编码
-        self.fc_task = nn.Linear(D, D)
+        self.fc_task = nn.Sequential(
+            nn.Linear(D, D),
+            nn.ReLU(),
+            nn.LayerNorm(D)
+        )
 
         # 处理全局上下文
         self.global_fc = nn.Sequential(
@@ -58,7 +68,6 @@ class PPOIndustrialModel(nn.Module):
         # 每个 (worker, task) 对应 3 路特征拼接： worker, task, global
         self.actor_head = nn.Linear(3 * D, 1)
         self.std_head = nn.Linear(3 * hidden_dim, 1)
-        self.log_std = nn.Parameter(torch.zeros(1, n_worker, num_pad_tasks))
 
         # —— Critic —— #
         # 聚合 task_pool, worker_pool, global → value
@@ -67,6 +76,9 @@ class PPOIndustrialModel(nn.Module):
             nn.ReLU(),
             nn.Linear(D, 1)
         )
+
+        self.fusion_norm = nn.LayerNorm(3 * D)
+        self.critic_norm = nn.LayerNorm(3 * D)
 
     def forward(
         self,
@@ -111,11 +123,12 @@ class PPOIndustrialModel(nn.Module):
         g_exp = g_feat.unsqueeze(1).unsqueeze(2).expand(-1, self.n_worker, self.num_pad_tasks, -1)
 
         fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
+        fusion = self.fusion_norm(fusion)
         mean = self.actor_head(fusion).squeeze(-1)       # (B, W, T)
         mean = torch.sigmoid(mean)
-        raw_std = self.std_head(fusion).squeeze(-1)      # (B, W, T)
-        std = F.softplus(raw_std) * 0.5 + 1e-3
-        std = torch.clamp(std, min=1e-6, max=2.0)
+        log_std = self.std_head(fusion).squeeze(-1)      # (B, W, T)
+        log_std = log_std.clamp(-20, 2)
+        std = torch.exp(log_std)
 
         # 应用 valid mask（可选）
         if valid_mask is not None:
@@ -126,6 +139,7 @@ class PPOIndustrialModel(nn.Module):
         t_pool = t_feat.mean(dim=1)   # (B, D)
         w_pool = w_feat.mean(dim=1)   # (B, D)
         cv_in = torch.cat([t_pool, w_pool, g_feat], dim=-1)  # (B, 2D+D)
+        cv_in = self.critic_norm(cv_in)
         value = self.shared_critic(cv_in).squeeze(-1)        # (B,)
 
         return mean, std, value

@@ -78,7 +78,7 @@ class Worker:
 
         self.total_cost_map = {t: 0.0 for t in cost_map}
         self.total_util_map = {t: 0.0 for t in utility_map}
-        self.count_map = {t: 0 for t in cost_map}
+        self.amount_map = {t: 0 for t in cost_map}
 
     def can_accept_amount(self, task: Task, amount: float) -> bool:
         type_cap = self.capacity_map.get(task.task_type, 0)
@@ -122,7 +122,7 @@ class Worker:
                 self.current_load_map[task.task_type] -= total_amount
                 self.total_current_load -= total_amount
                 cost = self.failure_exec_cost_base
-                self.count_map[task.task_type] += 1
+                self.amount_map[task.task_type] += total_amount
                 self.total_cost_map[task.task_type] += cost
                 utility = 0.0
                 finished.append((task, total_amount, cost, utility))
@@ -140,7 +140,7 @@ class Worker:
                 finished.append((task, total_amount, cost, utility))
                 self.total_cost_map[task.task_type] += cost
                 self.total_util_map[task.task_type] += utility
-                self.count_map[task.task_type] += 1
+                self.amount_map[task.task_type] += total_amount
             else:
                 new_queue.append((task, total_amount, current_amount, unit_per_step))
 
@@ -163,10 +163,10 @@ class Worker:
         avg_cost = []
         avg_util = []
         for t in self.cost_map:
-            cnt = self.count_map.get(t, 0)
-            if cnt > 0:
-                avg_cost.append(self.total_cost_map[t] / cnt)
-                avg_util.append(self.total_util_map[t] / cnt)
+            amount = self.amount_map.get(t, 0)
+            if amount > 0:
+                avg_cost.append(self.total_cost_map[t] / amount)
+                avg_util.append(self.total_util_map[t] / amount)
             else:
                 avg_cost.append(0.0)
                 avg_util.append(0.0)
@@ -241,9 +241,28 @@ class Layer:
         task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
         total_assign_amount = 0.0
 
-        # 记录所有可分配项 (worker_id, task_idx, ratio)
+        num_workers = len(actions)
+        num_tasks = len(actions[0])
+
+        # Step 1: soft masking 每个 task 上的分配意图（worker 维度归一化）
+        masked_actions = [[0.0 for _ in range(num_tasks)] for _ in range(num_workers)]
+
+        for task_idx in range(min(num_tasks, len(self.task_queue))):
+            # 收集所有 worker 对该任务的意愿
+            task_ratios = [actions[w][task_idx] for w in range(num_workers)]
+            total_ratio = sum(task_ratios)
+
+            if total_ratio > 1.0:
+                # Soft masking：归一化
+                task_ratios = [r / total_ratio for r in task_ratios]
+
+            # 写回 masked_actions
+            for w in range(num_workers):
+                masked_actions[w][task_idx] = task_ratios[w]
+
+        # Step 2: 构建 dispatch_list
         dispatch_list = []
-        for worker_id, allocation in enumerate(actions):
+        for worker_id, allocation in enumerate(masked_actions):
             for task_idx, ratio in enumerate(allocation):
                 if ratio <= 0:
                     continue
@@ -251,7 +270,7 @@ class Layer:
                     continue
                 dispatch_list.append((worker_id, task_idx, ratio))
 
-        # 按 ratio 降序排序（更强烈意图优先执行）
+        # Step 3: 执行 dispatch（按 ratio 降序）
         dispatch_list.sort(key=lambda x: -x[2])
 
         for worker_id, task_idx, ratio in dispatch_list:
@@ -270,11 +289,10 @@ class Layer:
             if cap_left <= 0 or total_left <= 0:
                 continue
 
-            # 候选分配量 = 比例 × 任务初始未分配量
-            ratio = min(max(ratio, 0.0), 1.0)
+            # 候选分配量（基于 soft masked ratio）
             proposed_amount = ratio * task_start_unassigned[task_idx]
 
-            # 实际可执行分配量
+            # 实际可执行分配量（考虑环境约束）
             assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
 
             if assign_amount <= 0:
@@ -285,7 +303,7 @@ class Layer:
                 assigned_tasks.add(task)
                 total_assign_amount += assign_amount
 
-        # 清除完成、失败或被分配完的任务，只保留 still waiting 的任务
+        # Step 4: 清除已完成任务
         self.task_queue = [
             t for t in self.task_queue
             if t.status == "waiting" and not t.failed and t.unassigned_amount > 0

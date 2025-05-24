@@ -11,8 +11,8 @@
   "hidden_dim": 256,
   "clip_param": 0.5,
   "value_loss_coef": 0.5,
-  "entropy_coef": 0.1,
-  "initial_lr": 5e-4,
+  "entropy_coef": 0.2,
+  "initial_lr": 5e-3,
   "max_grad_norm": 0.5,
   "return_normalization": false
 }
