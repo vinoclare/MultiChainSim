@@ -23,7 +23,6 @@ class Task:
         self.start_time = None
         self.finish_time = None
         self.assigned_worker = []
-        self.blocking_cost = 0.0
         self.failed = False
         self.trajectory: List[Tuple[int, int]] = []
         self.timeout = timeout
@@ -59,7 +58,7 @@ class Worker:
                  capacity_map: Dict[str, float],
                  max_total_load: float,
                  failure_prob_map: Optional[Dict[str, float]] = None,
-                 exec_time_coef: Optional[Dict[str, float]] = None):
+                 exec_efficiency_coef: Optional[Dict[str, float]] = None):
         self.id = id
         self.layer_id = layer_id
 
@@ -70,7 +69,7 @@ class Worker:
         self.current_load_map = {k: 0 for k in capacity_map}
         self.total_current_load = 0
         self.failure_prob_map = failure_prob_map or {k: 0.1 for k in cost_map}
-        self.exec_time_coef = exec_time_coef or {k: 1.0 for k in cost_map}
+        self.exec_efficiency_coef = exec_efficiency_coef or {k: 1.0 for k in cost_map}
 
         self.processing_tasks: List[Tuple[Task, float, float, float]] = []  # (task, total_amount, current_amount, unit_per_step)
         self.task_history: List[Tuple[Task, float]] = []
@@ -95,7 +94,7 @@ class Worker:
             #     f"[ASSIGN FAIL] Layer {self.layer_id} Task {task.id} to Worker {self.id} @ Layer {self.layer_id} — amount={amount}, type_load={self.current_load_map.get(task.task_type, 0)}, type_cap={self.capacity_map.get(task.task_type, 0)}, total_load={self.total_current_load}, current_load={self.total_current_load}, max={self.max_total_load}")
             return False
 
-        unit_per_step = 1 / self.exec_time_coef.get(task.task_type, 1.0)
+        unit_per_step = self.exec_efficiency_coef.get(task.task_type, 1.0)
         self.processing_tasks.append((task, amount, amount, unit_per_step))
         self.current_load_map[task.task_type] += amount
         self.total_current_load += amount
@@ -123,8 +122,8 @@ class Worker:
                 self.current_load_map[task.task_type] -= total_amount
                 self.total_current_load -= total_amount
                 cost = self.failure_exec_cost_base
-                self.cost_map[task.task_type] += cost
                 self.count_map[task.task_type] += 1
+                self.total_cost_map[task.task_type] += cost
                 utility = 0.0
                 finished.append((task, total_amount, cost, utility))
                 continue
@@ -186,10 +185,58 @@ class Layer:
     def add_task(self, task: Task):
         self.task_queue.append(task)
 
+    # worker by worker 分配任务
+    # def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> Tuple[List[Task], float]:
+    #     assigned_tasks = set()
+    #     task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
+    #     total_assign_amount = 0.0
+    #
+    #     for worker_id, allocation in enumerate(actions):
+    #         worker = self.workers[worker_id]
+    #
+    #         for task_idx, ratio in enumerate(allocation):
+    #             if ratio <= 0:
+    #                 continue
+    #             if task_idx >= len(self.task_queue):
+    #                 continue
+    #
+    #             task = self.task_queue[task_idx]
+    #             if task.status != "waiting" or task.failed or task.unassigned_amount <= 0:
+    #                 continue
+    #
+    #             task_type = task.task_type
+    #
+    #             # worker 的剩余容量
+    #             cap_left = worker.capacity_map.get(task_type, 0) - worker.current_load_map.get(task_type, 0)
+    #             total_left = worker.max_total_load - worker.total_current_load
+    #
+    #             if cap_left <= 0 or total_left <= 0:
+    #                 continue
+    #
+    #             # 候选分配量 = 比例 × 剩余任务量
+    #             ratio = min(max(ratio, 0.0), 1.0)
+    #             proposed_amount = ratio * task_start_unassigned[task_idx]
+    #
+    #             # 实际可执行分配量 = 不超过四者中最小值
+    #             assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
+    #
+    #             if assign_amount <= 0:
+    #                 continue
+    #
+    #             success = worker.assign_task(task, assign_amount, current_time)
+    #             if success:
+    #                 assigned_tasks.add(task)
+    #                 total_assign_amount += assign_amount
+    #
+    #     # 清除完成、失败或被分配完的任务，只保留 still waiting 的任务
+    #     self.task_queue = [
+    #         t for t in self.task_queue
+    #         if t.status == "waiting" and not t.failed and t.unassigned_amount > 0
+    #     ]
+    #     return list(assigned_tasks), total_assign_amount
+
+    # 按ratio分配任务，不再按worker顺序
     def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> Tuple[List[Task], float]:
-        """
-        全局排序分配任务：不再按 worker 顺序，而是将所有 (worker, task, ratio) flatten 后统一排序。
-        """
         assigned_tasks = set()
         task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
         total_assign_amount = 0.0
@@ -243,6 +290,7 @@ class Layer:
             t for t in self.task_queue
             if t.status == "waiting" and not t.failed and t.unassigned_amount > 0
         ]
+
         return list(assigned_tasks), total_assign_amount
 
     def step(self, current_time: int) -> List[Tuple[Task, float, float, float]]:

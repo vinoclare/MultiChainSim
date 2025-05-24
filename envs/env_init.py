@@ -48,7 +48,7 @@ def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
     max_steps = config["max_steps"]
     arrival_mode = config["task_arrival_mode"]
     arrival_rate = config["task_arrival_rate"]
-    timeout = random.randint(*config["task_timeout_range"])
+    timeout_min, timeout_max = config["task_timeout_range"]
 
     schedule = {}
     task_id = 0
@@ -64,7 +64,7 @@ def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
                 task_type=random.choice(task_types),
                 amount=random.randint(amount_min, amount_max),
                 route=task_route.copy(),
-                timeout=timeout
+                timeout=random.randint(timeout_min, timeout_max)
             )
             schedule.setdefault(t, []).append(task)
             task_id += 1
@@ -88,6 +88,7 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
     workers_per_layer = config["workers_per_layer"]
     cost_range = config["worker_cost_range"]
     util_range = config["worker_utility_range"]
+    exec_efficiency_range = config["worker_exec_efficiency_range"]
     cap_range = config["worker_task_capacity_range"]
     total_capacity = random.randint(*config["worker_total_capacity_range"])
     fail_range = config["worker_failure_range"]
@@ -99,13 +100,12 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
             cost_map = {}
             util_map = {}
             fail_map = {}
-            exec_time_map = {}
+            exec_efficiency_map = {}
             for t in task_types:
                 cost_map[t] = round(random.uniform(*cost_range), 2)
                 util_map[t] = round(random.uniform(*util_range), 2)
                 fail_map[t] = round(random.uniform(*fail_range), 3)
-                base_exec_time = round(random.uniform(0.2, 0.6), 2)
-                exec_time_map[t] = base_exec_time / util_map[t]
+                exec_efficiency_map[t] = round(random.uniform(*exec_efficiency_range), 2)
             cap_map = {t: random.randint(*cap_range) for t in task_types}
             worker_cfg = {
                 "cost_map": cost_map,
@@ -113,7 +113,7 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
                 "capacity_map": cap_map,
                 "max_total_load": total_capacity,
                 "failure_prob_map": fail_map,
-                "exec_time_coef": exec_time_map
+                "exec_efficiency_coef": exec_efficiency_map
             }
             layer_cfg.append(worker_cfg)
         worker_layer_config.append(layer_cfg)

@@ -200,7 +200,7 @@ for episode in range(num_episodes):
     if episode % eval_interval == 0:
         evaluate_policy(agents, eval_env, eval_episodes, writer, episode * max_steps)
 
-    if episode % reset_schedule_every == 0:
+    if (episode + 1) % reset_schedule_every == 0:
         obs = env.reset(with_new_schedule=True)
     else:
         obs = env.reset(with_new_schedule=False)
@@ -248,6 +248,24 @@ for episode in range(num_episodes):
 
         if done:
             break
+
+    # ===== 统计各种任务状态的数量 =====
+    num_total_tasks = 0
+    num_waiting_tasks = 0
+    num_done_tasks = 0
+    num_failed_tasks = 0
+    for step_task_list in env.task_schedule.values():
+        for task in step_task_list:
+            num_total_tasks += 1
+            status = task.status
+            if status == "waiting":
+                num_waiting_tasks += 1
+            elif status == "done":
+                num_done_tasks += 1
+            elif status == "failed":
+                num_failed_tasks += 1
+    print(f"[Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
+          f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # ===== 每 N 个 episode 写一次 TensorBoard 均值 =====
     if (episode + 1) % log_interval == 0:
