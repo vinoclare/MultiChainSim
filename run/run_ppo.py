@@ -299,11 +299,23 @@ for episode in range(num_episodes):
 
     # ===== GAE & PPO updates per layer =====
     for layer_id in range(num_layers):
+        task_obs = torch.tensor(buffers[layer_id]['task_obs'][-1], dtype=torch.float32).unsqueeze(0)
+        worker_loads = torch.tensor(buffers[layer_id]['worker_loads'][-1], dtype=torch.float32).unsqueeze(0)
+        worker_profile = torch.tensor(buffers[layer_id]['worker_profile'][-1], dtype=torch.float32).unsqueeze(0)
+        global_context = torch.tensor(buffers[layer_id]['global_context'][-1], dtype=torch.float32).unsqueeze(0)
+        valid_mask = torch.tensor(buffers[layer_id]['valid_mask'][-1], dtype=torch.float32).unsqueeze(0)
+
+        with torch.no_grad():
+            _, _, last_value = agents[layer_id].alg.model(
+                task_obs, worker_loads, worker_profile, global_context, valid_mask
+            )
+        last_value = last_value.item()
+
         advs, rets = compute_gae(
             buffers[layer_id]['rewards'],
             buffers[layer_id]['dones'],
             buffers[layer_id]['values'],
-            gamma, lam
+            last_value, gamma, lam
         )
 
         if ppo_config["return_normalization"]:
