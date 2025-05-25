@@ -133,9 +133,17 @@ class PPOIndustrialModel(nn.Module):
         if valid_mask is not None:
             mask = valid_mask.unsqueeze(1).expand_as(mean)  # (B, W, T)
             mean = mean * mask
+            std = std * mask + (1 - mask) * 1e-6
 
-        # ——— Critic 估值 ——— #
-        t_pool = t_feat.mean(dim=1)   # (B, D)
+            mask_pool = valid_mask.unsqueeze(-1)  # (B, T, 1)
+            masked_t_feat = t_feat * mask_pool  # (B, T, D)
+            sum_feat = masked_t_feat.sum(dim=1)  # (B, D)
+            count = mask_pool.sum(dim=1).clamp(min=1)  # (B, 1)
+            t_pool = sum_feat / count  # (B, D)
+        else:
+            t_pool = t_feat.mean(dim=1)  # fallback
+
+            # ——— Critic 估值 ——— #
         w_pool = w_feat.mean(dim=1)   # (B, D)
         cv_in = torch.cat([t_pool, w_pool, g_feat], dim=-1)  # (B, 2D+D)
         cv_in = self.critic_norm(cv_in)
