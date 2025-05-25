@@ -161,7 +161,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
             obs, reward_dict, done, _ = eval_env.step(actions)
 
             for lid in agents:
-                layer_reward = reward_dict[1]["layer_rewards"][lid]["reward"]
+                layer_reward = reward_dict[1]["layer_rewards"][lid]["raw_reward"]
                 layer_assign_bonus = reward_dict[1]["layer_rewards"][lid]["assign_bonus"]
                 layer_wait_penalty = reward_dict[1]["layer_rewards"][lid]["wait_penalty"]
                 layer_cost = reward_dict[1]["layer_rewards"][lid]["cost"]
@@ -194,6 +194,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
 # ===== Training loop =====
 # 用于 tensorboard 记录的奖励、代价、效用等
 reward_buffer = {lid: [] for lid in range(num_layers)}
+raw_reward_buffer = {lid: [] for lid in range(num_layers)}
 assign_bonus_buffer = {lid: [] for lid in range(num_layers)}
 wait_penalty_buffer = {lid: [] for lid in range(num_layers)}
 cost_buffer = {lid: [] for lid in range(num_layers)}
@@ -208,6 +209,7 @@ for episode in range(num_episodes):
     else:
         obs = env.reset(with_new_schedule=False)
     episode_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_raw_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_assign_bonus = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_wait_penalty = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_cost = {layer_id: 0.0 for layer_id in range(num_layers)}
@@ -237,6 +239,7 @@ for episode in range(num_episodes):
 
         for layer_id in range(num_layers):
             reward_scalar = reward_dict[1]["layer_rewards"][layer_id]["reward"]
+            raw_reward_scalar = reward_dict[1]["layer_rewards"][layer_id]["raw_reward"]
             assign_bonus_scalar = reward_dict[1]["layer_rewards"][layer_id]["assign_bonus"]
             wait_penalty_scalar = reward_dict[1]["layer_rewards"][layer_id]["wait_penalty"]
             cost_scalar = reward_dict[1]['layer_rewards'][layer_id]['cost']
@@ -245,6 +248,7 @@ for episode in range(num_episodes):
             buffers[layer_id]['rewards'].append(reward_scalar)
             buffers[layer_id]['dones'].append(done)
             episode_rewards[layer_id] += reward_scalar
+            episode_raw_rewards[layer_id] += raw_reward_scalar
             episode_assign_bonus[layer_id] += assign_bonus_scalar
             episode_wait_penalty[layer_id] += wait_penalty_scalar
             episode_cost[layer_id] += cost_scalar
@@ -273,6 +277,7 @@ for episode in range(num_episodes):
     # ===== 记录每层的奖励、代价、效用等 =====
     for layer_id in range(num_layers):
         reward_buffer[layer_id].append(episode_rewards[layer_id])
+        raw_reward_buffer[layer_id].append(episode_raw_rewards[layer_id])
         assign_bonus_buffer[layer_id].append(episode_assign_bonus[layer_id])
         wait_penalty_buffer[layer_id].append(episode_wait_penalty[layer_id])
         cost_buffer[layer_id].append(episode_cost[layer_id])
@@ -283,6 +288,8 @@ for episode in range(num_episodes):
         for layer_id in range(num_layers):
             writer.add_scalar(f"layer_{layer_id}/avg_episode_reward",
                               np.mean(reward_buffer[layer_id]), episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_raw_reward",
+                              np.mean(raw_reward_buffer[layer_id]), episode)
             writer.add_scalar(f"layer_{layer_id}/avg_episode_assign_bonus",
                               np.mean(assign_bonus_buffer[layer_id]), episode)
             writer.add_scalar(f"layer_{layer_id}/avg_episode_wait_penalty",
@@ -292,6 +299,7 @@ for episode in range(num_episodes):
             writer.add_scalar(f"layer_{layer_id}/avg_episode_utility",
                               np.mean(util_buffer[layer_id]), episode)
             reward_buffer[layer_id].clear()
+            raw_reward_buffer[layer_id].clear()
             assign_bonus_buffer[layer_id].clear()
             wait_penalty_buffer[layer_id].clear()
             cost_buffer[layer_id].clear()

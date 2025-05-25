@@ -58,6 +58,19 @@ class MultiplexEnv(gym.Env):
             for t, task_list in self.task_schedule.items()
         }
 
+        # == 定义归一化分母 ==
+        self.reward_normalizers = {}
+        for layer_id, layer in enumerate(self.chain.layers):
+            max_assign = sum(w.max_total_load for w in layer.workers)
+            max_cost = max_assign * self.config["worker_cost_range"][1]
+            max_util = max_assign * self.config["worker_utility_range"][1]
+
+            self.reward_normalizers[layer_id] = {
+                "max_assign": max_assign,
+                "max_cost": max_cost,
+                "max_util": max_util
+            }
+
     def reset(self, with_new_schedule=False):
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
@@ -179,31 +192,41 @@ class MultiplexEnv(gym.Env):
         total_util = 0.0
 
         for layer_id, kpi in step_kpis.items():
-            step_cost = kpi.get("step_cost", 0.0)
-            step_util = kpi.get("step_utility", 0.0)
+            normalizer = self.reward_normalizers[layer_id]
 
-            # 分配奖励（按分配量）
-            assign_bonus = assign_coef * assign_stats.get(layer_id, 0.0)
+            # 原始值（未归一化）用于日志记录
+            raw_cost = kpi.get("step_cost", 0.0)
+            raw_util = kpi.get("step_utility", 0.0)
+            raw_assign = assign_stats.get(layer_id, 0.0)
 
-            # 等待惩罚（每个未完成任务）
-            wait_penalty = 0.0
+            # 归一化后参与 reward 组合的值
+            step_cost = raw_cost / (normalizer["max_cost"] + 1e-6)
+            step_util = raw_util / (normalizer["max_util"] + 1e-6)
+            assign_bonus = assign_coef * (raw_assign / (normalizer["max_assign"] + 1e-6))
+
+            # 等待惩罚
+            raw_wait = 0.0
             for task in self.chain.layers[layer_id].task_queue:
                 wait_time = self.current_step - task.arrival_time
-                wait_penalty += wait_penalty_coef * wait_time / max_wait
+                raw_wait += wait_time
+            wait_penalty = wait_penalty_coef * raw_wait / max_wait
 
+            # 最终组合 reward（用于训练）
+            raw_reward = self.beta * raw_util - self.alpha * raw_cost + raw_assign - raw_wait
             reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
 
             layer_rewards[layer_id] = {
-                "cost": step_cost,
-                "utility": step_util,
-                "reward": reward,
-                "assign_bonus": assign_bonus,
-                "wait_penalty": wait_penalty
+                "cost": raw_cost,
+                "utility": raw_util,
+                "assign_bonus": raw_assign,
+                "wait_penalty": raw_wait,
+                "raw_reward": raw_reward,  # 未归一化的 reward，用于日志记录
+                "reward": reward  # 归一化之后的 reward，用于 PPO 训练
             }
 
             total_reward += reward
-            total_cost += step_cost
-            total_util += step_util
+            total_cost += raw_cost
+            total_util += raw_util
 
         reward_detail = {
             "layer_rewards": layer_rewards,
