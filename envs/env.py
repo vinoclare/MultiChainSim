@@ -49,7 +49,7 @@ class MultiplexEnv(gym.Env):
         )
 
         self.action_space = spaces.Dict({
-            layer_id: spaces.Box(low=0, high=10, shape=(len(self.worker_config[layer_id]), self.num_pad_tasks), dtype=np.int32)
+            layer_id: spaces.Box(low=0, high=1.0, shape=(len(self.worker_config[layer_id]), self.num_pad_tasks), dtype=np.float32)
             for layer_id in range(self.num_layers)
         })
 
