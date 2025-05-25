@@ -110,15 +110,17 @@ def process_obs(raw_obs, layer_id):
     return task_obs, worker_loads, worker_profile, global_context
 
 
-def compute_gae(rewards, dones, values, gamma, lam):
+def compute_gae(rewards, dones, values, last_value, gamma, lam):
     advantages = []
     gae = 0
-    values = values + [0]
+    values_ext = values + [last_value]
     for t in reversed(range(len(rewards))):
-        delta = rewards[t] + gamma * values[t + 1] * (1 - dones[t]) - values[t]
-        gae = delta + gamma * lam * (1 - dones[t]) * gae
+        mask = 1.0 - dones[t]
+        delta = rewards[t] + gamma * values_ext[t + 1] * mask - values_ext[t]
+        gae = delta + gamma * lam * mask * gae
         advantages.insert(0, gae)
-    returns = [a + v for a, v in zip(advantages, values[:-1])]
+
+    returns = [adv + val for adv, val in zip(advantages, values)]
     return advantages, returns
 
 
