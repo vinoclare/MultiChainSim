@@ -19,7 +19,7 @@
   "alpha": 0.5,
   "beta": 1.5,
   "num_pad_tasks": 20,
-  "assign_reward_coef": 0.5,
-  "wait_penalty_coef": 0.2,
+  "assign_reward_coef": 1.0,
+  "wait_penalty_coef": 1.0,
   "reset_schedule_every": 9999999
 }
