@@ -242,12 +242,12 @@ class Layer:
         total_assign_amount = 0.0
 
         num_workers = len(actions)
-        num_tasks = len(actions[0])
+        num_tasks = len(self.task_queue)
 
         # Step 1: soft masking 每个 task 上的分配意图（worker 维度归一化）
         masked_actions = [[0.0 for _ in range(num_tasks)] for _ in range(num_workers)]
 
-        for task_idx in range(min(num_tasks, len(self.task_queue))):
+        for task_idx in range(num_tasks):
             # 收集所有 worker 对该任务的意愿
             task_ratios = [actions[w][task_idx] for w in range(num_workers)]
             total_ratio = sum(task_ratios)

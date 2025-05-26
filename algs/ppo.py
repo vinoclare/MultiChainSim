@@ -63,7 +63,7 @@ class PPO:
 
         entropy = dist.entropy().sum(dim=[1, 2])
 
-        return value, action, action_log_probs, entropy
+        return value, action, action_log_probs, entropy, raw_action
 
     def predict(self, task_obs, worker_loads, worker_profile, global_context, valid_mask):
         task_obs = task_obs.to(self.device)
@@ -108,7 +108,14 @@ class PPO:
         mean, std, values = self.model(
             task_obs, worker_loads, worker_profile, global_context, valid_mask)
         dist = Normal(mean, std)
-        log_probs = dist.log_prob(actions).sum(dim=[1, 2])
+
+        tanh_a = actions * 2.0 - 1.0
+        tanh_a = torch.clamp(tanh_a, -0.999999, 0.999999)
+        raw_a = 0.5 * torch.log((1 + tanh_a) / (1 - tanh_a))
+        squash_corr = torch.log(1 - tanh_a ** 2 + 1e-6)
+        log_probs = dist.log_prob(raw_a) - squash_corr
+        log_probs = log_probs.sum(dim=[1, 2])
+
         entropy = dist.entropy().sum(dim=[1, 2]).mean()
 
         if self.norm_adv:
@@ -118,6 +125,14 @@ class PPO:
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages
         action_loss = -torch.min(surr1, surr2).mean()
+
+        if len(self._value_loss_buffer) < 3:
+            print("ratio:", ratio.min().item(), ratio.max().item())
+            print("adv  :", advantages.min().item(), advantages.max().item())
+            print("clip_fraction:",
+                  (ratio != torch.clamp(ratio, 1 - self.clip_param, 1 + self.clip_param)).float().mean().item())
+            print("entropy:", entropy.item(), "std:", std.mean().item())
+            print("value pred sample:", values[:5].detach().cpu().numpy())
 
         values = values.view(-1)
         if self.use_clipped_value_loss:

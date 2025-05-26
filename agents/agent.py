@@ -73,13 +73,14 @@ class IndustrialAgent:
 
         # Sample from policy
         if self.algo_type == "ppo":
-            value, action, log_prob, entropy = self.alg.sample(
+            value, action, log_prob, entropy, raw_action = self.alg.sample(
                 task_obs, worker_obs, profile, gctx, valid_mask)
             return (
                 value[0].detach().cpu().numpy(),
                 action[0].detach().cpu().numpy(),
                 log_prob[0].detach().cpu().numpy(),
-                entropy[0].detach().cpu().numpy()
+                entropy[0].detach().cpu().numpy(),
+                raw_action[0].detach().cpu().numpy()
             )
         else:
             # SAC

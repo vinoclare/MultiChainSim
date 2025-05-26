@@ -89,12 +89,20 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
     task_types = config["task_types"]
     num_layers = config["num_layers"]
     workers_per_layer = config["workers_per_layer"]
-    cost_range = config["worker_cost_range"]
-    util_range = config["worker_utility_range"]
     exec_efficiency_range = config["worker_exec_efficiency_range"]
     cap_range = config["worker_task_capacity_range"]
     total_capacity = random.randint(*config["worker_total_capacity_range"])
     fail_range = config["worker_failure_range"]
+
+    # ABCD四类采样区间
+    # 可根据实际情况调整（推荐不要重叠，便于分析）
+    abcd_profile = {
+        "A": {"cost": (1.0, 1.5), "utility": (2.5, 3.0)},
+        "B": {"cost": (2.5, 3.0), "utility": (2.5, 3.0)},
+        "C": {"cost": (1.0, 1.5), "utility": (1.0, 1.5)},
+        "D": {"cost": (2.5, 3.0), "utility": (1.0, 1.5)},
+    }
+    abcd_types = ["A", "B", "C", "D"]
 
     worker_layer_config = []
     for l in range(num_layers):
@@ -105,11 +113,19 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
             fail_map = {}
             exec_efficiency_map = {}
             for t in task_types:
-                cost_map[t] = round(random.uniform(*cost_range), 2)
-                util_map[t] = round(random.uniform(*util_range), 2)
+                # 随机选一个类型
+                label = random.choices(abcd_types, weights=[0.2, 0.3, 0.3, 0.2])[0]
+
+                # 按类型采样
+                c_rng = abcd_profile[label]["cost"]
+                u_rng = abcd_profile[label]["utility"]
+
+                cost_map[t] = round(random.uniform(*c_rng), 2)
+                util_map[t] = round(random.uniform(*u_rng), 2)
                 fail_map[t] = round(random.uniform(*fail_range), 3)
                 exec_efficiency_map[t] = round(random.uniform(*exec_efficiency_range), 2)
             cap_map = {t: random.randint(*cap_range) for t in task_types}
+
             worker_cfg = {
                 "cost_map": cost_map,
                 "utility_map": util_map,
@@ -120,4 +136,23 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
             }
             layer_cfg.append(worker_cfg)
         worker_layer_config.append(layer_cfg)
+    worker_layer_config = [[
+        {
+            'cost_map': {'A': 3.0, 'B': 1.0},
+            'utility_map': {'A': 3.0, 'B': 1.0},
+            'capacity_map': {'A': 50, 'B': 40},
+            'max_total_load': 121,
+            'failure_prob_map': {'A': 0.0, 'B': 0.0},
+            'exec_efficiency_coef': {'A': 1.0, 'B': 1.0}
+        },
+        {
+            'cost_map': {'A': 1.0, 'B': 3.0},
+            'utility_map': {'A': 1.0, 'B': 3.0},
+            'capacity_map': {'A': 42, 'B': 34},
+            'max_total_load': 121,
+            'failure_prob_map': {'A': 0.0, 'B': 0.0},
+            'exec_efficiency_coef': {'A': 1.0, 'B': 1.0}
+        }
+    ]]
     return worker_layer_config
+

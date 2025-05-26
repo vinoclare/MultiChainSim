@@ -32,7 +32,7 @@ max_steps = env_config["max_steps"]
 
 # ===== Hyperparameters =====
 num_episodes = ppo_config["num_episodes"]
-steps_per_episode = ppo_config["steps_per_episode"]
+steps_per_episode = env_config["max_steps"]
 update_epochs = ppo_config["update_epochs"]
 gamma = ppo_config["gamma"]
 lam = ppo_config["lam"]
@@ -82,7 +82,7 @@ for layer_id in range(num_layers):
         max_grad_norm=ppo_config["max_grad_norm"],
         writer=writer,
         global_step_ref=global_step,
-        total_training_steps=ppo_config["num_episodes"] * ppo_config["steps_per_episode"]
+        total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
     )
 
     agents[layer_id] = IndustrialAgent(alg, "ppo", env.num_pad_tasks)
@@ -142,6 +142,11 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
     cost_sums = {lid: [] for lid in agents}
     util_sums = {lid: [] for lid in agents}
 
+    num_total_tasks = 0
+    num_waiting_tasks = 0
+    num_done_tasks = 0
+    num_failed_tasks = 0
+
     for _ in range(eval_episodes):
         obs = eval_env.reset(with_new_schedule=False)
         episode_reward = {lid: 0.0 for lid in agents}
@@ -180,6 +185,20 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
             cost_sums[lid].append(episode_cost[lid])
             util_sums[lid].append(episode_util[lid])
 
+        for step_task_list in eval_env.task_schedule.values():
+            for task in step_task_list:
+                num_total_tasks += 1
+                status = task.status
+                if status == "waiting":
+                    num_waiting_tasks += 1
+                elif status == "done":
+                    num_done_tasks += 1
+                elif status == "failed":
+                    num_failed_tasks += 1
+
+    print(f"[Eval total tasks: {num_total_tasks / eval_episodes}, Waiting tasks: {num_waiting_tasks / eval_episodes}, "
+          f"Done tasks: {num_done_tasks / eval_episodes}, Failed tasks: {num_failed_tasks / eval_episodes}")
+
     # === 写入 TensorBoard ===
     for lid in agents:
         writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
@@ -196,9 +215,13 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
 reward_buffer = {lid: [] for lid in range(num_layers)}
 raw_reward_buffer = {lid: [] for lid in range(num_layers)}
 assign_bonus_buffer = {lid: [] for lid in range(num_layers)}
+raw_assign_bonus_buffer = {lid: [] for lid in range(num_layers)}
 wait_penalty_buffer = {lid: [] for lid in range(num_layers)}
+raw_wait_penalty_buffer = {lid: [] for lid in range(num_layers)}
 cost_buffer = {lid: [] for lid in range(num_layers)}
+raw_cost_buffer = {lid: [] for lid in range(num_layers)}
 util_buffer = {lid: [] for lid in range(num_layers)}
+raw_util_buffer = {lid: [] for lid in range(num_layers)}
 
 for episode in range(num_episodes):
     if episode % eval_interval == 0:
@@ -211,16 +234,20 @@ for episode in range(num_episodes):
     episode_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_raw_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_assign_bonus = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_raw_assign_bonus = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_wait_penalty = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_raw_wait_penalty = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_cost = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_raw_cost = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_util = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_raw_util = {layer_id: 0.0 for layer_id in range(num_layers)}
 
     for step in range(steps_per_episode):
         actions = {}
 
         for layer_id in range(num_layers):
             task_obs, worker_loads, worker_profile, global_context = process_obs(obs, layer_id)
-            value, action, logprob, _ = agents[layer_id].sample(
+            value, action, logprob, _, raw_action = agents[layer_id].sample(
                                 task_obs, worker_loads, worker_profile, global_context)
 
             actions[layer_id] = action
@@ -231,7 +258,7 @@ for episode in range(num_episodes):
             buffers[layer_id]['worker_profile'].append(worker_profile)
             buffers[layer_id]['global_context'].append(global_context)
             buffers[layer_id]['valid_mask'].append(valid_mask)
-            buffers[layer_id]['actions'].append(action)
+            buffers[layer_id]['actions'].append(raw_action)
             buffers[layer_id]['logprobs'].append(logprob)
             buffers[layer_id]['values'].append(value)
 
@@ -241,18 +268,26 @@ for episode in range(num_episodes):
             reward_scalar = reward_dict[1]["layer_rewards"][layer_id]["reward"]
             raw_reward_scalar = reward_dict[1]["layer_rewards"][layer_id]["raw_reward"]
             assign_bonus_scalar = reward_dict[1]["layer_rewards"][layer_id]["assign_bonus"]
+            raw_assign_bonus_scalar = reward_dict[1]["layer_rewards"][layer_id]["raw_assign"]
             wait_penalty_scalar = reward_dict[1]["layer_rewards"][layer_id]["wait_penalty"]
+            raw_wait_penalty_scalar = reward_dict[1]["layer_rewards"][layer_id]["raw_wait"]
             cost_scalar = reward_dict[1]['layer_rewards'][layer_id]['cost']
+            raw_cost_scalar = reward_dict[1]['layer_rewards'][layer_id]['raw_cost']
             util_scalar = reward_dict[1]['layer_rewards'][layer_id]['utility']
+            raw_util_scalar = reward_dict[1]['layer_rewards'][layer_id]['raw_utility']
 
             buffers[layer_id]['rewards'].append(reward_scalar)
             buffers[layer_id]['dones'].append(done)
             episode_rewards[layer_id] += reward_scalar
             episode_raw_rewards[layer_id] += raw_reward_scalar
             episode_assign_bonus[layer_id] += assign_bonus_scalar
+            episode_raw_assign_bonus[layer_id] += raw_assign_bonus_scalar
             episode_wait_penalty[layer_id] += wait_penalty_scalar
+            episode_raw_wait_penalty[layer_id] += raw_wait_penalty_scalar
             episode_cost[layer_id] += cost_scalar
+            episode_raw_cost[layer_id] += raw_cost_scalar
             episode_util[layer_id] += util_scalar
+            episode_raw_util[layer_id] += raw_util_scalar
         if done:
             break
 
@@ -279,9 +314,13 @@ for episode in range(num_episodes):
         reward_buffer[layer_id].append(episode_rewards[layer_id])
         raw_reward_buffer[layer_id].append(episode_raw_rewards[layer_id])
         assign_bonus_buffer[layer_id].append(episode_assign_bonus[layer_id])
+        raw_assign_bonus_buffer[layer_id].append(episode_raw_assign_bonus[layer_id])
         wait_penalty_buffer[layer_id].append(episode_wait_penalty[layer_id])
+        raw_wait_penalty_buffer[layer_id].append(episode_raw_wait_penalty[layer_id])
         cost_buffer[layer_id].append(episode_cost[layer_id])
+        raw_cost_buffer[layer_id].append(episode_raw_cost[layer_id])
         util_buffer[layer_id].append(episode_util[layer_id])
+        raw_util_buffer[layer_id].append(episode_raw_util[layer_id])
 
     # ===== 每 N 个 episode 写一次 TensorBoard 均值 =====
     if (episode + 1) % log_interval == 0:
@@ -292,18 +331,30 @@ for episode in range(num_episodes):
                               np.mean(raw_reward_buffer[layer_id]), episode)
             writer.add_scalar(f"layer_{layer_id}/avg_episode_assign_bonus",
                               np.mean(assign_bonus_buffer[layer_id]), episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_raw_assign_bonus",
+                              np.mean(raw_assign_bonus_buffer[layer_id]), episode)
             writer.add_scalar(f"layer_{layer_id}/avg_episode_wait_penalty",
                               np.mean(wait_penalty_buffer[layer_id]), episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_raw_wait_penalty",
+                              np.mean(raw_wait_penalty_buffer[layer_id]), episode)
             writer.add_scalar(f"layer_{layer_id}/avg_episode_cost",
                               np.mean(cost_buffer[layer_id]), episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_raw_cost",
+                              np.mean(raw_cost_buffer[layer_id]), episode)
             writer.add_scalar(f"layer_{layer_id}/avg_episode_utility",
                               np.mean(util_buffer[layer_id]), episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_raw_utility",
+                              np.mean(raw_util_buffer[layer_id]), episode)
             reward_buffer[layer_id].clear()
             raw_reward_buffer[layer_id].clear()
             assign_bonus_buffer[layer_id].clear()
+            raw_assign_bonus_buffer[layer_id].clear()
             wait_penalty_buffer[layer_id].clear()
+            raw_wait_penalty_buffer[layer_id].clear()
             cost_buffer[layer_id].clear()
+            raw_cost_buffer[layer_id].clear()
             util_buffer[layer_id].clear()
+            raw_util_buffer[layer_id].clear()
 
     # ===== GAE & PPO updates per layer =====
     for layer_id in range(num_layers):

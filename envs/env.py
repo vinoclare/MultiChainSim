@@ -90,10 +90,15 @@ class MultiplexEnv(gym.Env):
         return self._get_obs()
 
     def step(self, action_dict: Dict[int, Any]):
+        clipped_action_dict = {}
+        for layer_id, act in action_dict.items():
+            act = np.clip(act, 0.0, 1.0)
+            clipped_action_dict[layer_id] = act
+
         # 任务注入
         new_tasks = self.task_schedule.get(self.current_step, [])
         self.chain.insert_tasks(new_tasks)
-        assign_stats = self.chain.apply_action(action_dict)
+        assign_stats = self.chain.apply_action(clipped_action_dict)
         self.chain.step()
         self.current_step += 1
         obs = self._get_obs()
@@ -202,24 +207,30 @@ class MultiplexEnv(gym.Env):
             # 归一化后参与 reward 组合的值
             step_cost = raw_cost / (normalizer["max_cost"] + 1e-6)
             step_util = raw_util / (normalizer["max_util"] + 1e-6)
-            assign_bonus = assign_coef * (raw_assign / (normalizer["max_assign"] + 1e-6))
+            raw_assign *= assign_coef
+            assign_bonus = raw_assign / (normalizer["max_assign"] + 1e-6)
 
             # 等待惩罚
             raw_wait = 0.0
             for task in self.chain.layers[layer_id].task_queue:
                 wait_time = self.current_step - task.arrival_time
                 raw_wait += wait_time
-            wait_penalty = wait_penalty_coef * raw_wait / max_wait
+            raw_wait *= wait_penalty_coef
+            wait_penalty = raw_wait / max_wait
 
             # 最终组合 reward（用于训练）
             raw_reward = self.beta * raw_util - self.alpha * raw_cost + raw_assign - raw_wait
             reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
 
             layer_rewards[layer_id] = {
-                "cost": raw_cost,
-                "utility": raw_util,
-                "assign_bonus": raw_assign,
-                "wait_penalty": raw_wait,
+                "raw_cost": raw_cost,
+                "cost": step_cost,
+                "utility": step_util,
+                "raw_utility": raw_util,
+                "raw_assign": raw_assign,
+                "assign_bonus": assign_bonus,
+                "raw_wait": raw_wait,
+                "wait_penalty": wait_penalty,
                 "raw_reward": raw_reward,  # 未归一化的 reward，用于日志记录
                 "reward": reward  # 归一化之后的 reward，用于 PPO 训练
             }
