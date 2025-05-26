@@ -52,18 +52,12 @@ class PPO:
 
         mean, std, value = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
         dist = Normal(mean, std)
-        raw_action = dist.rsample()
-        tanh_action = torch.tanh(raw_action)
-        action = 0.5 * (tanh_action + 1.0)
-
-        log_prob = dist.log_prob(raw_action)
-        squash_correction = torch.log(1 - tanh_action ** 2 + 1e-6)
-        log_prob = log_prob - squash_correction
-        action_log_probs = log_prob.sum(dim=[1, 2])
-
+        action = dist.sample()
+        action = torch.clamp(action, 0, 1)
+        action_log_probs = dist.log_prob(action).sum(dim=[1, 2])
         entropy = dist.entropy().sum(dim=[1, 2])
 
-        return value, action, action_log_probs, entropy, raw_action
+        return value, action, action_log_probs, entropy
 
     def predict(self, task_obs, worker_loads, worker_profile, global_context, valid_mask):
         task_obs = task_obs.to(self.device)
@@ -72,9 +66,7 @@ class PPO:
         global_context = global_context.to(self.device)
 
         mean, _, _ = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
-        action = torch.tanh(mean)
-        action = 0.5 * (action + 1.0)
-        return action  # deterministic policy
+        return mean  # deterministic policy
 
     def value(self, task_obs, worker_loads):
         task_obs = task_obs.to(self.device)
@@ -108,14 +100,7 @@ class PPO:
         mean, std, values = self.model(
             task_obs, worker_loads, worker_profile, global_context, valid_mask)
         dist = Normal(mean, std)
-
-        tanh_a = actions * 2.0 - 1.0
-        tanh_a = torch.clamp(tanh_a, -0.999999, 0.999999)
-        raw_a = 0.5 * torch.log((1 + tanh_a) / (1 - tanh_a))
-        squash_corr = torch.log(1 - tanh_a ** 2 + 1e-6)
-        log_probs = dist.log_prob(raw_a) - squash_corr
-        log_probs = log_probs.sum(dim=[1, 2])
-
+        log_probs = dist.log_prob(actions).sum(dim=[1, 2])
         entropy = dist.entropy().sum(dim=[1, 2]).mean()
 
         if self.norm_adv:
@@ -125,14 +110,6 @@ class PPO:
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages
         action_loss = -torch.min(surr1, surr2).mean()
-
-        if len(self._value_loss_buffer) < 3:
-            print("ratio:", ratio.min().item(), ratio.max().item())
-            print("adv  :", advantages.min().item(), advantages.max().item())
-            print("clip_fraction:",
-                  (ratio != torch.clamp(ratio, 1 - self.clip_param, 1 + self.clip_param)).float().mean().item())
-            print("entropy:", entropy.item(), "std:", std.mean().item())
-            print("value pred sample:", values[:5].detach().cpu().numpy())
 
         values = values.view(-1)
         if self.use_clipped_value_loss:
@@ -180,7 +157,7 @@ class PPO:
                 self.writer.add_scalar("ppo/value_loss", np.mean(self._value_loss_buffer), step)
                 self.writer.add_scalar("ppo/policy_loss", np.mean(self._policy_loss_buffer), step)
                 self.writer.add_scalar("ppo/entropy", np.mean(self._entropy_buffer), step)
-                self.global_step_ref[0] += self.train_log_interval    # 更新 step 计数
+                self.global_step_ref[0] += 1  # 更新 step 计数
 
                 self._value_loss_buffer.clear()
                 self._policy_loss_buffer.clear()
