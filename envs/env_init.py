@@ -52,7 +52,10 @@ def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
 
     schedule = {}
     task_id = 0
-    for t in range(max_steps):
+    max_task_amount = config["task_amount_range"][1]
+    min_exec_efficiency = config["worker_exec_efficiency_range"][0]
+    max_exec_time = max_task_amount / min_exec_efficiency
+    for t in range(int(max_steps - max_exec_time)):
         if arrival_mode == "poisson":
             num_tasks = np.random.poisson(arrival_rate)
         else:

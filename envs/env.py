@@ -125,14 +125,14 @@ class MultiplexEnv(gym.Env):
             # —— 构造 worker_loads 特征 (n_worker, 2*n_task_type + 2) ——
             loads = []
             for w in layer.workers:
-                # 每类任务的剩余容量比（余量/最大容量） + 总负载比例
+                # 每类任务的负载余量 + 总负载余量
                 per_type_remain = []
                 for t in self.config["task_types"]:
                     cap = w.capacity_map.get(t, 1)
                     used = w.current_load_map.get(t, 0.0)
-                    per_type_remain.append((cap - used) / max(cap, 1))
-                # 总负载剩余比例
-                tot_remain = (w.max_total_load - w.total_current_load) / max(w.max_total_load, 1)
+                    per_type_remain.append(cap - used)
+                # 总负载余量
+                tot_remain = w.max_total_load - w.total_current_load
 
                 # 拼成长度 = n_task_type + 1
                 loads.append(per_type_remain + [tot_remain])
@@ -143,8 +143,8 @@ class MultiplexEnv(gym.Env):
             profiles = []
             for w in layer.workers:
                 avg_cost, avg_util = w.get_profile()
-                avg_cost = [ac / max(self.config["worker_cost_range"]) for ac in avg_cost]
-                avg_util = [au / max(self.config["worker_utility_range"]) for au in avg_util]
+                avg_cost = [ac / self.config["worker_cost_range"][1] for ac in avg_cost]
+                avg_util = [au / self.config["worker_utility_range"][1] for au in avg_util]
                 profiles.append(avg_cost + avg_util)
             worker_profile = np.array(profiles, dtype=np.float32)
 
