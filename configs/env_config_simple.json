@@ -10,6 +10,7 @@
   "workers_per_layer": [2],
   "worker_cost_range": [1.0, 1.5],
   "worker_utility_range": [2.0, 3.0],
+  "worker_exec_efficiency_range": [1.0, 3.0],
   "worker_task_capacity_range": [3, 5],
   "worker_total_capacity_range": [6, 10],
   "worker_failure_range": [0.0, 0.0],
