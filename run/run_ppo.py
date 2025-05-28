@@ -275,22 +275,37 @@ for episode in range(num_episodes):
 
     # ===== 每 N 个 episode 写一次 TensorBoard 均值 =====
     if (episode + 1) % log_interval == 0:
+        total_episode_reward = 0.0
+        total_episode_cost = 0.0
+        total_episode_util = 0.0
+
         for layer_id in range(num_layers):
-            writer.add_scalar(f"layer_{layer_id}/avg_episode_reward",
-                              np.mean(reward_buffer[layer_id]), episode)
-            writer.add_scalar(f"layer_{layer_id}/avg_episode_assign_bonus",
-                              np.mean(assign_bonus_buffer[layer_id]), episode)
-            writer.add_scalar(f"layer_{layer_id}/avg_episode_wait_penalty",
-                              np.mean(wait_penalty_buffer[layer_id]), episode)
-            writer.add_scalar(f"layer_{layer_id}/avg_episode_cost",
-                              np.mean(cost_buffer[layer_id]), episode)
-            writer.add_scalar(f"layer_{layer_id}/avg_episode_utility",
-                              np.mean(util_buffer[layer_id]), episode)
+            avg_reward = np.mean(reward_buffer[layer_id])
+            avg_assign = np.mean(assign_bonus_buffer[layer_id])
+            avg_wait = np.mean(wait_penalty_buffer[layer_id])
+            avg_cost = np.mean(cost_buffer[layer_id])
+            avg_util = np.mean(util_buffer[layer_id])
+
+            writer.add_scalar(f"layer_{layer_id}/avg_episode_reward", avg_reward, episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_episode_assign_bonus", avg_assign, episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_episode_wait_penalty", avg_wait, episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_episode_cost", avg_cost, episode)
+            writer.add_scalar(f"layer_{layer_id}/avg_episode_utility", avg_util, episode)
+
+            total_episode_reward += avg_reward
+            total_episode_cost += avg_cost
+            total_episode_util += avg_util
+
             reward_buffer[layer_id].clear()
             assign_bonus_buffer[layer_id].clear()
             wait_penalty_buffer[layer_id].clear()
             cost_buffer[layer_id].clear()
             util_buffer[layer_id].clear()
+
+        # 写入总 reward/cost/utility
+        writer.add_scalar("global/episode_total_reward", total_episode_reward, episode)
+        writer.add_scalar("global/episode_total_cost", total_episode_cost, episode)
+        writer.add_scalar("global/episode_total_utility", total_episode_util, episode)
 
     # ===== GAE & PPO updates per layer =====
     for layer_id in range(num_layers):
