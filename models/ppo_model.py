@@ -134,7 +134,6 @@ class PPOIndustrialModel(nn.Module):
         if valid_mask is not None:
             mask = valid_mask.unsqueeze(1).expand_as(mean)  # (B, W, T)
             mean = mean * mask
-            std = std * mask + (1 - mask) * 1e-6
             mask_pool = valid_mask.unsqueeze(-1)  # (B, T, 1)
             masked_t_feat = t_feat * mask_pool  # (B, T, D)
             sum_feat = masked_t_feat.sum(dim=1)  # (B, D)

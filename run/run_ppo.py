@@ -189,6 +189,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
 
 
 # ===== Training loop =====
+# 用于 log 的 buffers
 reward_buffer = {lid: [] for lid in range(num_layers)}
 assign_bonus_buffer = {lid: [] for lid in range(num_layers)}
 wait_penalty_buffer = {lid: [] for lid in range(num_layers)}
@@ -201,6 +202,10 @@ for episode in range(num_episodes):
 
     obs = env.reset()
     episode_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_assign_bonus = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_wait_penalty = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_cost = {layer_id: 0.0 for layer_id in range(num_layers)}
+    episode_util = {layer_id: 0.0 for layer_id in range(num_layers)}
 
     for step in range(steps_per_episode):
         actions = {}
@@ -233,17 +238,22 @@ for episode in range(num_episodes):
 
             buffers[layer_id]['rewards'].append(reward_scalar)
             buffers[layer_id]['dones'].append(done)
-            episode_rewards[layer_id] += reward_scalar
 
-            # 累加到缓冲区
-            reward_buffer[layer_id].append(episode_rewards[layer_id])
-            assign_bonus_buffer[layer_id].append(assign_bonus_scalar)
-            wait_penalty_buffer[layer_id].append(wait_penalty_scalar)
-            cost_buffer[layer_id].append(cost_scalar)
-            util_buffer[layer_id].append(util_scalar)
+            episode_rewards[layer_id] += reward_scalar
+            episode_assign_bonus[layer_id] += assign_bonus_scalar
+            episode_wait_penalty[layer_id] += wait_penalty_scalar
+            episode_cost[layer_id] += cost_scalar
+            episode_util[layer_id] += util_scalar
 
         if done:
             break
+
+    for layer_id in range(num_layers):
+        reward_buffer[layer_id].append(episode_rewards[layer_id])
+        assign_bonus_buffer[layer_id].append(episode_assign_bonus[layer_id])
+        wait_penalty_buffer[layer_id].append(episode_wait_penalty[layer_id])
+        cost_buffer[layer_id].append(episode_cost[layer_id])
+        util_buffer[layer_id].append(episode_util[layer_id])
 
     # ===== 统计各种任务状态的数量 =====
     num_total_tasks = 0

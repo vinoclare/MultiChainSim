@@ -157,7 +157,7 @@ class PPO:
                 self.writer.add_scalar("ppo/value_loss", np.mean(self._value_loss_buffer), step)
                 self.writer.add_scalar("ppo/policy_loss", np.mean(self._policy_loss_buffer), step)
                 self.writer.add_scalar("ppo/entropy", np.mean(self._entropy_buffer), step)
-                self.global_step_ref[0] += 1  # 更新 step 计数
+                self.global_step_ref[0] += self.train_log_interval  # 更新 step 计数
 
                 self._value_loss_buffer.clear()
                 self._policy_loss_buffer.clear()
