@@ -259,9 +259,12 @@ class Layer:
 
     def step(self, current_time: int) -> List[Tuple[Task, float, float, float]]:
         finished: List[Tuple[Task, float, float, float]] = []
+
+        # 执行每个 worker 的 step，收集每个 task 每步的 partial reward
         for worker in self.workers:
             worker.time = current_time
-            finished += worker.step()
+            step_result = worker.step()  # 现在每步也可能返回部分执行的任务
+            finished.extend(step_result)
 
         # 检查是否有任务超时失败
         timeout_failed = []
@@ -271,18 +274,18 @@ class Layer:
                 task.failed = True
                 timeout_failed.append((task, 0.0, self.failure_base_cost, self.failure_utility))
                 self.task_queue.remove(task)
-        finished += timeout_failed
 
-        # 收集所有超时失败的任务 ID
-        timeout_task_ids = {task.id for task, _, _, _ in timeout_failed}
+        finished.extend(timeout_failed)
 
         # 清除所有 worker 中已分配但该任务已超时的条目
+        timeout_task_ids = {task.id for task, _, _, _ in timeout_failed}
         for worker in self.workers:
             worker.processing_tasks = [
                 (t, ta, ca, u)
                 for (t, ta, ca, u) in worker.processing_tasks
                 if t.id not in timeout_task_ids
             ]
+
         return finished
 
     def get_kpi_snapshot(self) -> Dict:

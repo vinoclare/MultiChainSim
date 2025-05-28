@@ -142,20 +142,20 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
             }
             layer_cfg.append(worker_cfg)
 
-        # 临时调试
-        preset_cost_maps = [
-            {"A": 1.0},  # worker 0 的成本映射
-            {"A": 3.0},  # worker 1 的成本映射
-        ]
-        preset_util_maps = [
-            {"A": 1.0},  # worker 0 的效用映射
-            {"A": 3.0},  # worker 1 的效用映射
-        ]
-
-        # 修改 layer_cfg 中的 cost_map 和 util_map
-        for idx, wcfg in enumerate(layer_cfg):
-            wcfg["cost_map"] = preset_cost_maps[idx]
-            wcfg["utility_map"] = preset_util_maps[idx]
+        # # 临时调试
+        # preset_cost_maps = [
+        #     {"A": 1.0},  # worker 0 的成本映射
+        #     {"A": 3.0},  # worker 1 的成本映射
+        # ]
+        # preset_util_maps = [
+        #     {"A": 1.0},  # worker 0 的效用映射
+        #     {"A": 3.0},  # worker 1 的效用映射
+        # ]
+        #
+        # # 修改 layer_cfg 中的 cost_map 和 util_map
+        # for idx, wcfg in enumerate(layer_cfg):
+        #     wcfg["cost_map"] = preset_cost_maps[idx]
+        #     wcfg["utility_map"] = preset_util_maps[idx]
 
         worker_layer_config.append(layer_cfg)
     return worker_layer_config

@@ -175,18 +175,19 @@ class MultiplexEnv(gym.Env):
         total_util = 0.0
 
         for layer_id, kpi in step_kpis.items():
-            step_cost = kpi.get("step_cost", 0.0)
-            step_util = kpi.get("step_utility", 0.0)
+            step_cost = kpi.get("step_cost", 0.0)  # 当前步内所有 task 的 partial cost 累计
+            step_util = kpi.get("step_utility", 0.0)  # 当前步内所有 task 的 partial utility 累计
 
             # 分配奖励（按分配量）
             assign_bonus = assign_coef * assign_stats.get(layer_id, 0.0)
 
-            # 等待惩罚（每个未完成任务）
+            # 等待惩罚（遍历当前 task_queue）
             wait_penalty = 0.0
             for task in self.chain.layers[layer_id].task_queue:
                 wait_time = self.current_step - task.arrival_time
                 wait_penalty += wait_penalty_coef * wait_time
 
+            # 最终 reward（即时）
             reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
 
             layer_rewards[layer_id] = {

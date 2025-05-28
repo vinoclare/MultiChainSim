@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from utils import RunningMeanStd
 
 # ===== Load configurations =====
-env_config_path = '../configs/env_config_simple.json'
+env_config_path = '../configs/env_config_5.json'
 ppo_config_path = '../configs/ppo_config.json'
 with open(env_config_path, 'r') as f:
     env_config = json.load(f)
