@@ -110,12 +110,14 @@ class Worker:
         new_queue = []
 
         for task, total_amount, current_amount, unit_per_step in self.processing_tasks:
-            # task: 任务
-            # total_amount: 任务被分配到该Worker的总量
-            # current_amount: 任务剩余可执行量
-            # unit_per_step: 单位时间内可执行量
+            # task: 当前执行的任务
+            # total_amount: 分配给该worker的总任务量
+            # current_amount: 当前剩余量
+            # unit_per_step: 每步可执行量
+
             p = self.failure_prob_map.get(task.task_type, 0.001)
             if random.random() < p:
+                # 执行失败，强行结束
                 task.status = "failed"
                 task.failed = True
                 task.remaining_amount = 0
@@ -123,27 +125,37 @@ class Worker:
                 self.current_load_map[task.task_type] -= total_amount
                 self.total_current_load -= total_amount
                 cost = self.failure_exec_cost_base
-                self.cost_map[task.task_type] += cost
-                self.amount_map[task.task_type] += total_amount
                 utility = 0.0
+
+                self.total_cost_map[task.task_type] += cost
+                self.amount_map[task.task_type] += total_amount
+
                 finished.append((task, total_amount, cost, utility))
                 continue
 
+            # 成功执行一部分
             performed_amount = min(unit_per_step, current_amount)
             task.remaining_amount -= performed_amount
             current_amount -= performed_amount
+
+            # === 即时 reward（按步产生） ===
+            step_cost = self.get_cost(task, performed_amount)
+            step_utility = self.get_utility(task, performed_amount)
+
+            self.total_cost_map[task.task_type] += step_cost
+            self.total_util_map[task.task_type] += step_utility
+            self.amount_map[task.task_type] += performed_amount
+
             if current_amount <= 0:
+                # 当前worker上的这份任务已执行完
                 self.task_history.append((task, total_amount))
                 self.current_load_map[task.task_type] -= total_amount
                 self.total_current_load -= total_amount
-                cost = self.get_cost(task, total_amount)
-                utility = self.get_utility(task, total_amount)
-                finished.append((task, total_amount, cost, utility))
-                self.total_cost_map[task.task_type] += cost
-                self.total_util_map[task.task_type] += utility
-                self.amount_map[task.task_type] += total_amount
+                finished.append((task, performed_amount, step_cost, step_utility))
             else:
+                # 继续排队
                 new_queue.append((task, total_amount, current_amount, unit_per_step))
+                finished.append((task, performed_amount, step_cost, step_utility))  # <== 即时回报也记录下来
 
         self.processing_tasks = new_queue
         return finished

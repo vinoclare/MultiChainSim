@@ -2,7 +2,7 @@ import os
 from envs import MultiplexEnv
 from visualization.monitor import plot_task_trajectories
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "env_config_5.json")
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "env_config_simple.json")
 
 
 def round_robin_baseline(config_path: str, num_episodes: int = 1):
@@ -60,7 +60,7 @@ def round_robin_baseline(config_path: str, num_episodes: int = 1):
             total_reward += reward if isinstance(reward, (int, float)) else reward[0]
 
         print(f"Episode {ep+1} finished. Total Reward = {total_reward:.3f}")
-        plot_task_trajectories(env.chain.finished_tasks)
+        # plot_task_trajectories(env.chain.finished_tasks)
     env.close()
 
 

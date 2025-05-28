@@ -123,9 +123,9 @@ class PPO:
 
         # entropy_coef decay
         progress = self.global_step_ref[0] / self.total_training_steps
-        self.entropy_coef = self.initial_entropy_coef * (1 - progress)
+        entropy_coef = max(1e-3, self.initial_entropy_coef * (1 - progress))
 
-        loss = value_loss * self.value_loss_coef + action_loss - self.entropy_coef * entropy
+        loss = value_loss * self.value_loss_coef + action_loss - entropy_coef * entropy
 
         if lr:
             for param_group in self.optimizer.param_groups:
@@ -148,22 +148,33 @@ class PPO:
         self._policy_loss_buffer.append(action_loss.item())
         self._entropy_buffer.append(entropy.item())
 
+        # === Debug Logging for Diagnosis ===
         if self.writer is not None and self.global_step_ref is not None:
-            if len(self._value_loss_buffer) >= self.train_log_interval:
-                step = self.global_step_ref[0]
-                self.writer.add_scalar("ppo/clip_fraction", np.mean(self._clip_frac_buffer), step)
-                self.writer.add_scalar("ppo/v_prediction_error", np.mean(self._v_pred_error_buffer), step)
-                self.writer.add_scalar("ppo/action_mean", np.mean(self._action_mean_buffer), step)
-                self.writer.add_scalar("ppo/value_loss", np.mean(self._value_loss_buffer), step)
-                self.writer.add_scalar("ppo/policy_loss", np.mean(self._policy_loss_buffer), step)
-                self.writer.add_scalar("ppo/entropy", np.mean(self._entropy_buffer), step)
-                self.global_step_ref[0] += self.train_log_interval  # 更新 step 计数
+            step = self.global_step_ref[0]
+            self.global_step_ref[0] += 1
 
-                self._value_loss_buffer.clear()
-                self._policy_loss_buffer.clear()
-                self._entropy_buffer.clear()
-                self._clip_frac_buffer.clear()
-                self._v_pred_error_buffer.clear()
-                self._action_mean_buffer.clear()
+            self.writer.add_scalar("debug/reward_mean", returns.mean().item(), step)
+            self.writer.add_scalar("debug/reward_std", returns.std().item(), step)
+
+            self.writer.add_scalar("debug/value_pred_mean", values.mean().item(), step)
+            self.writer.add_scalar("debug/value_pred_std", values.std().item(), step)
+            self.writer.add_scalar("debug/value_abs_error", (values - returns).abs().mean().item(), step)
+
+            self.writer.add_scalar("debug/advantage_mean", advantages.mean().item(), step)
+            self.writer.add_scalar("debug/advantage_std", advantages.std().item(), step)
+            self.writer.add_scalar("debug/advantage_pos_percent", (advantages > 0).float().mean().item(), step)
+
+            self.writer.add_scalar("debug/ratio_mean", ratio.mean().item(), step)
+            self.writer.add_scalar("debug/clip_fraction", clip_fraction, step)
+            self.writer.add_scalar("debug/action_mean", actions.mean().item(), step)
+
+            # 可选：打印每个参数梯度范数（识别梯度断流）
+            total_norm = 0
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    norm = param.grad.norm().item()
+                    self.writer.add_scalar(f"debug/grad_norm/{name}", norm, step)
+                    total_norm += norm
+            self.writer.add_scalar("debug/grad_norm/total", total_norm, step)
 
         return value_loss.item(), action_loss.item(), entropy.item()

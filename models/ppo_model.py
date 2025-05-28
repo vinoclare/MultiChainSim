@@ -127,8 +127,8 @@ class PPOIndustrialModel(nn.Module):
 
         mean = self.actor_head(fusion).squeeze(-1)       # (B, W, T)
         mean = torch.sigmoid(mean)
-        std = torch.exp(self.log_std).expand_as(mean)  # (B, W, T)
-        std = torch.clamp(std, min=1e-6)
+        log_std = torch.clamp(self.log_std, min=-4, max=1)
+        std = torch.exp(log_std).expand_as(mean)  # (B, W, T)
 
         # 应用 valid mask（可选）
         if valid_mask is not None:

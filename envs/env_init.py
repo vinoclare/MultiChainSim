@@ -28,6 +28,7 @@ def load_env_config(config_path: str) -> dict:
     config.setdefault("worker_failure_range", [0.05, 0.2])
     config.setdefault("task_schedule_load_path", "")
     config.setdefault("is_save_schedule", True)
+    config.setdefault("worker_type_probs", [0.2, 0.3, 0.3, 0.2])
     return config
 
 
@@ -89,17 +90,38 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
     task_types = config["task_types"]
     num_layers = config["num_layers"]
     workers_per_layer = config["workers_per_layer"]
-    cost_range = config["worker_cost_range"]
-    util_range = config["worker_utility_range"]
     exec_efficiency_range = config["worker_exec_efficiency_range"]
     cap_range = config["worker_task_capacity_range"]
     total_capacity = random.randint(*config["worker_total_capacity_range"])
     fail_range = config["worker_failure_range"]
 
+    probs = config["worker_type_probs"]
+    assert len(probs) == 4 and abs(sum(probs) - 1.0) < 1e-6, \
+        "worker_type_probs 必须长度 4 且和为 1"
+
+    cost_min, cost_max = config["worker_cost_range"]
+    util_min, util_max = config["worker_utility_range"]
+    cost_mid = (cost_min + cost_max) / 2
+    util_mid = (util_min + util_max) / 2
+
     worker_layer_config = []
     for l in range(num_layers):
         layer_cfg = []
         for _ in range(workers_per_layer[l]):
+            t = random.choices([0, 1, 2, 3], weights=probs, k=1)[0]
+            if t == 0:  # A: high util, low cost
+                cost_range = (cost_min, cost_mid)
+                util_range = (util_mid, util_max)
+            elif t == 1:  # B: high util, high cost
+                cost_range = (cost_mid, cost_max)
+                util_range = (util_mid, util_max)
+            elif t == 2:  # C: low util, low cost
+                cost_range = (cost_min, cost_mid)
+                util_range = (util_min, util_mid)
+            else:  # D: low util, high cost
+                cost_range = (cost_mid, cost_max)
+                util_range = (util_min, util_mid)
+
             cost_map = {}
             util_map = {}
             fail_map = {}
@@ -119,5 +141,21 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
                 "exec_efficiency_coef": exec_efficiency_map
             }
             layer_cfg.append(worker_cfg)
+
+        # 临时调试
+        preset_cost_maps = [
+            {"A": 1.0},  # worker 0 的成本映射
+            {"A": 3.0},  # worker 1 的成本映射
+        ]
+        preset_util_maps = [
+            {"A": 1.0},  # worker 0 的效用映射
+            {"A": 3.0},  # worker 1 的效用映射
+        ]
+
+        # 修改 layer_cfg 中的 cost_map 和 util_map
+        for idx, wcfg in enumerate(layer_cfg):
+            wcfg["cost_map"] = preset_cost_maps[idx]
+            wcfg["utility_map"] = preset_util_maps[idx]
+
         worker_layer_config.append(layer_cfg)
     return worker_layer_config

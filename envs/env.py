@@ -33,7 +33,7 @@ class MultiplexEnv(gym.Env):
                     dtype=np.float32
                 ),
                 "worker_loads": spaces.Box(
-                    low=0, high=1,
+                    low=0, high=np.inf,
                     shape=(len(self.worker_config[layer_id]), num_task_types + 1),
                     dtype=np.float32
                 ),
@@ -49,7 +49,7 @@ class MultiplexEnv(gym.Env):
         )
 
         self.action_space = spaces.Dict({
-            layer_id: spaces.Box(low=0, high=10, shape=(len(self.worker_config[layer_id]), self.num_pad_tasks), dtype=np.int32)
+            layer_id: spaces.Box(low=0, high=1.0, shape=(len(self.worker_config[layer_id]), self.num_pad_tasks), dtype=np.float32)
             for layer_id in range(self.num_layers)
         })
 
@@ -185,7 +185,7 @@ class MultiplexEnv(gym.Env):
             wait_penalty = 0.0
             for task in self.chain.layers[layer_id].task_queue:
                 wait_time = self.current_step - task.arrival_time
-                wait_penalty += wait_penalty_coef * wait_time / max_wait
+                wait_penalty += wait_penalty_coef * wait_time
 
             reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
 
