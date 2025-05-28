@@ -187,6 +187,18 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
         print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
               f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
 
+    # === 写入所有层的总 reward、cost、utility 到 TensorBoard ===
+    total_reward_all = sum([np.mean(reward_sums[lid]) for lid in agents])
+    total_cost_all = sum([np.mean(cost_sums[lid]) for lid in agents])
+    total_util_all = sum([np.mean(util_sums[lid]) for lid in agents])
+
+    writer.add_scalar("eval/total_avg_reward", total_reward_all, global_step)
+    writer.add_scalar("eval/total_avg_cost", total_cost_all, global_step)
+    writer.add_scalar("eval/total_avg_utility", total_util_all, global_step)
+
+    print(f"[Eval Total] reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
+
+
 
 # ===== Training loop =====
 # 用于 log 的 buffers
