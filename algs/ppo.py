@@ -149,32 +149,32 @@ class PPO:
         self._entropy_buffer.append(entropy.item())
 
         # === Debug Logging for Diagnosis ===
-        if self.writer is not None and self.global_step_ref is not None:
-            step = self.global_step_ref[0]
-            self.global_step_ref[0] += 1
-
-            self.writer.add_scalar("debug/reward_mean", returns.mean().item(), step)
-            self.writer.add_scalar("debug/reward_std", returns.std().item(), step)
-
-            self.writer.add_scalar("debug/value_pred_mean", values.mean().item(), step)
-            self.writer.add_scalar("debug/value_pred_std", values.std().item(), step)
-            self.writer.add_scalar("debug/value_abs_error", (values - returns).abs().mean().item(), step)
-
-            self.writer.add_scalar("debug/advantage_mean", advantages.mean().item(), step)
-            self.writer.add_scalar("debug/advantage_std", advantages.std().item(), step)
-            self.writer.add_scalar("debug/advantage_pos_percent", (advantages > 0).float().mean().item(), step)
-
-            self.writer.add_scalar("debug/ratio_mean", ratio.mean().item(), step)
-            self.writer.add_scalar("debug/clip_fraction", clip_fraction, step)
-            self.writer.add_scalar("debug/action_mean", actions.mean().item(), step)
-
-            # 可选：打印每个参数梯度范数（识别梯度断流）
-            total_norm = 0
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    norm = param.grad.norm().item()
-                    self.writer.add_scalar(f"debug/grad_norm/{name}", norm, step)
-                    total_norm += norm
-            self.writer.add_scalar("debug/grad_norm/total", total_norm, step)
+        # if self.writer is not None and self.global_step_ref is not None:
+        #     step = self.global_step_ref[0]
+        #     self.global_step_ref[0] += 1
+        #
+        #     self.writer.add_scalar("debug/reward_mean", returns.mean().item(), step)
+        #     self.writer.add_scalar("debug/reward_std", returns.std().item(), step)
+        #
+        #     self.writer.add_scalar("debug/value_pred_mean", values.mean().item(), step)
+        #     self.writer.add_scalar("debug/value_pred_std", values.std().item(), step)
+        #     self.writer.add_scalar("debug/value_abs_error", (values - returns).abs().mean().item(), step)
+        #
+        #     self.writer.add_scalar("debug/advantage_mean", advantages.mean().item(), step)
+        #     self.writer.add_scalar("debug/advantage_std", advantages.std().item(), step)
+        #     self.writer.add_scalar("debug/advantage_pos_percent", (advantages > 0).float().mean().item(), step)
+        #
+        #     self.writer.add_scalar("debug/ratio_mean", ratio.mean().item(), step)
+        #     self.writer.add_scalar("debug/clip_fraction", clip_fraction, step)
+        #     self.writer.add_scalar("debug/action_mean", actions.mean().item(), step)
+        #
+        #     # 可选：打印每个参数梯度范数（识别梯度断流）
+        #     total_norm = 0
+        #     for name, param in self.model.named_parameters():
+        #         if param.grad is not None:
+        #             norm = param.grad.norm().item()
+        #             self.writer.add_scalar(f"debug/grad_norm/{name}", norm, step)
+        #             total_norm += norm
+        #     self.writer.add_scalar("debug/grad_norm/total", total_norm, step)
 
         return value_loss.item(), action_loss.item(), entropy.item()
