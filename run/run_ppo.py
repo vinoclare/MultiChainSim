@@ -23,10 +23,20 @@ with open(ppo_config_path, 'r') as f:
     ppo_config = json.load(f)
 
 # ===== Setup environment =====
-env = MultiplexEnv(env_config_path)
-eval_env = MultiplexEnv(env_config_path)
+train_schedule_path = "../configs/0/train_schedule_5.json"
+eval_schedule_path = "../configs/0/eval_schedule_5.json"
+worker_config_path = "../configs/0/worker_config_5.json"
+
+mode = env_config["mode"]
+if mode == "save":
+    env = MultiplexEnv(env_config_path, schedule_save_path=train_schedule_path, worker_config_save_path=worker_config_path)
+    eval_env = MultiplexEnv(env_config_path, schedule_save_path=eval_schedule_path)
+else:  # mode == "load"
+    env = MultiplexEnv(env_config_path, schedule_load_path=train_schedule_path, worker_config_load_path=worker_config_path)
+    eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
 eval_env.worker_config = env.worker_config
 eval_env.chain = IndustrialChain(eval_env.worker_config)
+
 num_layers = env_config["num_layers"]
 max_steps = env_config["max_steps"]
 
@@ -122,17 +132,6 @@ def compute_gae(rewards, dones, values, gamma, lam):
 
 
 def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
-    """
-    评估当前 agents 策略在 eval_env 上的表现（无探索）。
-    会记录每层的 avg reward, cost, utility 到 TensorBoard。
-
-    Args:
-        agents (Dict[int, PPOAgent]): 每一层的 agent。
-        eval_env (IndustrialEnv): 用于测试泛化性能的环境。
-        eval_episodes (int): 评估次数。
-        writer (SummaryWriter): TensorBoard writer。
-        global_step (int): 当前训练步数（用于写入 tag）。
-    """
     reward_sums = {lid: [] for lid in agents}
     assign_bouns_sum = {lid: [] for lid in agents}
     wait_penalty_sum = {lid: [] for lid in agents}
@@ -178,26 +177,26 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
             util_sums[lid].append(episode_util[lid])
 
     # === 写入 TensorBoard ===
-    for lid in agents:
-        writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bouns_sum[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sum[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
-        print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
-              f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
-
-    # === 写入所有层的总 reward、cost、utility 到 TensorBoard ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in agents])
     total_cost_all = sum([np.mean(cost_sums[lid]) for lid in agents])
     total_util_all = sum([np.mean(util_sums[lid]) for lid in agents])
+    log_interval = ppo_config['log_interval']
+    if global_step % log_interval == 0:
+        for lid in agents:
+            writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
+            writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bouns_sum[lid]), global_step)
+            writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sum[lid]), global_step)
+            writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
+            writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
+            print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
+                  f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
 
-    writer.add_scalar("eval/total_avg_reward", total_reward_all, global_step)
-    writer.add_scalar("eval/total_avg_cost", total_cost_all, global_step)
-    writer.add_scalar("eval/total_avg_utility", total_util_all, global_step)
+        # === 写入所有层的总 reward、cost、utility 到 TensorBoard ===
+        writer.add_scalar("eval/total_avg_reward", total_reward_all, global_step)
+        writer.add_scalar("eval/total_avg_cost", total_cost_all, global_step)
+        writer.add_scalar("eval/total_avg_utility", total_util_all, global_step)
 
     print(f"[Eval Total] reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
-
 
 
 # ===== Training loop =====

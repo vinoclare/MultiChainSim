@@ -27,15 +27,14 @@ def load_env_config(config_path: str) -> dict:
     config.setdefault("worker_total_capacity_range", [10, 20])
     config.setdefault("worker_failure_range", [0.05, 0.2])
     config.setdefault("task_schedule_load_path", "")
-    config.setdefault("is_save_schedule", True)
     config.setdefault("worker_type_probs", [0.2, 0.3, 0.3, 0.2])
     return config
 
 
-def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
-    if "task_schedule_load_path" in config and os.path.exists(config["task_schedule_load_path"]):
-        print(f"[INFO] Loading task schedule from {config['task_schedule_load_path']}")
-        with open(config["task_schedule_load_path"], "r") as f:
+def generate_task_schedule(config: Dict, load_path: str = "", save_path: str = "") -> Dict[int, List[Task]]:
+    if load_path and os.path.exists(load_path):
+        print(f"[INFO] Loading task schedule from {load_path}")
+        with open(load_path, "r") as f:
             raw = json.load(f)
         schedule = {
             int(t): [Task.from_dict(d) for d in task_list]
@@ -43,6 +42,7 @@ def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
         }
         return schedule
 
+    # ==== 自动生成逻辑 ====
     task_types = config["task_types"]
     task_route = config["task_route"]
     amount_min, amount_max = config["task_amount_range"]
@@ -60,7 +60,7 @@ def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
         if arrival_mode == "poisson":
             num_tasks = np.random.poisson(arrival_rate)
         else:
-            num_tasks = 0  # future: add other modes
+            num_tasks = 0
         for _ in range(num_tasks):
             task = Task(
                 id=task_id,
@@ -73,20 +73,31 @@ def generate_task_schedule(config: Dict) -> Dict[int, List[Task]]:
             schedule.setdefault(t, []).append(task)
             task_id += 1
 
-    if config.get("is_save_schedule", False):
-        os.makedirs("schedules", exist_ok=True)
-        timestamp = time.strftime("%Y-%m-%d-%H-%M-%S")
-        filename = f"schedules/{timestamp}.json"
-        with open(filename, "w") as f:
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "w") as f:
             json.dump({
                 str(t): [task.to_dict() for task in task_list]
                 for t, task_list in schedule.items()
             }, f)
-        print(f"[INFO] Saved task schedule to {filename}")
+        print(f"[INFO] Saved task schedule to {save_path}")
+
     return schedule
 
 
-def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
+def generate_worker_layer_config(config: Dict, load_path: str = "", save_path: str = "") -> List[List[dict]]:
+    if load_path and os.path.exists(load_path):
+        print(f"[INFO] Loading worker config from {load_path}")
+        with open(load_path, "r") as f:
+            raw = json.load(f)
+        # 转换为 List[List[dict]] 格式，并移除多余字段
+        raw_sorted = [raw[k] for k in sorted(raw.keys(), key=int)]
+        for layer in raw_sorted:
+            for worker_cfg in layer:
+                worker_cfg.pop("id", None)
+        return raw_sorted
+
+    # ==== 自动生成逻辑 ====
     task_types = config["task_types"]
     num_layers = config["num_layers"]
     workers_per_layer = config["workers_per_layer"]
@@ -94,20 +105,20 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
     cap_range = config["worker_task_capacity_range"]
     total_capacity = random.randint(*config["worker_total_capacity_range"])
     fail_range = config["worker_failure_range"]
-
     probs = config["worker_type_probs"]
+
     assert len(probs) == 4 and abs(sum(probs) - 1.0) < 1e-6, \
-        "worker_type_probs 必须长度 4 且和为 1"
+        "worker_type_probs 必须长度为 4 且总和为 1"
 
     cost_min, cost_max = config["worker_cost_range"]
     util_min, util_max = config["worker_utility_range"]
     cost_mid = (cost_min + cost_max) / 2
     util_mid = (util_min + util_max) / 2
 
-    worker_layer_config = []
-    for l in range(num_layers):
+    worker_layer_config = {}
+    for layer_id in range(num_layers):
         layer_cfg = []
-        for _ in range(workers_per_layer[l]):
+        for _ in range(workers_per_layer[layer_id]):
             t = random.choices([0, 1, 2, 3], weights=probs, k=1)[0]
             if t == 0:  # A: high util, low cost
                 cost_range = (cost_min, cost_mid)
@@ -125,37 +136,29 @@ def generate_worker_layer_config(config: Dict) -> List[List[dict]]:
             cost_map = {}
             util_map = {}
             fail_map = {}
-            exec_efficiency_map = {}
-            for t in task_types:
-                cost_map[t] = round(random.uniform(*cost_range), 2)
-                util_map[t] = round(random.uniform(*util_range), 2)
-                fail_map[t] = round(random.uniform(*fail_range), 3)
-                exec_efficiency_map[t] = round(random.uniform(*exec_efficiency_range), 2)
+            exec_eff_map = {}
+            for task_type in task_types:
+                cost_map[task_type] = round(random.uniform(*cost_range), 2)
+                util_map[task_type] = round(random.uniform(*util_range), 2)
+                fail_map[task_type] = round(random.uniform(*fail_range), 3)
+                exec_eff_map[task_type] = round(random.uniform(*exec_efficiency_range), 2)
             cap_map = {t: random.randint(*cap_range) for t in task_types}
+
             worker_cfg = {
                 "cost_map": cost_map,
                 "utility_map": util_map,
                 "capacity_map": cap_map,
                 "max_total_load": total_capacity,
                 "failure_prob_map": fail_map,
-                "exec_efficiency_coef": exec_efficiency_map
+                "exec_efficiency_coef": exec_eff_map
             }
             layer_cfg.append(worker_cfg)
+        worker_layer_config[layer_id] = layer_cfg
 
-        # # 临时调试
-        # preset_cost_maps = [
-        #     {"A": 1.0},  # worker 0 的成本映射
-        #     {"A": 3.0},  # worker 1 的成本映射
-        # ]
-        # preset_util_maps = [
-        #     {"A": 1.0},  # worker 0 的效用映射
-        #     {"A": 3.0},  # worker 1 的效用映射
-        # ]
-        #
-        # # 修改 layer_cfg 中的 cost_map 和 util_map
-        # for idx, wcfg in enumerate(layer_cfg):
-        #     wcfg["cost_map"] = preset_cost_maps[idx]
-        #     wcfg["utility_map"] = preset_util_maps[idx]
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "w") as f:
+            json.dump(worker_layer_config, f)
+        print(f"[INFO] Saved worker config to {save_path}")
 
-        worker_layer_config.append(layer_cfg)
-    return worker_layer_config
+    return [worker_layer_config[i] for i in range(num_layers)]

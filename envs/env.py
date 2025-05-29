@@ -7,12 +7,17 @@ from .env_init import load_env_config, generate_task_schedule, generate_worker_l
 
 
 class MultiplexEnv(gym.Env):
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, schedule_save_path: str = None, worker_config_save_path: str = None,
+                 schedule_load_path: str = None, worker_config_load_path: str = None):
         super().__init__()
+        self.schedule_save_path = schedule_save_path
+        self.worker_config_save_path = worker_config_save_path
+        self.schedule_load_path = schedule_load_path
+        self.worker_config_load_path = worker_config_load_path
 
         self.config = load_env_config(config_path)
-        self.task_schedule = generate_task_schedule(self.config)
-        self.worker_config = generate_worker_layer_config(self.config)
+        self.task_schedule = generate_task_schedule(self.config, save_path=self.schedule_save_path, load_path=self.schedule_load_path)
+        self.worker_config = generate_worker_layer_config(self.config, save_path=self.worker_config_save_path, load_path=self.worker_config_load_path)
         self.chain = IndustrialChain(self.worker_config)
 
         self.max_steps = self.config.get("max_steps", 50)
@@ -64,7 +69,7 @@ class MultiplexEnv(gym.Env):
         if with_new_schedule:
             self.alpha = np.random.uniform(0.5, 1.5)
             self.beta = np.random.uniform(0.5, 1.5)
-            self.task_schedule = generate_task_schedule(self.config)
+            self.task_schedule = generate_task_schedule(self.config, save_path=self.schedule_save_path)
         else:
             self.task_schedule = {
                 int(t): [Task.from_dict(d) for d in task_list]
