@@ -1,5 +1,5 @@
 {
-  "num_episodes": 100000,
+  "num_episodes": 10000,
   "steps_per_episode": 50,
   "eval_interval": 20,
   "eval_episodes": 5,
