@@ -7,7 +7,7 @@ from visualization.monitor import plot_task_trajectories
 episodes = 20
 eval_schedule_path = "../configs/0/train_schedule_5.json"
 eval_worker_path = "../configs/0/worker_config_5.json"
-config_path = '../configs/env_config_5.json'
+config_path = '../configs/0/env_config_5.json'
 
 # === 构造环境 ===
 env = MultiplexEnv(config_path, schedule_load_path=eval_schedule_path, worker_config_load_path=eval_worker_path)

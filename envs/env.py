@@ -67,9 +67,9 @@ class MultiplexEnv(gym.Env):
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
         if with_new_schedule:
-            self.alpha = np.random.uniform(0.5, 1.5)
-            self.beta = np.random.uniform(0.5, 1.5)
-            self.task_schedule = generate_task_schedule(self.config, save_path=self.schedule_save_path)
+            # self.alpha = np.random.uniform(0.5, 1.5)
+            # self.beta = np.random.uniform(0.5, 1.5)
+            self.task_schedule = generate_task_schedule(self.config)
         else:
             self.task_schedule = {
                 int(t): [Task.from_dict(d) for d in task_list]
@@ -170,7 +170,6 @@ class MultiplexEnv(gym.Env):
             assign_stats = {}
         assign_coef = self.config.get("assign_reward_coef", 0.1)
         wait_penalty_coef = self.config.get("wait_penalty_coef", 0.01)
-        max_wait = self.config.get("max_steps", 50)
 
         step_kpis = self.chain.collect_step_kpis()
 

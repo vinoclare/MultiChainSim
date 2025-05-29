@@ -14,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from utils import RunningMeanStd
 
 # ===== Load configurations =====
-env_config_path = '../configs/env_config_5.json'
+env_config_path = '../configs/0/env_config_5.json'
 ppo_config_path = '../configs/ppo_config.json'
 with open(env_config_path, 'r') as f:
     env_config = json.load(f)
@@ -39,6 +39,7 @@ eval_env.chain = IndustrialChain(eval_env.worker_config)
 
 num_layers = env_config["num_layers"]
 max_steps = env_config["max_steps"]
+reset_schedule_interval = env_config["reset_schedule_interval"]
 
 # ===== Hyperparameters =====
 num_episodes = ppo_config["num_episodes"]
@@ -211,7 +212,11 @@ for episode in range(num_episodes):
     if episode % eval_interval == 0:
         evaluate_policy(agents, eval_env, eval_episodes, writer, episode * max_steps)
 
-    obs = env.reset()
+    if (episode + 1) % reset_schedule_interval == 0:
+        obs = env.reset(with_new_schedule=True)
+    else:
+        obs = env.reset(with_new_schedule=False)
+
     episode_rewards = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_assign_bonus = {layer_id: 0.0 for layer_id in range(num_layers)}
     episode_wait_penalty = {layer_id: 0.0 for layer_id in range(num_layers)}
