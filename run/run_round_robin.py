@@ -1,14 +1,24 @@
 import os
+import numpy as np
 from envs import MultiplexEnv
 from visualization.monitor import plot_task_trajectories
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs", "env_config_simple.json")
+eval_schedule_path = "./configs/0/train_schedule_5.json"
+eval_worker_path = "./configs/0/worker_config_5.json"
+config_path = './configs/env_config_5.json'
+
+env = MultiplexEnv(config_path, schedule_load_path=eval_schedule_path, worker_config_load_path=eval_worker_path)
 
 
-def round_robin_baseline(config_path: str, num_episodes: int = 1):
-    env = MultiplexEnv(config_path=config_path)
+def round_robin_baseline(env, num_episodes: int = 20):
     num_layers = len(env.chain.layers)
     rr_pointer = [0] * num_layers
+
+    total_rewards = []
+    total_costs = []
+    total_utils = []
+    total_done = []
+    total_fails = []
 
     for ep in range(num_episodes):
         obs = env.reset()
@@ -35,7 +45,6 @@ def round_robin_baseline(config_path: str, num_episodes: int = 1):
                         cap_t = worker.capacity_map.get(task.task_type, 0)
                         used_t = worker.current_load_map.get(task.task_type, 0)
                         type_avail = cap_t - used_t
-
                         total_avail = worker.max_total_load - worker.total_current_load
 
                         assign_amt = min(remain, type_avail, total_avail)
@@ -50,19 +59,31 @@ def round_robin_baseline(config_path: str, num_episodes: int = 1):
                     rr_pointer[l] = ptr % num_workers
 
                 action_dict[l] = layer_action
-                # if l == 1:  # 你也可以打 l==2 查看 Layer 2
-                #     print(f"[RR] Action for Layer {l}:")
-                #     for i, row in enumerate(layer_action):
-                #         print(f"  Worker {i}: {row}")
 
             obs, reward, done, info = env.step(action_dict)
-            env.render()
             total_reward += reward if isinstance(reward, (int, float)) else reward[0]
 
-        print(f"Episode {ep+1} finished. Total Reward = {total_reward:.3f}")
-        # plot_task_trajectories(env.chain.finished_tasks)
+        kpi = info["kpi"]
+        print(f"[Episode {ep}] Reward: {total_reward:.2f} | Done: {kpi['tasks_done']} | Fail: {kpi['total_failures']} | Cost: {kpi['total_cost']:.2f} | Utility: {kpi['total_utility']:.2f}")
+
+        total_rewards.append(total_reward)
+        total_done.append(kpi["tasks_done"])
+        total_fails.append(kpi["total_failures"])
+        total_costs.append(kpi["total_cost"])
+        total_utils.append(kpi["total_utility"])
+
+    # === 汇总统计信息 ===
+    print("\n========== Average over all episodes ==========")
+    print(f"Avg Reward: {np.mean(total_rewards):.2f}")
+    print(f"Avg Tasks Done: {np.mean(total_done):.2f}")
+    print(f"Avg Failures: {np.mean(total_fails):.2f}")
+    print(f"Avg Cost: {np.mean(total_costs):.2f}")
+    print(f"Avg Utility: {np.mean(total_utils):.2f}")
+
+    # # 可视化最后一轮轨迹
+    # plot_task_trajectories(env.chain.finished_tasks)
     env.close()
 
 
 if __name__ == "__main__":
-    round_robin_baseline(config_path=CONFIG_PATH, num_episodes=1)
+    round_robin_baseline(env=env, num_episodes=20)
