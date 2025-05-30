@@ -177,6 +177,8 @@ class MultiplexEnv(gym.Env):
         total_reward = 0.0
         total_cost = 0.0
         total_util = 0.0
+        total_assign_bonus = 0.0
+        total_wait_penalty = 0.0
 
         for layer_id, kpi in step_kpis.items():
             step_cost = kpi.get("step_cost", 0.0)  # 当前步内所有 task 的 partial cost 累计
@@ -205,14 +207,17 @@ class MultiplexEnv(gym.Env):
             total_reward += reward
             total_cost += step_cost
             total_util += step_util
+            total_assign_bonus += assign_bonus
+            total_wait_penalty += wait_penalty
 
         reward_detail = {
             "layer_rewards": layer_rewards,
             "global_summary": {
                 "total_cost": total_cost,
                 "total_utility": total_util,
-                "alpha": self.alpha,
-                "beta": self.beta
+                "total_assign_bonus": total_assign_bonus,
+                "total_wait_penalty": total_wait_penalty,
+                "total_reward": total_reward
             }
         }
 

@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Tuple
+from collections import deque
 import random
 
 
@@ -79,7 +80,6 @@ class Worker:
 
         self.total_cost_map = {t: 0.0 for t in cost_map}
         self.total_util_map = {t: 0.0 for t in utility_map}
-        self.amount_map = {t: 0 for t in cost_map}
 
     def can_accept_amount(self, task: Task, amount: float) -> bool:
         type_cap = self.capacity_map.get(task.task_type, 0)
@@ -127,8 +127,9 @@ class Worker:
                 cost = self.failure_exec_cost_base
                 utility = 0.0
 
-                self.total_cost_map[task.task_type] += cost
-                self.amount_map[task.task_type] += total_amount
+                if total_amount > 0:
+                    self.total_cost_map[task.task_type] = 0.9 * self.total_cost_map[task.task_type] + 0.1 * cost / total_amount
+                    self.total_util_map[task.task_type] = 0.9 * self.total_util_map[task.task_type] + 0.1 * utility / total_amount
 
                 finished.append((task, total_amount, cost, utility))
                 continue
@@ -142,9 +143,9 @@ class Worker:
             step_cost = self.get_cost(task, performed_amount)
             step_utility = self.get_utility(task, performed_amount)
 
-            self.total_cost_map[task.task_type] += step_cost
-            self.total_util_map[task.task_type] += step_utility
-            self.amount_map[task.task_type] += performed_amount
+            if performed_amount > 0:
+                self.total_cost_map[task.task_type] = 0.9 * self.total_cost_map[task.task_type] + 0.1 * step_cost / performed_amount
+                self.total_util_map[task.task_type] = 0.9 * self.total_util_map[task.task_type] + 0.1 * step_utility / performed_amount
 
             if current_amount <= 0:
                 # 当前worker上的这份任务已执行完
@@ -176,13 +177,8 @@ class Worker:
         avg_cost = []
         avg_util = []
         for t in self.cost_map:
-            amount = self.amount_map.get(t, 0)
-            if amount > 0:
-                avg_cost.append(self.total_cost_map[t] / amount)
-                avg_util.append(self.total_util_map[t] / amount)
-            else:
-                avg_cost.append(0.0)
-                avg_util.append(0.0)
+            avg_cost.append(self.total_cost_map[t])
+            avg_util.append(self.total_util_map[t])
         return avg_cost, avg_util
 
 

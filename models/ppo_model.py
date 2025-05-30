@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 
 class RowWiseEncoder(nn.Module):
@@ -80,6 +80,9 @@ class PPOIndustrialModel(nn.Module):
         self.fusion_norm = nn.LayerNorm(3 * D)
         self.critic_norm = nn.LayerNorm(3 * D)
 
+        self.writer = SummaryWriter()
+        self.global_step = 0
+
     def forward(
         self,
         task_obs: torch.Tensor,
@@ -125,8 +128,8 @@ class PPOIndustrialModel(nn.Module):
         fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
         fusion = self.fusion_norm(fusion)
 
-        mean = self.actor_head(fusion).squeeze(-1)       # (B, W, T)
-        mean = torch.sigmoid(mean)
+        raw_mean = self.actor_head(fusion).squeeze(-1)       # (B, W, T)
+        mean = torch.sigmoid(raw_mean)
         log_std = torch.clamp(self.log_std, min=-4, max=1)
         std = torch.exp(log_std).expand_as(mean)  # (B, W, T)
 
@@ -147,5 +150,11 @@ class PPOIndustrialModel(nn.Module):
         cv_in = torch.cat([t_pool, w_pool, g_feat], dim=-1)  # (B, 2D+D)
         cv_in = self.critic_norm(cv_in)
         value = self.shared_critic(cv_in).squeeze(-1)        # (B,)
+
+        raw_mean = raw_mean * mask
+        if self.global_step % 100 == 0:
+            self.writer.add_scalar('mean', raw_mean.sum(), global_step=self.global_step)
+            self.writer.add_scalar('std', std.sum(), global_step=self.global_step)
+        self.global_step += 1
 
         return mean, std, value

@@ -43,7 +43,7 @@ reset_schedule_interval = env_config["reset_schedule_interval"]
 
 # ===== Hyperparameters =====
 num_episodes = ppo_config["num_episodes"]
-steps_per_episode = ppo_config["steps_per_episode"]
+steps_per_episode = env_config["max_steps"]
 update_epochs = ppo_config["update_epochs"]
 gamma = ppo_config["gamma"]
 lam = ppo_config["lam"]
@@ -92,7 +92,7 @@ for layer_id in range(num_layers):
         max_grad_norm=ppo_config["max_grad_norm"],
         writer=writer,
         global_step_ref=global_step,
-        total_training_steps=ppo_config["num_episodes"] * ppo_config["steps_per_episode"]
+        total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
     )
 
     agents[layer_id] = IndustrialAgent(alg, "ppo", env.num_pad_tasks)
@@ -115,8 +115,8 @@ def process_obs(raw_obs, layer_id):
     layer_obs = raw_obs[layer_id]
     task_obs = layer_obs['task_queue']
     worker_loads = layer_obs['worker_loads']
-    worker_profile = layer_obs.get('worker_profile')  # 新增
-    global_context = raw_obs.get('global_context')  # 新增
+    worker_profile = layer_obs.get('worker_profile')
+    global_context = raw_obs.get('global_context')
     return task_obs, worker_loads, worker_profile, global_context
 
 
@@ -139,7 +139,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
     cost_sums = {lid: [] for lid in agents}
     util_sums = {lid: [] for lid in agents}
 
-    for _ in range(eval_episodes):
+    for episode in range(eval_episodes):
         obs = eval_env.reset(with_new_schedule=False)
         episode_reward = {lid: 0.0 for lid in agents}
         episode_assign_bonus = {lid: 0.0 for lid in agents}
@@ -154,15 +154,16 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
                 task_obs, worker_loads, worker_profile, global_context = process_obs(obs, lid)
                 action = agents[lid].predict(task_obs, worker_loads, worker_profile, global_context)
                 actions[lid] = action
+                print(f"Layer {lid} action sum: {action.sum():.4f}, max: {action.max():.4f}")
 
-            obs, reward_dict, done, _ = eval_env.step(actions)
+            obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
 
             for lid in agents:
-                layer_reward = reward_dict[1]["layer_rewards"][lid]["reward"]
-                layer_assign_bonus = reward_dict[1]["layer_rewards"][lid]["assign_bonus"]
-                layer_wait_penalty = reward_dict[1]["layer_rewards"][lid]["wait_penalty"]
-                layer_cost = reward_dict[1]["layer_rewards"][lid]["cost"]
-                layer_util = reward_dict[1]["layer_rewards"][lid]["utility"]
+                layer_reward = reward_detail["layer_rewards"][lid]["reward"]
+                layer_assign_bonus = reward_detail["layer_rewards"][lid]["assign_bonus"]
+                layer_wait_penalty = reward_detail["layer_rewards"][lid]["wait_penalty"]
+                layer_cost = reward_detail["layer_rewards"][lid]["cost"]
+                layer_util = reward_detail["layer_rewards"][lid]["utility"]
 
                 episode_reward[lid] += layer_reward
                 episode_assign_bonus[lid] += layer_assign_bonus
@@ -176,6 +177,24 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
             wait_penalty_sum[lid].append(episode_wait_penalty[lid])
             cost_sums[lid].append(episode_cost[lid])
             util_sums[lid].append(episode_util[lid])
+
+        # ===== 统计各种任务状态的数量 =====
+        num_total_tasks = 0
+        num_waiting_tasks = 0
+        num_done_tasks = 0
+        num_failed_tasks = 0
+        for step_task_list in eval_env.task_schedule.values():
+            for task in step_task_list:
+                num_total_tasks += 1
+                status = task.status
+                if status == "waiting":
+                    num_waiting_tasks += 1
+                elif status == "done":
+                    num_done_tasks += 1
+                elif status == "failed":
+                    num_failed_tasks += 1
+        print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
+              f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # === 写入 TensorBoard ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in agents])
@@ -243,14 +262,14 @@ for episode in range(num_episodes):
             buffers[layer_id]['logprobs'].append(logprob)
             buffers[layer_id]['values'].append(value)
 
-        obs, reward_dict, done, _ = env.step(actions)
+        obs, (total_reward, reward_detail), done, _ = env.step(actions)
 
         for layer_id in range(num_layers):
-            reward_scalar = reward_dict[1]["layer_rewards"][layer_id]["reward"]
-            assign_bonus_scalar = reward_dict[1]["layer_rewards"][layer_id]["assign_bonus"]
-            wait_penalty_scalar = reward_dict[1]["layer_rewards"][layer_id]["wait_penalty"]
-            cost_scalar = reward_dict[1]['global_summary']['total_cost']
-            util_scalar = reward_dict[1]['global_summary']['total_utility']
+            reward_scalar = reward_detail["layer_rewards"][layer_id]["reward"]
+            assign_bonus_scalar = reward_detail["layer_rewards"][layer_id]["assign_bonus"]
+            wait_penalty_scalar = reward_detail["layer_rewards"][layer_id]["wait_penalty"]
+            cost_scalar = reward_detail["layer_rewards"][layer_id]["cost"]
+            util_scalar = reward_detail["layer_rewards"][layer_id]["utility"]
 
             buffers[layer_id]['rewards'].append(reward_scalar)
             buffers[layer_id]['dones'].append(done)
