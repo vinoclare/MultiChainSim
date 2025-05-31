@@ -152,7 +152,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
             actions = {}
             for lid in agents:
                 task_obs, worker_loads, worker_profile, global_context = process_obs(obs, lid)
-                action = agents[lid].predict(task_obs, worker_loads, worker_profile, global_context)
+                value, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, worker_profile, global_context)
                 actions[lid] = action
                 print(f"Layer {lid} action sum: {action.sum():.4f}, max: {action.max():.4f}")
 
