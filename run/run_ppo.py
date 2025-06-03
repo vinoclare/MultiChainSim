@@ -52,6 +52,7 @@ hidden_dim = ppo_config["hidden_dim"]
 eval_interval = ppo_config["eval_interval"]
 eval_episodes = ppo_config["eval_episodes"]
 log_interval = ppo_config["log_interval"]
+device = ppo_config["device"]
 
 agents = {}
 buffers = {}
@@ -95,7 +96,7 @@ for layer_id in range(num_layers):
         total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
     )
 
-    agents[layer_id] = IndustrialAgent(alg, "ppo", env.num_pad_tasks)
+    agents[layer_id] = IndustrialAgent(alg, "ppo", device, env.num_pad_tasks)
 
     buffers[layer_id] = {
         'task_obs': [],
@@ -154,7 +155,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
                 task_obs, worker_loads, worker_profile, global_context = process_obs(obs, lid)
                 value, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, worker_profile, global_context)
                 actions[lid] = action
-                print(f"Layer {lid} action sum: {action.sum():.4f}, max: {action.max():.4f}")
+                # print(f"Layer {lid} action sum: {action.sum():.4f}, max: {action.max():.4f}")
 
             obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
 

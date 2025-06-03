@@ -15,5 +15,5 @@
   "max_grad_norm": 0.5,
   "return_normalization": true,
   "num_workers": 20,
-  "device": "cpu"
+  "device": "cuda"
 }
