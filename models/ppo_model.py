@@ -80,7 +80,7 @@ class PPOIndustrialModel(nn.Module):
         self.fusion_norm = nn.LayerNorm(3 * D)
         self.critic_norm = nn.LayerNorm(3 * D)
 
-        self.writer = SummaryWriter()
+        # self.writer = SummaryWriter()
         self.global_step = 0
 
     def forward(
@@ -151,10 +151,10 @@ class PPOIndustrialModel(nn.Module):
         cv_in = self.critic_norm(cv_in)
         value = self.shared_critic(cv_in).squeeze(-1)        # (B,)
 
-        raw_mean = raw_mean * mask
-        if self.global_step % 100 == 0:
-            self.writer.add_scalar('mean', raw_mean.sum(), global_step=self.global_step)
-            self.writer.add_scalar('std', std.sum(), global_step=self.global_step)
-        self.global_step += 1
+        # raw_mean = raw_mean * mask
+        # if self.global_step % 100 == 0:
+        #     self.writer.add_scalar('mean', raw_mean.sum(), global_step=self.global_step)
+        #     self.writer.add_scalar('std', std.sum(), global_step=self.global_step)
+        # self.global_step += 1
 
         return mean, std, value
