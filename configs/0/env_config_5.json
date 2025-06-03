@@ -8,7 +8,7 @@
   "task_timeout_range": [30, 80],
   "num_layers": 5,
   "workers_per_layer": [5, 3, 4, 5, 3],
-  "worker_cost_range": [1.0, 1.5],
+  "worker_cost_range": [0.5, 1.5],
   "worker_utility_range": [2.0, 3.0],
   "worker_exec_efficiency_range": [2.0, 2.0],
   "worker_task_capacity_range": [3, 10],
