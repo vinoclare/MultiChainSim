@@ -193,7 +193,7 @@ def main():
             max_grad_norm=ppo_config["max_grad_norm"],
             writer=writer,
             device=device,
-            global_step_ref=global_step * num_workers,
+            global_step_ref=global_step,
             total_training_steps=num_episodes * max_steps
         )
         agents[lid] = IndustrialAgent(alg, "ppo", device, num_pad_tasks)
@@ -366,7 +366,7 @@ def main():
 
             # === 每 eval_interval 执行评估 ===
             if episode_counter % eval_interval == 0:
-                evaluate_policy(agents, eval_env, eval_episodes, writer, episode_counter * max_steps)
+                evaluate_policy(agents, eval_env, eval_episodes, writer, num_workers * episode_counter * max_steps)
 
     # ===== 全部训练完成后，关闭 worker =====
     for conn in conns:
