@@ -14,12 +14,13 @@ class PPO:
                  initial_lr=2.5e-4,
                  eps=1e-5,
                  max_grad_norm=0.5,
+                 device="cuda",
                  use_clipped_value_loss=True,
                  norm_adv=True,
                  writer=None,
                  global_step_ref=None,
                  total_training_steps=None):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
 
         self.clip_param = clip_param

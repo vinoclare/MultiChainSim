@@ -158,6 +158,7 @@ def main():
     log_interval = ppo_config["log_interval"]
     num_episodes = ppo_config["num_episodes"]
     num_workers = ppo_config.get("num_workers", 4)  # 默认 4 个 rollout 进程
+    device = ppo_config["device"]
 
     # ===== TensorBoard & 全局状态 =====
     log_dir = '../logs/ppo_dist/' + time.strftime("%Y%m%d-%H%M%S")
@@ -191,10 +192,11 @@ def main():
             initial_lr=ppo_config["initial_lr"],
             max_grad_norm=ppo_config["max_grad_norm"],
             writer=writer,
+            device=device,
             global_step_ref=global_step * num_workers,
             total_training_steps=num_episodes * max_steps
         )
-        agents[lid] = IndustrialAgent(alg, "ppo", num_pad_tasks)
+        agents[lid] = IndustrialAgent(alg, "ppo", device, num_pad_tasks)
 
     # ===== 启动 rollout_worker 子进程 =====
     workers = []
