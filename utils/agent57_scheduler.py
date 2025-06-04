@@ -19,6 +19,7 @@ class SoftUCB:
         self.c = c
         self.counts = [0] * K            # 每条策略被选中的次数
         self.avg_returns = [0.0] * K     # 每条策略的滑动平均回报
+        self.avg_real_returns = [0.0] * K
         self.total_pulls = 0             # 所有策略被选总次数
         self.init_round_robin = init_round_robin
 
@@ -59,3 +60,10 @@ class SoftUCB:
         # 滑动平均更新
         n = self.counts[pid]
         self.avg_returns[pid] += (episode_return - self.avg_returns[pid]) / n
+
+    def update_real(self, pid: int, real_return: float):
+        """更新 ‘真’Return 的滑动平均，用于评估阶段 greedy 选。"""
+        # 只按 pid 对应的一条 avg_real_returns 做增量式滑动平均
+        # 注意：不更新 total_pulls 和 counts，这里只要对 avg_real_returns 做平滑即可
+        n = self.counts[pid]  # 也可另设 real_counts[pid]，简单起见沿用 counts[pid]
+        self.avg_real_returns[pid] += (real_return - self.avg_real_returns[pid]) / n

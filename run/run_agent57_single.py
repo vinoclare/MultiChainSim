@@ -101,11 +101,12 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     # 5. 主循环：按 Episode 轮训
     for episode in range(agent57_config["num_episodes"]):
         # 每个 episode 开始时，重置环境并清空所有层的 buffer
-        raw_obs = env.reset()
+        raw_obs = env.reset(with_new_schedule=False)
         for buf in buffers:
             buf.clear()
         # 记录每层这轮的累积回报
         episode_returns = [0.0 for _ in range(n_layers)]
+        episode_rewards = [0.0 for _ in range(n_layers)]
         # 为每一层在本 Episode 一开始选定一个子策略（不在每个 step 中切换）
         pids = []
         for layer_id in range(n_layers):
@@ -170,12 +171,12 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             # 5.3 收集每层的 reward、归一化后存入对应 buffer
             for layer_id in range(n_layers):
                 data = step_data_per_layer[layer_id]
-                pid = pids[layer_id]
                 beta = data["beta"]
 
                 # 从 reward_detail 中提取该层原始效用和成本
                 layer_u = reward_detail["layer_rewards"][layer_id]["utility"]
                 layer_c = reward_detail["layer_rewards"][layer_id]["cost"]
+                layer_reward = reward_detail["layer_rewards"][layer_id]["reward"]
 
                 # 归一化
                 eps = 1e-8
@@ -188,6 +189,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 # 组合即时奖励
                 r_comb = beta * u_n + (1 - beta) * (-c_n)
                 episode_returns[layer_id] += r_comb
+                episode_rewards[layer_id] += layer_reward
 
                 # 把本 step 的所有信息存到该层的 buffer
                 buffers[layer_id].store(
@@ -227,11 +229,11 @@ def run_agent57_multi_layer(env: MultiplexEnv,
         # 5.4 本 Episode 结束：依次对每层进行更新
         for layer_id in range(n_layers):
             pid = pids[layer_id]
-            beta = betas[pid]
             gamma = gammas[pid]
 
             # 5.4.1 更新该层的调度器：使用本层累积回报
             schedulers[layer_id].update(pid, episode_returns[layer_id])
+            schedulers[layer_id].update_real(pid, episode_rewards[layer_id])
 
             # 5.4.2 计算该层 GAE，并调用 Agent.learn
             batch = buffers[layer_id].to_tensors(device=device)
@@ -270,18 +272,20 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             # 5.4.3 记录每层训练日志
             if episode % agent57_config["log_interval"] == 0:
                 writer.add_scalar(f"train/layer{layer_id}_episode_return", episode_returns[layer_id], episode)
+                writer.add_scalar(f"train/layer{layer_id}_episode_reward", episode_rewards[layer_id], episode)
                 writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, episode)
                 writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, episode)
                 writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, episode)
                 writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id], episode)
+                writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id], episode)
 
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
             # 5.5.1 先为各层选取 Greedy 子策略 PID
             greedy_pids = []
             for layer_id in range(n_layers):
-                avg_list = schedulers[layer_id].avg_returns
-                greedy_pid = int(np.argmax(avg_list))
+                real_list = schedulers[layer_id].avg_real_returns
+                greedy_pid = int(np.argmax(real_list))  # 环境原生回报最好的子策略
                 greedy_pids.append(greedy_pid)
 
             # 5.5.2 准备统计容器
@@ -344,7 +348,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
                     # 5.5.3.3 从 reward_detail 中拆分累加各层指标
                     for layer_id in range(n_layers):
-                        layer_reward = reward_detail["layer_rewards"][lid]["reward"]
+                        layer_reward = reward_detail["layer_rewards"][layer_id]["reward"]
                         layer_u = reward_detail["layer_rewards"][layer_id]["utility"]
                         layer_c = reward_detail["layer_rewards"][layer_id]["cost"]
                         layer_assign = reward_detail["layer_rewards"][layer_id]["assign_bonus"]

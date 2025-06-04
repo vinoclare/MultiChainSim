@@ -24,7 +24,7 @@ class MultiStrategyAgent:
                  initial_lr: float,
                  max_grad_norm: float,
                  lam: float,
-                 device: str = "cpu"):
+                 device: torch.device = torch.device('cpu'),):
         """
         Args:
             betas:       List[float], β_k 列表，长度 K
