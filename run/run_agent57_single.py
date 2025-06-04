@@ -324,14 +324,22 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         gctx_t = torch.tensor(gctx, dtype=torch.float32).unsqueeze(0).to(device)
                         valid_mask_t = torch.tensor(valid_mask, dtype=torch.float32).unsqueeze(0).to(device)
 
-                        with torch.no_grad():
-                            mean, _, _, _ = agents[layer_id].model(
-                                task_obs_t, worker_loads_t, worker_profiles_t,
-                                gctx_t, valid_mask_t, pid
-                            )
-                        actions[layer_id] = mean.squeeze(0).cpu().numpy()
+                        # mean as action
+                        # with torch.no_grad():
+                        #     mean, _, _, _ = agents[layer_id].model(
+                        #         task_obs_t, worker_loads_t, worker_profiles_t,
+                        #         gctx_t, valid_mask_t, pid
+                        #     )
+                        # actions[layer_id] = mean.squeeze(0).cpu().numpy()
 
-                    # 5.5.3.2 将所有层的动作一次性喂给 eval_env.step
+                        # sample action
+                        with torch.no_grad():
+                            v_u, v_c, action_t, logp_t, _ = agents[layer_id].sample(
+                                task_obs_t, worker_loads_t, worker_profiles_t, gctx_t, valid_mask_t, pid
+                            )
+                        actions[layer_id] = action_t.squeeze(0).cpu().numpy()
+
+                        # 5.5.3.2 将所有层的动作一次性喂给 eval_env.step
                     obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
 
                     # 5.5.3.3 从 reward_detail 中拆分累加各层指标
