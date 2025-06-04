@@ -11,7 +11,7 @@ import time
 import random
 from torch.utils.tensorboard import SummaryWriter
 
-from utils import RunningMeanStd
+from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
 env_config_path = '../configs/0/env_config_5.json'

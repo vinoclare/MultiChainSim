@@ -1,4 +1,3 @@
-import os
 import time
 import json
 import torch
@@ -6,12 +5,11 @@ import numpy as np
 from multiprocessing import Pipe
 
 from envs.rollout_worker import RolloutWorker
-from envs import IndustrialChain
 from envs.env import MultiplexEnv
 from models.ppo_model import PPOIndustrialModel
 from algs.ppo import PPO
 from agents.agent import IndustrialAgent
-from utils import RunningMeanStd
+from utils.utils import RunningMeanStd
 from torch.utils.tensorboard import SummaryWriter
 
 
