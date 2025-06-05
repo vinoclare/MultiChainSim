@@ -58,7 +58,7 @@ agents = {}
 buffers = {}
 global_step = [0]
 
-log_dir = '../logs/ppo/' + time.strftime("%Y%m%d-%H%M%S")
+log_dir = f'../logs/ppo/{num_layers}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir=log_dir)
 return_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
 

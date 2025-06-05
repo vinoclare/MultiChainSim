@@ -96,7 +96,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
         buffers.append(RolloutBuffer())
 
     # 4. TensorBoard Writer
-    log_dir = '../logs/agent57/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs/agent57/{num_layers}/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir)
     return_u_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
     return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
@@ -461,11 +461,12 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
 if __name__ == "__main__":
     # 配置文件路径
-    env_config_path = '../configs/5/env_config.json'
+    num_layers = 5
+    env_config_path = f'../configs/{num_layers}/env_config.json'
     agent57_config_path = '../configs/agent57_config.json'
-    train_schedule_path = "../configs/5/train_schedule.json"
-    eval_schedule_path = "../configs/5/eval_schedule.json"
-    worker_config_path = "../configs/5/worker_config.json"
+    train_schedule_path = f"../configs/{num_layers}/train_schedule.json"
+    eval_schedule_path = f"../configs/{num_layers}/eval_schedule.json"
+    worker_config_path = f"../configs/{num_layers}/worker_config.json"
 
     # 创建训练与评估环境
     env = MultiplexEnv(env_config_path,
