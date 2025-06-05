@@ -431,7 +431,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
                 eval_log_buffer["reward"][layer_id].append(avg_r)
                 eval_log_buffer["cost"][layer_id].append(avg_c)
-                eval_log_buffer["utility"][layer_id].append(avg_u)
+                eval_log_buffer["util"][layer_id].append(avg_u)
                 eval_log_buffer["assign"][layer_id].append(avg_a)
                 eval_log_buffer["wait"][layer_id].append(avg_w)
 
