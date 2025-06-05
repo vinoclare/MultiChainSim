@@ -108,7 +108,7 @@ def compute_gae(rewards, dones, values, next_value, gamma=0.99, lam=0.95):
 
     参数:
       rewards:   numpy 数组，长度为 T，表示每一步的即时 reward。
-      dones:     numpy 数组，长度为 T，表示每一步之后是否终止（1=done, 0=非终止）。
+      dones:     numpy 数组，长度为 T，表示每一步之后是否终止（1=done, 5=非终止）。
       values:    numpy 数组，长度为 T，表示 Critic 在每一步对 V(s_t) 的估计。
       next_value: float 或 numpy 标量，表示在“截断”或“最后一步”之后的 V(s_{T+1})。
       gamma:     折扣因子 γ。

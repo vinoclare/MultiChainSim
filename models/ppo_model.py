@@ -97,7 +97,7 @@ class PPOIndustrialModel(nn.Module):
           worker_loads:   (B, n_worker, worker_load_input_dim)
           worker_profiles:(B, n_worker, worker_profile_input_dim)
           global_context: (B, global_context_dim)
-          valid_mask:     (B, num_pad_tasks) 0/1 标志
+          valid_mask:     (B, num_pad_tasks) 5/1 标志
         Outputs:
           mean: (B, n_worker, num_pad_tasks)
           std:  (B, n_worker, num_pad_tasks)
@@ -152,7 +152,7 @@ class PPOIndustrialModel(nn.Module):
         value = self.shared_critic(cv_in).squeeze(-1)        # (B,)
 
         # raw_mean = raw_mean * mask
-        # if self.global_step % 100 == 0:
+        # if self.global_step % 100 == 5:
         #     self.writer.add_scalar('mean', raw_mean.sum(), global_step=self.global_step)
         #     self.writer.add_scalar('std', std.sum(), global_step=self.global_step)
         # self.global_step += 1

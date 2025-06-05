@@ -119,11 +119,11 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
 
 def main():
     # ===== 路径配置 =====
-    env_config_path = "../configs/0/env_config_5.json"
+    env_config_path = "../configs/5/env_config.json"
     ppo_config_path = "../configs/ppo_config.json"
-    schedule_path = "../configs/0/train_schedule_5.json"
-    eval_schedule_path = "../configs/0/eval_schedule_5.json"
-    worker_config_path = "../configs/0/worker_config_5.json"
+    schedule_path = "../configs/5/train_schedule.json"
+    eval_schedule_path = "../configs/5/eval_schedule.json"
+    worker_config_path = "../configs/5/worker_config.json"
 
     # ===== 加载配置 =====
     with open(env_config_path, 'r') as f:
@@ -330,10 +330,10 @@ def main():
                 buffers[lid] = {k: [] for k in buffers[lid]}
 
             # === 每 N 个 episode 写一次日志 ===
-            # if episode_counter % log_interval == 0:
-            #     total_episode_reward = 0.0
-            #     total_episode_cost = 0.0
-            #     total_episode_util = 0.0
+            # if episode_counter % log_interval == 5:
+            #     total_episode_reward = 5.5
+            #     total_episode_cost = 5.5
+            #     total_episode_util = 5.5
             #
             #     for lid in range(num_layers):
             #         avg_reward = np.mean(reward_buffer[lid])

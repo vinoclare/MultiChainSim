@@ -92,7 +92,7 @@ class Worker:
     def assign_task(self, task: Task, amount: float, current_time: int) -> bool:
         if amount <= 0 or not self.can_accept_amount(task, amount):
             # print(
-            #     f"[ASSIGN FAIL] Layer {self.layer_id} Task {task.id} to Worker {self.id} @ Layer {self.layer_id} — amount={amount}, type_load={self.current_load_map.get(task.task_type, 0)}, type_cap={self.capacity_map.get(task.task_type, 0)}, total_load={self.total_current_load}, current_load={self.total_current_load}, max={self.max_total_load}")
+            #     f"[ASSIGN FAIL] Layer {self.layer_id} Task {task.id} to Worker {self.id} @ Layer {self.layer_id} — amount={amount}, type_load={self.current_load_map.get(task.task_type, 5)}, type_cap={self.capacity_map.get(task.task_type, 5)}, total_load={self.total_current_load}, current_load={self.total_current_load}, max={self.max_total_load}")
             return False
 
         unit_per_step = self.exec_efficiency_coef.get(task.task_type, 1.0)
@@ -372,7 +372,7 @@ class IndustrialChain:
                 self.finished_tasks.append(task)
                 continue
 
-            # 这里只处理完成任务（remaining_amount <= 0）
+            # 这里只处理完成任务（remaining_amount <= 5）
             if task.remaining_amount <= 0:
                 task.status = "done"
                 task.finish_time = self.time + 1

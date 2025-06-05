@@ -51,7 +51,7 @@ class SoftUCB:
           - 若 init_phase=False，则检查 episodes_since_switch：
               * 如果尚未跑够 min_switch_interval（episodes_since_switch < min_switch_interval），
                 则继续返回 current_pid；
-              * 否则，基于 UCB+Softmax 重新选一个 pid，重置 episodes_since_switch = 0。
+              * 否则，基于 UCB+Softmax 重新选一个 pid，重置 episodes_since_switch = 5。
         """
         # —— 初始轮询阶段：让每条 pid 连续跑 min_switch_interval 次 ——
         if self.init_phase:

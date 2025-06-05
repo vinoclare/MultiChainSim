@@ -14,7 +14,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
-env_config_path = '../configs/0/env_config_5.json'
+num_layers = 2
+env_config_path = f'../configs/{num_layers}/env_config.json'
 ppo_config_path = '../configs/ppo_config.json'
 with open(env_config_path, 'r') as f:
     env_config = json.load(f)
@@ -23,9 +24,9 @@ with open(ppo_config_path, 'r') as f:
     ppo_config = json.load(f)
 
 # ===== Setup environment =====
-train_schedule_path = "../configs/0/train_schedule_5.json"
-eval_schedule_path = "../configs/0/eval_schedule_5.json"
-worker_config_path = "../configs/0/worker_config_5.json"
+train_schedule_path = f"../configs/{num_layers}/train_schedule.json"
+eval_schedule_path = f"../configs/{num_layers}/eval_schedule.json"
+worker_config_path = f"../configs/{num_layers}/worker_config.json"
 
 mode = env_config["mode"]
 if mode == "save":
@@ -37,7 +38,6 @@ else:  # mode == "load"
 eval_env.worker_config = env.worker_config
 eval_env.chain = IndustrialChain(eval_env.worker_config)
 
-num_layers = env_config["num_layers"]
 max_steps = env_config["max_steps"]
 reset_schedule_interval = env_config["reset_schedule_interval"]
 

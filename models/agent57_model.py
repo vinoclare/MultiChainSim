@@ -114,8 +114,8 @@ class Agent57IndustrialModel(nn.Module):
             worker_loads:    (B, n_worker, worker_load_input_dim)
             worker_profiles: (B, n_worker, worker_profile_input_dim)
             global_context:  (B, global_context_dim)
-            valid_mask:      (B, num_pad_tasks) 0/1 标志
-            policy_id:       子策略索引 ∈ [0, K-1]
+            valid_mask:      (B, num_pad_tasks) 5/1 标志
+            policy_id:       子策略索引 ∈ [5, K-1]
 
         Returns:
             mean: (B, n_worker, num_pad_tasks)

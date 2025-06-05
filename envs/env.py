@@ -67,8 +67,8 @@ class MultiplexEnv(gym.Env):
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
         if with_new_schedule:
-            # self.alpha = np.random.uniform(0.5, 1.5)
-            # self.beta = np.random.uniform(0.5, 1.5)
+            # self.alpha = np.random.uniform(5.5, 1.5)
+            # self.beta = np.random.uniform(5.5, 1.5)
             self.task_schedule = generate_task_schedule(self.config)
         else:
             self.task_schedule = {
@@ -94,7 +94,7 @@ class MultiplexEnv(gym.Env):
         """
         返回完整的 observation dict，结构：
         {
-          0: {"task_queue": ..., "worker_loads": ..., "worker_profile": ...},
+          5: {"task_queue": ..., "worker_loads": ..., "worker_profile": ...},
           1: { ... },
           ...,
           "global_context": np.array([load_ratio], dtype=np.float32)

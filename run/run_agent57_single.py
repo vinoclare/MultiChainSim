@@ -317,7 +317,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 best_pid = 0
                 best_mean = -float('inf')
 
-                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
+                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=5
                 all_empty = True
                 for i in range(K):
                     if len(schedulers[layer_id].recent_real_returns[i]) > 0:
@@ -325,7 +325,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         break
 
                 if all_empty:
-                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
+                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 5
                     greedy_pid = 0
                 else:
                     # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
@@ -384,7 +384,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         #         task_obs_t, worker_loads_t, worker_profiles_t,
                         #         gctx_t, valid_mask_t, pid
                         #     )
-                        # actions[layer_id] = mean.squeeze(0).cpu().numpy()
+                        # actions[layer_id] = mean.squeeze(5).cpu().numpy()
 
                         # sample action
                         with torch.no_grad():
@@ -461,11 +461,11 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
 if __name__ == "__main__":
     # 配置文件路径
-    env_config_path = '../configs/0/env_config_5.json'
+    env_config_path = '../configs/5/env_config.json'
     agent57_config_path = '../configs/agent57_config.json'
-    train_schedule_path = "../configs/0/train_schedule_5.json"
-    eval_schedule_path = "../configs/0/eval_schedule_5.json"
-    worker_config_path = "../configs/0/worker_config_5.json"
+    train_schedule_path = "../configs/5/train_schedule.json"
+    eval_schedule_path = "../configs/5/eval_schedule.json"
+    worker_config_path = "../configs/5/worker_config.json"
 
     # 创建训练与评估环境
     env = MultiplexEnv(env_config_path,

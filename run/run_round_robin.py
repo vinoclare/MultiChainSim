@@ -3,9 +3,9 @@ import numpy as np
 from envs import MultiplexEnv
 from visualization.monitor import plot_task_trajectories
 
-eval_schedule_path = "./configs/0/train_schedule_5.json"
-eval_worker_path = "./configs/0/worker_config_5.json"
-config_path = './configs/env_config_5.json'
+eval_schedule_path = "./configs/5/train_schedule.json"
+eval_worker_path = "./configs/5/worker_config.json"
+config_path = './configs/env_config.json'
 
 env = MultiplexEnv(config_path, schedule_load_path=eval_schedule_path, worker_config_load_path=eval_worker_path)
 
