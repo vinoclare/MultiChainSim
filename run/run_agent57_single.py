@@ -37,6 +37,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     n_worker = env_config['workers_per_layer']
     num_pad_tasks = env_config["num_pad_tasks"]
     max_steps = env_config["max_steps"]
+    num_layers = len(env_config["workers_per_layer"])
 
     # 任务维度、负载维度、属性维度（与单层一致）
     n_task_types = len(env_config["task_types"])
@@ -95,8 +96,9 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
     # 4. TensorBoard Writer
     log_dir = '../logs/agent57/' + time.strftime("%Y%m%d-%H%M%S")
-    os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir)
+    return_u_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
+    return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
 
     # 5. 主循环：按 Episode 轮训
     for episode in range(agent57_config["num_episodes"]):
@@ -243,18 +245,27 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             # 5.4.2 计算该层 GAE，并调用 Agent.learn
             batch = buffers[layer_id].to_tensors(device=device)
             # GAE: 效用和成本分别计算
-            ret_u, adv_u = compute_gae(
+            ret_u, _ = compute_gae(
                 batch["rewards_u"].cpu().numpy(),
                 batch["dones"].cpu().numpy(),
                 batch["values_u"].cpu().numpy(),
                 gamma, agent57_config["lam"]
             )
-            ret_c, adv_c = compute_gae(
+            ret_c, _ = compute_gae(
                 (-batch["rewards_c"].cpu().numpy()),
                 batch["dones"].cpu().numpy(),
                 (-batch["values_c"].cpu().numpy()),
                 gamma, agent57_config["lam"]
             )
+
+            # Normalization
+            ret_u_np = np.array(ret_u)
+            ret_c_np = np.array(ret_c)
+            return_u_rms[layer_id].update(ret_u_np)
+            return_c_rms[layer_id].update(ret_c_np)
+            ret_u = return_u_rms[layer_id].normalize(ret_u_np)
+            ret_c = return_c_rms[layer_id].normalize(ret_c_np)
+
             returns_u_t = torch.tensor(ret_u, dtype=torch.float32).to(device)
             returns_c_t = torch.tensor(ret_c, dtype=torch.float32).to(device)
 
@@ -336,7 +347,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 episode_r = {lid: 0.0 for lid in range(n_layers)}
                 episode_a = {lid: 0.0 for lid in range(n_layers)}
                 episode_w = {lid: 0.0 for lid in range(n_layers)}
-                episode_all_sum = 0.0  # 同时累加所有层的回报
 
                 done = False
                 while not done:
@@ -387,10 +397,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         episode_c[layer_id] += layer_c
                         episode_a[layer_id] += layer_assign
                         episode_w[layer_id] += layer_wait
-                        # 层级总回报的定义（与你 run_ppo.py 一致）
                         episode_r[layer_id] += layer_reward
-
-                        episode_all_sum += layer_reward  # 同步累加到“所有层总回报”
 
                 # 5.5.3.4 本次 eval_run 回合结束后，将各层和“所有层总回报”保存到对应列表
                 for layer_id in range(n_layers):
@@ -399,9 +406,11 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                     eval_util_sums[layer_id].append(episode_u[layer_id])
                     eval_assign_sums[layer_id].append(episode_a[layer_id])
                     eval_wait_sums[layer_id].append(episode_w[layer_id])
-                eval_all_layers_sum.append(episode_all_sum)
 
             # 5.5.4 计算各层及“所有层总回报”的平均，并写入 TensorBoard
+            total_reward_all = sum([np.mean(eval_reward_sums[lid]) for lid in range(n_layers)])
+            total_cost_all = sum([np.mean(eval_cost_sums[lid]) for lid in range(n_layers)])
+            total_util_all = sum([np.mean(eval_util_sums[lid]) for lid in range(n_layers)])
             for layer_id in range(n_layers):
                 avg_r = float(np.mean(eval_reward_sums[layer_id]))
                 avg_c = float(np.mean(eval_cost_sums[layer_id]))
@@ -416,8 +425,9 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty", avg_w, episode)
 
             # 新增：记录“所有层总回报”在多个 eval_runs 中的平均
-            avg_all_layers = float(np.mean(eval_all_layers_sum))
-            writer.add_scalar("global/eval_avg_reward", avg_all_layers, episode)
+            writer.add_scalar("global/eval_avg_reward", total_reward_all, episode)
+            writer.add_scalar("global/eval_avg_cost", total_cost_all, episode)
+            writer.add_scalar("global/eval_avg_utility", total_util_all, episode)
 
     writer.close()
 

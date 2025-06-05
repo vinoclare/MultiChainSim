@@ -102,37 +102,42 @@ class RolloutBuffer:
         }
 
 
-def compute_gae(rewards, dones, values, gamma, lam):
+def compute_gae(rewards, dones, values, next_value, gamma=0.99, lam=0.95):
     """
-    计算带 dones 信息的 GAE，并返回 (returns, advantages)。
+    计算 GAE，并返回 (returns, advantages)。
 
-    Args:
-        rewards (list or np.ndarray of float): 形状 (T,) 的即时 reward 序列（可正可负）。
-        dones   (list or np.ndarray of int):   形状 (T,) 的终止标志序列，done[t] = 1 表示第 t 步结束后进入终止状态。
-        values  (list or np.ndarray of float): 形状 (T,) 的 value 函数预测值 V(s_t)。
-        gamma   (float): 折扣因子 γ。
-        lam     (float):  GAE 参数 λ。
+    参数:
+      rewards:   numpy 数组，长度为 T，表示每一步的即时 reward。
+      dones:     numpy 数组，长度为 T，表示每一步之后是否终止（1=done, 0=非终止）。
+      values:    numpy 数组，长度为 T，表示 Critic 在每一步对 V(s_t) 的估计。
+      next_value: float 或 numpy 标量，表示在“截断”或“最后一步”之后的 V(s_{T+1})。
+      gamma:     折扣因子 γ。
+      lam:       GAE 中的 λ。
 
-    Returns:
-        returns    (list of float): 长度 T 的蒙特卡洛回报（return），等于 advantage + values[t]。
-        advantages (list of float): 长度 T 的 Advantage 值，使用 GAE 公式计算。
+    返回值:
+      returns:      长度为 T 的列表，表示每一步的目标 return (target) = advantage + values[t]。
+      advantages:   长度为 T 的列表，表示每一步的 advantage。
     """
+
     T = len(rewards)
     advantages = [0.0] * T
-    gae = 0.0
+    lastgaelam = 0.0
 
-    # 在末尾 append 一个 0，表示终止后 V(s_{T}) = 0
-    # 注意要先把 values 转为列表再拼接，否则 numpy 会报维度错误
-    values = list(values) + [0.0]
+    # 把 values 补一个末端值，用 next_value 代替
+    # 这样 values_extended[t+1] 对应的就是 V(s_{t+1})，即便 t = T-1，也能取到 next_value
+    values_extended = list(values) + [next_value]
 
-    # 从后向前递推
+    # 从后往前计算 delta 和 advantage
     for t in reversed(range(T)):
-        # 如果 dones[t] == 1，表示第 t 步结束后环境终止，则 next_nonterminal = 0，让上一个序列与未来隔离
+        # 计算下一步是否非终止
+        # 如果 dones[t] = 1，说明执行第 t 步得到 reward 后进入的是终止状态，无需带入 V(s_{t+1})
         next_nonterminal = 1.0 - dones[t]
-        delta = rewards[t] + gamma * values[t + 1] * next_nonterminal - values[t]
-        gae = delta + gamma * lam * next_nonterminal * gae
-        advantages[t] = gae
+        # delta_t = r_t + γ * V(s_{t+1}) * (1 - done_t) - V(s_t)
+        delta = rewards[t] + gamma * values_extended[t + 1] * next_nonterminal - values_extended[t]
+        # advantage 的递归公式：A_t = δ_t + γ * λ * (1 - done_t) * A_{t+1}
+        lastgaelam = delta + gamma * lam * next_nonterminal * lastgaelam
+        advantages[t] = lastgaelam
 
-    # 计算 return = advantage + value
-    returns = [adv + val for adv, val in zip(advantages, values[:-1])]
+    # 计算 returns：R_t = A_t + V(s_t)
+    returns = [advantages[t] + values_extended[t] for t in range(T)]
     return returns, advantages
