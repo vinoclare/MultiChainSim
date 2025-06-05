@@ -14,7 +14,7 @@
   "worker_task_capacity_range": [3, 10],
   "worker_total_capacity_range": [10, 20],
   "worker_failure_range": [0.0001, 0.001],
-  "mode": "save",
+  "mode": "load",
   "alpha": 0.2,
   "beta": 0.8,
   "num_pad_tasks": 10,
