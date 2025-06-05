@@ -233,6 +233,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
               f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
         # 5.4 本 Episode 结束：依次对每层进行更新
+        current_steps = (episode + 1) * max_steps
         for layer_id in range(n_layers):
             schedulers[layer_id].increment_episode_count()
             pid = pids[layer_id]
@@ -281,21 +282,20 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 returns_u=returns_u_t,
                 returns_c=returns_c_t,
                 log_probs_old=batch["logps"],
-                dones_batch=batch["dones"],
-                rewards_u_batch=batch["rewards_u"],
-                rewards_c_batch=batch["rewards_c"],
-                policy_id=pid
+                policy_id=pid,
+                global_steps=current_steps,
+                total_training_steps=agent57_config["num_episodes"] * max_steps
             )
 
             # 5.4.3 记录每层训练日志
             if episode % agent57_config["log_interval"] == 0:
-                writer.add_scalar(f"train/layer{layer_id}_episode_return", episode_returns[layer_id], episode)
-                writer.add_scalar(f"train/layer{layer_id}_episode_reward", episode_rewards[layer_id], episode)
-                writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, episode)
-                writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, episode)
-                writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, episode)
-                writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id], episode)
-                writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id], episode)
+                writer.add_scalar(f"train/layer{layer_id}_episode_return", episode_returns[layer_id], current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_episode_reward", episode_rewards[layer_id], current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id], current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id], current_steps)
 
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
@@ -418,16 +418,16 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 avg_a = float(np.mean(eval_assign_sums[layer_id]))
                 avg_w = float(np.mean(eval_wait_sums[layer_id]))
 
-                writer.add_scalar(f"eval/layer{layer_id}_avg_reward", avg_r, episode)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_cost", avg_c, episode)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_utility", avg_u, episode)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus", avg_a, episode)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty", avg_w, episode)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_reward", avg_r, current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_cost", avg_c, current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_utility", avg_u, current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus", avg_a, current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty", avg_w, current_steps)
 
             # 新增：记录“所有层总回报”在多个 eval_runs 中的平均
-            writer.add_scalar("global/eval_avg_reward", total_reward_all, episode)
-            writer.add_scalar("global/eval_avg_cost", total_cost_all, episode)
-            writer.add_scalar("global/eval_avg_utility", total_util_all, episode)
+            writer.add_scalar("global/eval_avg_reward", total_reward_all, current_steps)
+            writer.add_scalar("global/eval_avg_cost", total_cost_all, current_steps)
+            writer.add_scalar("global/eval_avg_utility", total_util_all, current_steps)
 
     writer.close()
 

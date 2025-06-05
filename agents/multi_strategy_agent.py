@@ -27,7 +27,7 @@ class MultiStrategyAgent:
                  device: torch.device = torch.device('cpu'),):
         """
         Args:
-            betas:       List[float], β_k 列表，长度 K
+            betas:       List[float], beta_k 列表，长度 K
             gammas:      List[float], γ_k 列表，长度 K
             其余参数类似 PPO + 模型初始化所需
         """
@@ -107,20 +107,19 @@ class MultiStrategyAgent:
               returns_u: torch.Tensor,
               returns_c: torch.Tensor,
               log_probs_old: torch.Tensor,
-              dones_batch: torch.Tensor,
-              rewards_u_batch: torch.Tensor,
-              rewards_c_batch: torch.Tensor,
-              policy_id: int):
+              policy_id: int,
+              global_steps: int,
+              total_training_steps: int):
         """
         对应单个子策略 policy_id 的小批量数据，计算 Advantage 并执行 PPO 更新：
             A_u = GAE(rewards_u, values_u_old)
             A_c = GAE(-rewards_c, -values_c_old)
-            A = β * A_u + (1-β) * (-A_c)
-            R = β * returns_u + (1-β) * (-returns_c)
+            A = beta * A_u + (1-beta) * (-A_c)
+            R = beta * returns_u + (1-beta) * (-returns_c)
 
         然后对 actor 和双价值头计算 PPO 损失。
         """
-        β = self.betas[policy_id]
+        beta = self.betas[policy_id]
 
         # —— 转移到设备 —— #
         task_obs = task_obs_batch.to(self.device)
@@ -144,13 +143,7 @@ class MultiStrategyAgent:
         entropy = dist.entropy().sum(dim=[1, 2]).mean()
 
         # —— 计算 Advantage —— #
-        # values_u_old, values_c_old 已含 B 维的预测
-        # 传入的 returns_u, returns_c 已是 GAE + 当前 value
-        # 于是 Advantage = returns - values_old
-        adv_u = returns_u - values_u_old
-        adv_c = returns_c - values_c_old
-        # 将成本 Advantage 取反，使其“越大越好”
-        adv = β * adv_u + (1 - β) * (-adv_c)
+        adv = returns_u - values_u_old
 
         # —— 标准化 Advantage （PPO 推荐） —— #
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -164,23 +157,16 @@ class MultiStrategyAgent:
         # —— 计算价值损失 —— #
         # 新预测的值
         # 注意：我们希望成本价值也变成“肯定向”序列：用 -v_c_new 作为价值预测
-        v_comb_old = β * values_u_old + (1 - β) * (-values_c_old)
-        v_comb_new = β * v_u_new + (1 - β) * (-v_c_new)
-        returns_comb = β * returns_u + (1 - β) * (-returns_c)
+        value_loss_u = 0.5 * (v_u_new - returns_u).pow(2).mean()
+        value_loss_c = 0.5 * (v_c_new - returns_c).pow(2).mean()
+        value_loss = value_loss_u + value_loss_c
 
-        if True:  # always use clipped value loss
-            v_pred_clipped = v_comb_old + (v_comb_new - v_comb_old).clamp(
-                -self.clip_param, self.clip_param
-            )
-            value_losses = (v_comb_new - returns_comb).pow(2)
-            value_losses_clipped = (v_pred_clipped - returns_comb).pow(2)
-            value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
-        else:
-            value_loss = 0.5 * (v_comb_new - returns_comb).pow(2).mean()
+        # entropy_coef decay
+        progress = global_steps / total_training_steps
+        entropy_coef = max(1e-3, self.entropy_coef * (1 - progress))
 
         # —— 总损失 —— #
-        # entropy_coef 可衰减：progress = self.global_step / total_steps
-        loss = value_loss * self.value_loss_coef + policy_loss - self.entropy_coef * entropy
+        loss = value_loss * self.value_loss_coef + policy_loss - entropy_coef * entropy
 
         # —— 优化 —— #
         self.optimizer.zero_grad()
