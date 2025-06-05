@@ -102,36 +102,37 @@ class RolloutBuffer:
         }
 
 
-def compute_gae(rewards, values, gamma, lam):
+def compute_gae(rewards, dones, values, gamma, lam):
     """
-    计算 GAE（Generalized Advantage Estimation）并返回 (returns, advantages)。
+    计算带 dones 信息的 GAE，并返回 (returns, advantages)。
+
     Args:
-        rewards: list 或 1D Tensor, 长度 L，已归一化的 reward 序列
-        values:  list 或 1D Tensor, 长度 L，交由模型前向时得到的价值估计
-        gamma:   折扣因子
-        lam:     GAE 的 λ
+        rewards (list or np.ndarray of float): 形状 (T,) 的即时 reward 序列（可正可负）。
+        dones   (list or np.ndarray of int):   形状 (T,) 的终止标志序列，done[t] = 1 表示第 t 步结束后进入终止状态。
+        values  (list or np.ndarray of float): 形状 (T,) 的 value 函数预测值 V(s_t)。
+        gamma   (float): 折扣因子 γ。
+        lam     (float):  GAE 参数 λ。
+
     Returns:
-        returns:   1D numpy list 或 Tensor, 长度 L
-        advantages:1D numpy list 或 Tensor, 长度 L
+        returns    (list of float): 长度 T 的蒙特卡洛回报（return），等于 advantage + values[t]。
+        advantages (list of float): 长度 T 的 Advantage 值，使用 GAE 公式计算。
     """
-    if isinstance(rewards, torch.Tensor):
-        rewards = rewards.cpu().numpy()
-    if isinstance(values, torch.Tensor):
-        values = values.cpu().numpy()
+    T = len(rewards)
+    advantages = [0.0] * T
+    gae = 0.0
 
-    L = len(rewards)
-    advantages = np.zeros(L, dtype=np.float32)
-    lastgaelam = 0.0
-    # 注意：假设 values 已经包含对下一状态 value 的 bootstrap
-    for t in reversed(range(L)):
-        if t == L - 1:
-            next_nonterminal = 1.0 - 1.0  # 末尾假设 next_value = 0
-            next_values = 0.0
-        else:
-            next_nonterminal = 1.0 - float(0)  # 如果 done，那么用 0，否则 1；单进程版本可简化为 always 1
-            next_values = values[t + 1]
-        delta = rewards[t] + gamma * next_values * next_nonterminal - values[t]
-        advantages[t] = lastgaelam = delta + gamma * lam * next_nonterminal * lastgaelam
+    # 在末尾 append 一个 0，表示终止后 V(s_{T}) = 0
+    # 注意要先把 values 转为列表再拼接，否则 numpy 会报维度错误
+    values = list(values) + [0.0]
 
-    returns = advantages + values
+    # 从后向前递推
+    for t in reversed(range(T)):
+        # 如果 dones[t] == 1，表示第 t 步结束后环境终止，则 next_nonterminal = 0，让上一个序列与未来隔离
+        next_nonterminal = 1.0 - dones[t]
+        delta = rewards[t] + gamma * values[t + 1] * next_nonterminal - values[t]
+        gae = delta + gamma * lam * next_nonterminal * gae
+        advantages[t] = gae
+
+    # 计算 return = advantage + value
+    returns = [adv + val for adv, val in zip(advantages, values[:-1])]
     return returns, advantages

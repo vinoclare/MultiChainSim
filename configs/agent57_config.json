@@ -1,5 +1,5 @@
 {
-  "num_episodes": 10000,
+  "num_episodes": 30000,
   "eval_interval": 20,
   "eval_episodes": 5,
   "log_interval": 20,
@@ -23,7 +23,7 @@
   "scheduler": {
     "type": "soft_ucb",
     "c": 1.0,
-    "init_round_robin": true
+    "min_switch_interval": 20
   },
   "cost_rms_clip": 5.0,
   "utility_rms_clip": 5.0,

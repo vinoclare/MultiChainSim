@@ -83,12 +83,12 @@ def run_agent57_multi_layer(env: MultiplexEnv,
         sched_cfg = agent57_config["scheduler"]
         scheduler = SoftUCB(K,
                             c=sched_cfg["c"],
-                            init_round_robin=sched_cfg["init_round_robin"])
+                            min_switch_interval=sched_cfg["min_switch_interval"])
         schedulers.append(scheduler)
 
         # c) 初始化 RunningMeanStd 用于 cost/utility
-        cost_rms_list.append(RunningMeanStd(shape=()))
-        util_rms_list.append(RunningMeanStd(shape=()))
+        # cost_rms_list.append(RunningMeanStd(shape=()))
+        # util_rms_list.append(RunningMeanStd(shape=()))
 
         # d) 初始化空 Buffer
         buffers.append(RolloutBuffer())
@@ -176,18 +176,22 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 # 从 reward_detail 中提取该层原始效用和成本
                 layer_u = reward_detail["layer_rewards"][layer_id]["utility"]
                 layer_c = reward_detail["layer_rewards"][layer_id]["cost"]
+                layer_assign = reward_detail["layer_rewards"][layer_id]["assign_bonus"]
+                layer_wait = reward_detail["layer_rewards"][layer_id]["wait_penalty"]
                 layer_reward = reward_detail["layer_rewards"][layer_id]["reward"]
 
                 # 归一化
-                eps = 1e-8
-                util_rms_list[layer_id].update(np.array([layer_u], dtype=np.float32))
-                u_n = (layer_u - util_rms_list[layer_id].mean) / np.sqrt(util_rms_list[layer_id].var + eps)
-
-                cost_rms_list[layer_id].update(np.array([layer_c], dtype=np.float32))
-                c_n = (layer_c - cost_rms_list[layer_id].mean) / np.sqrt(cost_rms_list[layer_id].var + eps)
+                # eps = 1e-8
+                # util_rms_list[layer_id].update(np.array([layer_u], dtype=np.float32))
+                # u_n = (layer_u - util_rms_list[layer_id].mean) / np.sqrt(util_rms_list[layer_id].var + eps)
+                #
+                # cost_rms_list[layer_id].update(np.array([layer_c], dtype=np.float32))
+                # c_n = (layer_c - cost_rms_list[layer_id].mean) / np.sqrt(cost_rms_list[layer_id].var + eps)
 
                 # 组合即时奖励
-                r_comb = beta * u_n + (1 - beta) * (-c_n)
+                u_total = beta * layer_u + layer_assign
+                c_total = (1 - beta) * layer_c + layer_wait
+                r_comb = u_total - c_total
                 episode_returns[layer_id] += r_comb
                 episode_rewards[layer_id] += layer_reward
 
@@ -202,8 +206,8 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                     data["v_u"],
                     data["v_c"],
                     data["logp"],
-                    u_n,
-                    c_n,
+                    u_total,
+                    c_total,
                     r_comb,
                     done
                 )
@@ -228,6 +232,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
         # 5.4 本 Episode 结束：依次对每层进行更新
         for layer_id in range(n_layers):
+            schedulers[layer_id].increment_episode_count()
             pid = pids[layer_id]
             gamma = gammas[pid]
 
@@ -240,11 +245,13 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             # GAE: 效用和成本分别计算
             ret_u, adv_u = compute_gae(
                 batch["rewards_u"].cpu().numpy(),
+                batch["dones"].cpu().numpy(),
                 batch["values_u"].cpu().numpy(),
                 gamma, agent57_config["lam"]
             )
             ret_c, adv_c = compute_gae(
                 (-batch["rewards_c"].cpu().numpy()),
+                batch["dones"].cpu().numpy(),
                 (-batch["values_c"].cpu().numpy()),
                 gamma, agent57_config["lam"]
             )
@@ -284,8 +291,30 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             # 5.5.1 先为各层选取 Greedy 子策略 PID
             greedy_pids = []
             for layer_id in range(n_layers):
-                real_list = schedulers[layer_id].avg_real_returns
-                greedy_pid = int(np.argmax(real_list))  # 环境原生回报最好的子策略
+                best_pid = 0
+                best_mean = -float('inf')
+
+                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
+                all_empty = True
+                for i in range(K):
+                    if len(schedulers[layer_id].recent_real_returns[i]) > 0:
+                        all_empty = False
+                        break
+
+                if all_empty:
+                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
+                    greedy_pid = 0
+                else:
+                    # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
+                    for i in range(K):
+                        dq = schedulers[layer_id].recent_real_returns[i]
+                        if len(dq) == 0:
+                            continue  # 这条策略还没数据，跳过
+                        mean_i = sum(dq) / len(dq)
+                        if mean_i > best_mean:
+                            best_mean = mean_i
+                            best_pid = i
+                    greedy_pid = best_pid
                 greedy_pids.append(greedy_pid)
 
             # 5.5.2 准备统计容器
@@ -312,7 +341,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 done = False
                 while not done:
                     actions = {}
-                    # 5.5.3.1 对所有层并行采集一次“贪心”动作
+                    # 5.5.3.1 对所有层并行采集一次动作
                     for layer_id in range(n_layers):
                         pid = greedy_pids[layer_id]
                         single = obs[layer_id]
