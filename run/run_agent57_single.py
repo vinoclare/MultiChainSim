@@ -245,7 +245,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
               f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
         # 5.4 本 Episode 结束：依次对每层进行更新
-        current_steps = (episode + 1) * max_steps
+        current_steps = episode * max_steps
         for layer_id in range(n_layers):
             schedulers[layer_id].increment_episode_count()
             pid = pids[layer_id]
