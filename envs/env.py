@@ -63,13 +63,13 @@ class MultiplexEnv(gym.Env):
             for t, task_list in self.task_schedule.items()
         }
 
-    def reset(self, with_new_schedule=False):
+    def reset(self, with_new_schedule=False, arrival_rate=None):
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
-        if with_new_schedule:
+        if with_new_schedule or arrival_rate is not None:
             # self.alpha = np.random.uniform(5.5, 1.5)
             # self.beta = np.random.uniform(5.5, 1.5)
-            self.task_schedule = generate_task_schedule(self.config)
+            self.task_schedule = generate_task_schedule(self.config, arrival_rate=arrival_rate)
         else:
             self.task_schedule = {
                 int(t): [Task.from_dict(d) for d in task_list]

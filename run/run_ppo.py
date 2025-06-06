@@ -310,7 +310,7 @@ for episode in range(num_episodes):
           f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # ===== 每 N 个 episode 写一次 TensorBoard 均值 =====
-    if (episode + 1) % log_interval == 0:
+    if episode % log_interval == 0:
         total_episode_reward = 0.0
         total_episode_cost = 0.0
         total_episode_util = 0.0
@@ -344,6 +344,7 @@ for episode in range(num_episodes):
         writer.add_scalar("global/episode_total_utility", total_episode_util, episode)
 
     # ===== GAE & PPO updates per layer =====
+    current_steps = (episode + 1) * max_steps
     for layer_id in range(num_layers):
         advs, rets = compute_gae(
             buffers[layer_id]['rewards'],
@@ -388,6 +389,7 @@ for episode in range(num_episodes):
                     torch.tensor(np.array(ret_batch), dtype=torch.float32),
                     torch.tensor(np.array(logp_batch), dtype=torch.float32),
                     torch.tensor(np.array(adv_batch), dtype=torch.float32),
+                    current_steps
                 )
 
         buffers[layer_id] = {k: [] for k in buffers[layer_id]}

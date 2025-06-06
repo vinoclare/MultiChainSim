@@ -31,55 +31,93 @@ def load_env_config(config_path: str) -> dict:
     return config
 
 
-def generate_task_schedule(config: Dict, load_path: str = "", save_path: str = "") -> Dict[int, List[Task]]:
+def generate_task_schedule(
+    config: Dict,
+    load_path: str = "",
+    save_path: str = "",
+    arrival_rate: List[float] = None,      # ← 新增：外部可直接传 λ
+) -> Dict[int, List[Task]]:
+    """
+    生成或加载 {time_step: [Task, …]} 的到达计划表。
+
+    参数
+    ----
+    config : Dict
+        环境配置字典，必须包含 task_types / task_route / task_amount_range 等键。
+    load_path : str
+        若给定且文件存在，则直接从 JSON 读取 schedule；其余参数忽略。
+    save_path : str
+        若给定，则把新生成的 schedule 保存为 JSON 供复现。
+    arrival_rate : float | None
+        当 arrival_mode == "poisson" 时，若传入该值，则用它作为 Poisson λ
+        覆盖 config["task_arrival_rate"]；否则仍用配置中的默认值。
+
+    返回
+    ----
+    schedule : Dict[int, List[Task]]
+        键为离散时间步（int），值为在该时刻到达的 Task 列表。
+    """
+    # ---------- 1. 若指定 load_path 且文件存在，直接加载 ----------
     if load_path and os.path.exists(load_path):
         print(f"[INFO] Loading task schedule from {load_path}")
         with open(load_path, "r") as f:
             raw = json.load(f)
-        schedule = {
+        return {
             int(t): [Task.from_dict(d) for d in task_list]
             for t, task_list in raw.items()
         }
-        return schedule
 
-    # ==== 自动生成逻辑 ====
+    # ---------- 2. 读取基础配置 ----------
     task_types = config["task_types"]
     task_route = config["task_route"]
     amount_min, amount_max = config["task_amount_range"]
-    max_steps = config["max_steps"]
-    arrival_mode = config["task_arrival_mode"]
-    arrival_rate = config["task_arrival_rate"]
     timeout_min, timeout_max = config["task_timeout_range"]
 
-    schedule = {}
-    task_id = 0
-    max_task_amount = config["task_amount_range"][1]
-    min_exec_efficiency = config["worker_exec_efficiency_range"][0]
-    max_exec_time = max_task_amount / min_exec_efficiency
+    max_steps = config["max_steps"]
+    arrival_mode = config["task_arrival_mode"]
+
+    # 2.1 Poisson λ：允许外部覆盖
+    base_lambda = config["task_arrival_rate"]
+    lambda_used = arrival_rate if arrival_rate is not None else base_lambda
+
+    # ---------- 3. 预计算最大加工时间（用于边界裁剪） ----------
+    max_task_amount = amount_max
+    min_exec_eff = config["worker_exec_efficiency_range"][0]
+    max_exec_time = max_task_amount / min_exec_eff
+
+    # ---------- 4. 生成 schedule ----------
+    schedule: Dict[int, List[Task]] = {}
+    task_id_counter = 0
+
     for t in range(int(max_steps - max_exec_time)):
+        # 4.1 根据 arrival_mode 决定本时刻生成多少任务
         if arrival_mode == "poisson":
-            num_tasks = np.random.poisson(arrival_rate)
+            num_tasks = np.random.poisson(lambda_used)
         else:
-            num_tasks = 0
+            num_tasks = 0  # 你可以添加更多模式分支
+
+        # 4.2 创建 Task 对象并写入 schedule
         for _ in range(num_tasks):
             task = Task(
-                id=task_id,
+                id=task_id_counter,
                 arrival_time=t,
                 task_type=random.choice(task_types),
                 amount=random.randint(amount_min, amount_max),
                 route=task_route.copy(),
-                timeout=random.randint(timeout_min, timeout_max)
+                timeout=random.randint(timeout_min, timeout_max),
             )
             schedule.setdefault(t, []).append(task)
-            task_id += 1
+            task_id_counter += 1
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         with open(save_path, "w") as f:
-            json.dump({
-                str(t): [task.to_dict() for task in task_list]
-                for t, task_list in schedule.items()
-            }, f)
+            json.dump(
+                {
+                    str(t): [task.to_dict() for task in task_list]
+                    for t, task_list in schedule.items()
+                }, f,
+            )
         print(f"[INFO] Saved task schedule to {save_path}")
 
     return schedule

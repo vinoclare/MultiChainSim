@@ -461,7 +461,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
 if __name__ == "__main__":
     # 配置文件路径
-    num_layers = 5
+    num_layers = 2
     env_config_path = f'../configs/{num_layers}/env_config.json'
     agent57_config_path = '../configs/agent57_config.json'
     train_schedule_path = f"../configs/{num_layers}/train_schedule.json"
