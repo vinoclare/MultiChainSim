@@ -27,8 +27,7 @@ with open(ppo_config_path, 'r') as f:
 # —— 课程难度阶梯（Poisson λ） ——
 lambda_levels = [0.5, 1, 1.5, 2, 2.5]
 cm = CurriculumManager(lambda_levels,
-                       burn_in=5_000,
-                       patience=10_000,
+                       burn_in=1000,
                        worst_buf_size=10)
 
 # ========================== 环境初始化 =========================
