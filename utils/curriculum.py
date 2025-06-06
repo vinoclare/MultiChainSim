@@ -11,20 +11,17 @@ class CurriculumManager:
     def __init__(
         self,
         levels: List[float],          # λ 阶梯，例如 [4, 8, 16, 32, 64]
-        burn_in: int = 5_000,        # 每阶最少训练步
-        patience: int = 10_000,      # 若最近回报 ≥ 99% best 且步数够则晋级
+        burn_in: int = 1000,        # 每阶最少训练步
         worst_buf_size: int = 10     # 是否开“最差实例回放”>0 开启
     ):
         self.levels = levels
         self.cur_idx = 0
 
         self.burn_in = burn_in
-        self.patience = patience
-
         self.steps_on_level = 0
         self.best_return = -float("inf")
 
-        # —— 最差实例缓存（可选） ——
+        # —— 最差实例缓存 ——
         self.worst_buf_size = worst_buf_size
         self.worst_buffer = deque(maxlen=worst_buf_size)
 
