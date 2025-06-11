@@ -112,11 +112,6 @@ buffers = [
     for _ in range(num_layers)
 ]
 
-values_u = {lid: [] for lid in range(num_layers)}
-values_c = {lid: [] for lid in range(num_layers)}
-utilities = {lid: [] for lid in range(num_layers)}
-costs = {lid: [] for lid in range(num_layers)}
-
 # ===== 初始化 RunningMeanStd 用于归一化 return=====
 return_u_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
 return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
@@ -272,7 +267,7 @@ for episode in range(num_episodes):
     # 固定子策略0
     current_pid_tensor = torch.tensor([[0 for _ in range(num_layers)]])
 
-    obs = env.reset()
+    obs = env.reset(with_new_schedule=False)
     episode_reward = {lid: 0.0 for lid in range(num_layers)}
     episode_cost = {lid: 0.0 for lid in range(num_layers)}
     episode_util = {lid: 0.0 for lid in range(num_layers)}
@@ -300,7 +295,7 @@ for episode in range(num_episodes):
 
         actions = {lid: sample_out[lid]["actions"].squeeze(0).cpu().numpy() for lid in range(num_layers)}
         sample_vu = {lid: sample_out[lid]["v_u"].item() for lid in range(num_layers)}
-        sample_vc = {lid: -sample_out[lid]["v_c"].item() for lid in range(num_layers)}
+        sample_vc = {lid: sample_out[lid]["v_c"].item() for lid in range(num_layers)}
         pid = torch.stack([sample_out[lid]["pid"] for lid in range(num_layers)], dim=1)  # (B=1, L)
 
         # === 与环境交互 ===
@@ -325,10 +320,6 @@ for episode in range(num_episodes):
             episode_util[lid] += util
             episode_ab[lid] += ab
             episode_wp[lid] += wp
-
-            # 记录用于 GAE 的分量
-            utilities[lid].append(total_u)
-            costs[lid].append(total_c)
 
             # === 存入 PPO buffer ===
             buffers[lid]["task_obs"].append(obs_dicts[lid]["task_obs"].squeeze(0))
@@ -375,7 +366,7 @@ for episode in range(num_episodes):
         returns_u, advs_u = compute_gae_single_head(reward_u, dones, value_u, 0.0, gamma, lam)
         returns_c, advs_c = compute_gae_single_head(reward_c, dones, value_c, 0.0, gamma, lam)
 
-        advantages = [au - ac for au, ac in zip(advs_u, advs_c)]
+        advantages = [au + ac for au, ac in zip(advs_u, advs_c)]
 
         # === Step 2: 可选 return 归一化 ===
         if return_norm:
@@ -425,10 +416,6 @@ for episode in range(num_episodes):
 
         # === Step 5: 清空当前层的 buffer ===
         buffers[lid] = {k: [] for k in buf}
-        values_u[lid].clear()
-        values_c[lid].clear()
-        utilities[lid].clear()
-        costs[lid].clear()
 
     # === Step 6: TensorBoard 记录 PPO loss ===
     if episode % log_interval == 0:
