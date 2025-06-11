@@ -377,7 +377,11 @@ for episode in range(num_episodes):
             returns_u = return_u_rms[lid].normalize(ret_u_np)
             returns_c = return_c_rms[lid].normalize(ret_c_np)
 
-        # === Step 3: 构建 batch ===
+            advs_u = returns_u - np.array(value_u)
+            advs_c = returns_c - np.array(value_c)
+            advantages = [au + ac for au, ac in zip(advs_u, advs_c)]
+
+            # === Step 3: 构建 batch ===
         batch_data = list(zip(
             buf["pid"], buf["task_obs"], buf["worker_loads"], buf["worker_profile"],
             buf["global_context"], buf["valid_mask"], buf["actions"],
