@@ -300,7 +300,7 @@ for episode in range(num_episodes):
 
         actions = {lid: sample_out[lid]["actions"].squeeze(0).cpu().numpy() for lid in range(num_layers)}
         sample_vu = {lid: sample_out[lid]["v_u"].item() for lid in range(num_layers)}
-        sample_vc = {lid: sample_out[lid]["v_c"].item() for lid in range(num_layers)}
+        sample_vc = {lid: -sample_out[lid]["v_c"].item() for lid in range(num_layers)}
         pid = torch.stack([sample_out[lid]["pid"] for lid in range(num_layers)], dim=1)  # (B=1, L)
 
         # === 与环境交互 ===
@@ -317,8 +317,8 @@ for episode in range(num_episodes):
             ab = reward_detail["layer_rewards"][lid]["assign_bonus"]
             wp = reward_detail["layer_rewards"][lid]["wait_penalty"]
             total_u = beta_k * util + ab
-            total_c = alpha_k * cost + wp
-            fused_reward = total_u - total_c
+            total_c = -alpha_k * cost - wp
+            fused_reward = total_u + total_c
 
             episode_reward[lid] += rew
             episode_cost[lid] += cost
@@ -420,7 +420,7 @@ for episode in range(num_episodes):
                     "advantages": torch.tensor(advs, dtype=torch.float32, device=device),
                 }
 
-                stats = agent.muse_learn(lid, mini_batch)
+                stats = agent.muse_learn(lid, global_step, mini_batch)
                 ppo_stats.update(stats)
 
         # === Step 5: 清空当前层的 buffer ===
@@ -506,18 +506,18 @@ for episode in range(num_episodes):
     advantage = global_episode_reward - ema_return
     ema_return = (1 - ema_alpha) * ema_return + ema_alpha * global_episode_reward
 
-    # === HiTAC PPO 更新 ===
-    hitac_stats = agent.hitac_update(
-        raw_local_kpis,
-        raw_global_kpi,
-        current_pid_tensor,
-        torch.tensor([advantage], dtype=torch.float32, device=device)
-    )
-
-    # === TensorBoard 记录 ===
-    if episode % log_interval == 0:
-        for k, v in hitac_stats.items():
-            writer.add_scalar(k, v, episode)
+    # # === HiTAC PPO 更新 ===
+    # hitac_stats = agent.hitac_update(
+    #     raw_local_kpis,
+    #     raw_global_kpi,
+    #     current_pid_tensor,
+    #     torch.tensor([advantage], dtype=torch.float32, device=device)
+    # )
+    #
+    # # === TensorBoard 记录 ===
+    # if episode % log_interval == 0:
+    #     for k, v in hitac_stats.items():
+    #         writer.add_scalar(k, v, episode)
 
     # === 蒸馏更新 ===
     if episode % distill_interval == 0:

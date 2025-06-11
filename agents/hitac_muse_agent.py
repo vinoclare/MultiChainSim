@@ -91,12 +91,12 @@ class HiTACMuSEAgent:
 
         return output
 
-    def muse_learn(self, layer_id, data):
+    def muse_learn(self, layer_id, step, data):
         muse = self.muses[layer_id]
         v_loss, pi_loss, ent = muse.learn(
             data["pid"], data["task_obs"], data["worker_loads"],
             data["worker_profile"], data["global_context"], data["valid_mask"],
-            data["actions"], data["returns"], data["logp_old"], data["advantages"]
+            data["actions"], data["returns"], data["logp_old"], data["advantages"], step
         )
         return {
             f"layer_{layer_id}/v_loss": v_loss,

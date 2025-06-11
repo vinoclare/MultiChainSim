@@ -36,7 +36,10 @@ class MuSE(nn.Module):
         self.alphas = torch.tensor(cfg["alphas"], device=self.device)
         self.betas = torch.tensor(cfg["betas"], device=self.device)
 
-    # ---------- 采样 ---------- #
+        self.value_loss_coef = cfg["value_loss_coef"]
+        self.entropy_coef = cfg["entropy_coef"]
+
+        # ---------- 采样 ---------- #
     @torch.no_grad()
     def sample(self, *model_inputs):
         """
@@ -61,7 +64,8 @@ class MuSE(nn.Module):
             actions,
             returns,         # Tuple: (ret_u, ret_c)
             log_probs_old,
-            advantages
+            advantages,
+            step
     ):
         k = pid[0].item()
 
@@ -75,7 +79,8 @@ class MuSE(nn.Module):
             actions=actions,
             returns=returns,
             log_probs_old=log_probs_old,
-            advantages=advantages
+            advantages=advantages,
+            step=step
         )
 
     def _ppo_update_single_head(
@@ -89,7 +94,8 @@ class MuSE(nn.Module):
             actions,
             returns,
             log_probs_old,
-            advantages
+            advantages,
+            step
     ):
         ret_u, ret_c = returns
 
@@ -118,7 +124,11 @@ class MuSE(nn.Module):
 
         entropy_loss = -entropy.mean()
 
-        loss = pi_loss + 0.5 * value_loss + 0.01 * entropy_loss
+        # entropy_coef decay
+        progress = step / self.total_training_steps
+        entropy_coef = max(1e-3, self.entropy_coef * (1 - progress))
+
+        loss = pi_loss + self.value_loss_coef * value_loss + entropy_coef * entropy_loss
 
         self.optimizer.zero_grad()
         loss.backward()
