@@ -57,7 +57,7 @@ class HiTACMuSEAgent:
             entropy_coef=hitac_cfg["entropy_coef"],
             max_grad_norm=hitac_cfg["max_grad_norm"],
             device=device
-        )
+        ).to(device)
 
     def select_subpolicies(self, local_kpis, global_kpi, greedy=False):
         """

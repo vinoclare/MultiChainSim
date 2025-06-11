@@ -107,11 +107,12 @@ class HiTAC(nn.Module):
           actions: LongTensor[B, L] —— 每层选择的子策略id
           advantages: Tensor[B] —— 环境给出的全局优势
         """
+        actions = actions.to(self.device)
         logits = self.forward(local_kpis, global_kpi)              # (B, L, K)
         new_log_probs = F.log_softmax(logits, dim=-1)              # (B, L, K)
 
         B, L, K = logits.shape
-        old_lp = self.old_log_probs.gather(-1, self.old_actions.unsqueeze(-1)).squeeze(-1)  # (B, L)
+        old_lp = self.old_log_probs.gather(-1, self.old_actions.unsqueeze(-1).to(self.device)).squeeze(-1)  # (B, L)
         new_lp = new_log_probs.gather(-1, actions.unsqueeze(-1)).squeeze(-1)               # (B, L)
 
         # === 计算 ratio + clipped loss ===
