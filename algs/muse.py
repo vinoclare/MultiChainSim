@@ -1,0 +1,128 @@
+import torch
+import torch.nn as nn
+from torch.distributions import Normal
+
+from models.agent57_model import Agent57IndustrialModel
+
+
+class MuSE(nn.Module):
+    """
+    多子策略管理器（共享一个 Agent57IndustrialModel，多个策略 head）
+    """
+
+    def __init__(self, cfg, obs_shapes, device="cuda",
+                 writer=None, total_training_steps=None):
+        super().__init__()
+        self.K = cfg["K"]
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.writer = writer
+        self.total_training_steps = total_training_steps
+
+        # === 单个多头模型 ===
+        self.model = Agent57IndustrialModel(
+            task_input_dim=obs_shapes["task"],
+            worker_load_input_dim=obs_shapes["worker_load"],
+            worker_profile_input_dim=obs_shapes["worker_profile"],
+            n_worker=obs_shapes["n_worker"],
+            num_pad_tasks=obs_shapes["num_pad_tasks"],
+            global_context_dim=obs_shapes["global_context_dim"],
+            hidden_dim=cfg["hidden_dim"],
+            K=self.K
+        ).to(self.device)
+
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg["initial_lr"])
+
+        # α,β 系数
+        self.alphas = torch.tensor(cfg["alphas"], device=self.device)
+        self.betas = torch.tensor(cfg["betas"], device=self.device)
+
+    # ---------- 采样 ---------- #
+    @torch.no_grad()
+    def sample(self, *model_inputs):
+        """
+        model_inputs: 对应模型 forward 的输入
+        """
+        mean, std, v_u, v_c = self.model(*model_inputs)
+        dist = Normal(mean, std)
+        action = dist.sample().clamp(0, 1)
+        logp = dist.log_prob(action).sum(dim=[1, 2])
+        entropy = dist.entropy().sum(dim=[1, 2])
+        return v_u, v_c, action, logp, entropy
+
+    # ---------- 训练 ---------- #
+    def learn(
+            self,
+            pid: torch.Tensor,
+            task_obs,
+            worker_loads,
+            worker_profile,
+            global_context,
+            valid_mask,
+            actions,
+            returns,         # Tuple: (ret_u, ret_c)
+            log_probs_old,
+            advantages
+    ):
+        k = pid[0].item()
+
+        return self._ppo_update_single_head(
+            head_id=k,
+            task_obs=task_obs,
+            worker_loads=worker_loads,
+            worker_profile=worker_profile,
+            global_context=global_context,
+            valid_mask=valid_mask,
+            actions=actions,
+            returns=returns,
+            log_probs_old=log_probs_old,
+            advantages=advantages
+        )
+
+    def _ppo_update_single_head(
+            self,
+            head_id,
+            task_obs,
+            worker_loads,
+            worker_profile,
+            global_context,
+            valid_mask,
+            actions,
+            returns,
+            log_probs_old,
+            advantages
+    ):
+        ret_u, ret_c = returns
+
+        mean, std, v_u, v_c = self.model(
+            task_obs, worker_loads, worker_profile,
+            global_context, valid_mask,
+            policy_id=head_id
+        )
+
+        dist = Normal(mean, std)
+        logp = dist.log_prob(actions).sum(dim=[1, 2])
+        entropy = dist.entropy().sum(dim=[1, 2])
+        ratio = torch.exp(logp - log_probs_old)
+
+        adv = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # Policy loss
+        surr1 = ratio * adv
+        surr2 = torch.clamp(ratio, 1.0 - 0.2, 1.0 + 0.2) * adv
+        pi_loss = -torch.min(surr1, surr2).mean()
+
+        # Value loss（双头）
+        value_loss_u = 0.5 * (ret_u - v_u).pow(2).mean()
+        value_loss_c = 0.5 * (ret_c - v_c).pow(2).mean()
+        value_loss = value_loss_u + value_loss_c
+
+        entropy_loss = -entropy.mean()
+
+        loss = pi_loss + 0.5 * value_loss + 0.01 * entropy_loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+        self.optimizer.step()
+
+        return value_loss.item(), pi_loss.item(), entropy.mean().item()

@@ -7,7 +7,7 @@ from torch.distributions import Normal
 from models.agent57_model import Agent57IndustrialModel
 
 
-class MultiStrategyAgent:
+class Agent57Agent:
     def __init__(self,
                  task_input_dim: int,
                  worker_load_input_dim: int,
@@ -119,9 +119,6 @@ class MultiStrategyAgent:
 
         然后对 actor 和双价值头计算 PPO 损失。
         """
-        beta = self.betas[policy_id]
-
-        # —— 转移到设备 —— #
         task_obs = task_obs_batch.to(self.device)
         worker_loads = worker_loads_batch.to(self.device)
         worker_profiles = worker_profiles_batch.to(self.device)

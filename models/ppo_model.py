@@ -31,7 +31,10 @@ class PPOIndustrialModel(nn.Module):
         n_worker: int,
         num_pad_tasks: int,
         global_context_dim: int = 1,
-        hidden_dim: int = 256
+        hidden_dim: int = 256,
+        task_encoder: nn.Module = None,
+        worker_load_encoder: nn.Module = None,
+        worker_profile_encoder: nn.Module = None,
     ):
         super().__init__()
         self.n_worker = n_worker
@@ -39,9 +42,9 @@ class PPOIndustrialModel(nn.Module):
         D = hidden_dim
 
         # —— 三路编码器 —— #
-        self.task_encoder = RowWiseEncoder(task_input_dim, D, D)
-        self.worker_load_encoder = RowWiseEncoder(worker_load_input_dim, D, D)
-        self.worker_profile_encoder = RowWiseEncoder(worker_profile_input_dim, D, D)
+        self.task_encoder = task_encoder or RowWiseEncoder(task_input_dim, D, D)
+        self.worker_load_encoder = worker_load_encoder or RowWiseEncoder(worker_load_input_dim, D, D)
+        self.worker_profile_encoder = worker_profile_encoder or RowWiseEncoder(worker_profile_input_dim, D, D)
 
         # 融合 worker_load + worker_profile → D→D
         self.fc_worker = nn.Sequential(

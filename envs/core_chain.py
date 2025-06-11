@@ -191,8 +191,14 @@ class Layer:
         self.failure_base_cost = 10.0
         self.failure_utility = 0.0
 
+        self.total_arrived_tasks = 0
+        self.total_completed_tasks = 0
+        self.total_assigned_amount = 0.0
+        self.episode_step_count = 0
+
     def add_task(self, task: Task):
         self.task_queue.append(task)
+        self.total_arrived_tasks += 1
 
     def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> Tuple[List[Task], float]:
         """
@@ -245,6 +251,7 @@ class Layer:
             if success:
                 assigned_tasks.add(task)
                 total_assign_amount += assign_amount
+                self.total_assigned_amount += assign_amount
 
         # 清除完成、失败或被分配完的任务，只保留 still waiting 的任务
         self.task_queue = [
@@ -273,6 +280,11 @@ class Layer:
 
         finished.extend(timeout_failed)
 
+        # 统计完成的任务
+        for (task, _, _, _) in finished:
+            if task.status == "finished":
+                self.total_completed_tasks += 1
+
         # 清除所有 worker 中已分配但该任务已超时的条目
         timeout_task_ids = {task.id for task, _, _, _ in timeout_failed}
         for worker in self.workers:
@@ -282,23 +294,23 @@ class Layer:
                 if t.id not in timeout_task_ids
             ]
 
+        self.episode_step_count += 1
         return finished
 
-    def get_kpi_snapshot(self) -> Dict:
-        all_exec = [(t, a) for w in self.workers for (t, a) in w.task_history if not t.failed]
-        if not all_exec:
-            return {"avg_cost": 0, "avg_util": 0, "utilization": 0}
-
-        total_cost = sum(w.get_cost(t, a) for w in self.workers for (t, a) in w.task_history if not t.failed)
-        total_util = sum(w.get_utility(t, a) for w in self.workers for (t, a) in w.task_history if not t.failed)
-        total_load = sum(w.total_current_load for w in self.workers)
+    def get_kpi_snapshot(self) -> Tuple[float, float]:
         max_load = sum(w.max_total_load for w in self.workers)
+        total_capacity = max_load * self.episode_step_count
 
-        return {
-            "avg_cost": total_cost / len(all_exec),
-            "avg_util": total_util / len(all_exec),
-            "utilization": total_load / max_load if max_load > 0 else 0
-        }
+        done_rate = (
+            self.total_completed_tasks / self.total_arrived_tasks
+            if self.total_arrived_tasks > 0 else 0.0
+        )
+        task_load_ratio = (
+            self.total_assigned_amount / total_capacity
+            if total_capacity > 0 else 0.0
+        )
+
+        return done_rate, task_load_ratio
 
 
 class IndustrialChain:

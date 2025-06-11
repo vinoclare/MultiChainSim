@@ -13,15 +13,15 @@ class RolloutBuffer:
 
     def clear(self):
         """清空缓存中的列表。"""
-        self.obs = []             # List of (task_obs, worker_loads, worker_profiles, global_context, valid_mask)
-        self.actions = []         # List of action np arrays (W x T)
-        self.values_u = []        # List of v_u (float)
-        self.values_c = []        # List of v_c (float)
-        self.logps = []           # List of log_prob (float)
-        self.rewards_u = []       # List of normalized utility (float)
-        self.rewards_c = []       # List of normalized cost (float)
-        self.combined_rewards = []# List of combined reward (float)
-        self.dones = []           # List of done flags (bool)
+        self.obs = []  # List of (task_obs, worker_loads, worker_profiles, global_context, valid_mask)
+        self.actions = []  # List of action np arrays (W x T)
+        self.values_u = []  # List of v_u (float)
+        self.values_c = []  # List of v_c (float)
+        self.logps = []  # List of log_prob (float)
+        self.rewards_u = []  # List of normalized utility (float)
+        self.rewards_c = []  # List of normalized cost (float)
+        self.combined_rewards = []  # List of combined reward (float)
+        self.dones = []  # List of done flags (bool)
 
     def store(self,
               task_obs,
@@ -72,18 +72,19 @@ class RolloutBuffer:
 
         task_obs_tensor = torch.tensor(np.stack(task_obs_list, axis=0), dtype=torch.float32, device=device)
         worker_loads_tensor = torch.tensor(np.stack(worker_loads_list, axis=0), dtype=torch.float32, device=device)
-        worker_profiles_tensor = torch.tensor(np.stack(worker_profiles_list, axis=0), dtype=torch.float32, device=device)
+        worker_profiles_tensor = torch.tensor(np.stack(worker_profiles_list, axis=0), dtype=torch.float32,
+                                              device=device)
         global_context_tensor = torch.tensor(np.stack(global_context_list, axis=0), dtype=torch.float32, device=device)
         valid_mask_tensor = torch.tensor(np.stack(valid_mask_list, axis=0), dtype=torch.float32, device=device)
 
         actions_tensor = torch.tensor(np.stack(self.actions, axis=0), dtype=torch.float32, device=device)  # (L, W, T)
-        values_u_tensor = torch.tensor(self.values_u, dtype=torch.float32, device=device)                  # (L,)
-        values_c_tensor = torch.tensor(self.values_c, dtype=torch.float32, device=device)                  # (L,)
-        logps_tensor = torch.tensor(self.logps, dtype=torch.float32, device=device)                       # (L,)
-        rewards_u_tensor = torch.tensor(self.rewards_u, dtype=torch.float32, device=device)                # (L,)
-        rewards_c_tensor = torch.tensor(self.rewards_c, dtype=torch.float32, device=device)                # (L,)
-        combined_tensor = torch.tensor(self.combined_rewards, dtype=torch.float32, device=device)          # (L,)
-        dones_tensor = torch.tensor(self.dones, dtype=torch.float32, device=device)                        # (L,)
+        values_u_tensor = torch.tensor(self.values_u, dtype=torch.float32, device=device)  # (L,)
+        values_c_tensor = torch.tensor(self.values_c, dtype=torch.float32, device=device)  # (L,)
+        logps_tensor = torch.tensor(self.logps, dtype=torch.float32, device=device)  # (L,)
+        rewards_u_tensor = torch.tensor(self.rewards_u, dtype=torch.float32, device=device)  # (L,)
+        rewards_c_tensor = torch.tensor(self.rewards_c, dtype=torch.float32, device=device)  # (L,)
+        combined_tensor = torch.tensor(self.combined_rewards, dtype=torch.float32, device=device)  # (L,)
+        dones_tensor = torch.tensor(self.dones, dtype=torch.float32, device=device)  # (L,)
 
         return {
             "task_obs": task_obs_tensor,

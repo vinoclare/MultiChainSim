@@ -67,8 +67,8 @@ class MultiplexEnv(gym.Env):
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
         if with_new_schedule or arrival_rate is not None:
-            # self.alpha = np.random.uniform(5.5, 1.5)
-            # self.beta = np.random.uniform(5.5, 1.5)
+            # self.alpha = np.random.uniform(0.5, 1.5)
+            # self.beta = np.random.uniform(0.5, 1.5)
             self.task_schedule = generate_task_schedule(self.config, arrival_rate=arrival_rate)
         else:
             self.task_schedule = {

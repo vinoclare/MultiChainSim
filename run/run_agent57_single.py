@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.agent57_scheduler import SoftUCB
 from utils.buffer import RolloutBuffer, compute_gae
 from utils.utils import RunningMeanStd  # 归一化工具
-from agents.multi_strategy_agent import MultiStrategyAgent
+from agents.agent57_agent import Agent57Agent
 from envs import MultiplexEnv
 
 
@@ -61,7 +61,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
     for lid in range(n_layers):
         # a) 初始化 Agent
-        agent = MultiStrategyAgent(
+        agent = Agent57Agent(
             task_input_dim=task_dim,
             worker_load_input_dim=worker_load_dim,
             worker_profile_input_dim=worker_profile_dim,

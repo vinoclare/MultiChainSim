@@ -58,7 +58,7 @@ log_dir = f'../logs/rascl/{num_layers}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir)
 
 for lid in range(num_layers):
-    obs_space = env.observation_space[lid];
+    obs_space = env.observation_space[lid]
     act_space = env.action_space[lid]
     n_worker, _ = act_space.shape
     task_dim = obs_space['task_queue'].shape[1]
