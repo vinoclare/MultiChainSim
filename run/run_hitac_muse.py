@@ -506,7 +506,7 @@ for episode in range(num_episodes):
             agent.distill_collect(lid,
                                   {"task_obs": torch.stack(buffers[lid]["task_obs"], dim=0),
                                    "worker_loads": torch.stack(buffers[lid]["worker_loads"], dim=0),
-                                   "worker_profile": torch.stack(buffers[lid]["worker_profile"], dim=0),
+                                   "worker_profiles": torch.stack(buffers[lid]["worker_profile"], dim=0),
                                    "global_context": torch.stack(buffers[lid]["global_context"], dim=0),
                                    "valid_mask": torch.stack(buffers[lid]["valid_mask"], dim=0)},
                                   torch.stack(buffers[lid]["actions"], dim=0),
@@ -535,5 +535,5 @@ for episode in range(num_episodes):
     # === 蒸馏更新 ===
     if episode % distill_interval == 0 and episode > (warmup_ep * K):
         for lid in range(num_layers):
-            loss = agent.distill_update(lid, current_pid_tensor)
+            loss = agent.distill_update(lid, int(current_pid_tensor[0, lid]))
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)

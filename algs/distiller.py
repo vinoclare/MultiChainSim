@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from collections import deque
 
-from numpy.random import random
+import random
 from torch.distributions import Normal, kl_divergence
 
 from models.ppo_model import PPOIndustrialModel
@@ -42,6 +42,7 @@ class Distiller:
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
 
         self.K = K
+        self.pos_pid_max = K - 3
         self.loss_type = loss_type  # mse or kl
 
         self.buffers = {pid: deque(maxlen=buffer_size) for pid in range(K)}
@@ -88,16 +89,25 @@ class Distiller:
 
             # ---- 主策略前向 ----
             mean_s, std_s, _ = self.model(**obs_t)
-            if self.loss_type == "mse":
-                loss_pos = F.mse_loss(mean_s, target_actions)
-                loss = self.sup_coef * loss_pos                           # 无负样本逻辑
-            else:  # "kl"
-                # teacher 视为 N(mean_t, σ=0.1) 的固定高斯
-                teacher_std = torch.full_like(mean_s, 0.1)
-                dist_t = Normal(target_actions, teacher_std)
-                dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
-                loss_kl = kl_divergence(dist_t, dist_s).mean()
-                loss = self.sup_coef * loss_kl
+
+            is_pos_policy = cur_pid <= self.pos_pid_max
+
+            if is_pos_policy:
+                if self.loss_type == "mse":
+                    loss_pos = F.mse_loss(mean_s, target_actions)
+                    loss = self.sup_coef * loss_pos                           # 无负样本逻辑
+                else:  # "kl"
+                    # teacher 视为 N(mean_t, σ=0.1) 的固定高斯
+                    teacher_std = torch.full_like(mean_s, 0.1)
+                    dist_t = Normal(target_actions, teacher_std)
+                    dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
+                    loss_kl = kl_divergence(dist_t, dist_s).mean()
+                    loss = self.sup_coef * loss_kl
+            else:
+                diff = F.relu(self.margin
+                              - torch.abs(mean_s - target_actions))
+                loss_neg = diff.mean()
+                loss = self.neg_coef * loss_neg
 
             # ---- 反向更新 ----
             self.optimizer.zero_grad()
