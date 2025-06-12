@@ -17,6 +17,7 @@ class Distiller:
         act_dim,
         K,
         loss_type="mse",
+        neg_policy=False,
         device="cuda",
         buffer_size=10000,
         sup_coef=1.0,
@@ -44,6 +45,7 @@ class Distiller:
         self.K = K
         self.pos_pid_max = K - 3
         self.loss_type = loss_type  # mse or kl
+        self.neg_policy = neg_policy
 
         self.buffers = {pid: deque(maxlen=buffer_size) for pid in range(K)}
 
@@ -67,7 +69,7 @@ class Distiller:
             return random.sample(buf, len(buf))  # 不足则全取
         return random.sample(buf, batch_size)
 
-    def bc_update(self, cur_pid: int, batch_size: int = 64, steps: int = 300):
+    def bc_update(self, cur_pid: int, batch_size: int = 512, steps: int = 50):
         """对主策略进行若干步蒸馏更新"""
         if len(self.buffers[cur_pid]) < batch_size:
             return 0.0   # 数据不足
@@ -92,6 +94,7 @@ class Distiller:
 
             is_pos_policy = cur_pid <= self.pos_pid_max
 
+            loss = 0.0
             if is_pos_policy:
                 if self.loss_type == "mse":
                     loss_pos = F.mse_loss(mean_s, target_actions)
@@ -103,7 +106,7 @@ class Distiller:
                     dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
                     loss_kl = kl_divergence(dist_t, dist_s).mean()
                     loss = self.sup_coef * loss_kl
-            else:
+            elif self.neg_policy:
                 diff = F.relu(self.margin
                               - torch.abs(mean_s - target_actions))
                 loss_neg = diff.mean()

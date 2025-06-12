@@ -40,6 +40,7 @@ class HiTACMuSEAgent:
                 act_dim=act_spaces[lid],
                 K=self.K,
                 loss_type=distill_cfg["loss_type"],
+                neg_policy=distill_cfg["neg_policy"],
                 device=device,
                 sup_coef=distill_cfg["sup_coef"],
                 neg_coef=distill_cfg["neg_coef"],
