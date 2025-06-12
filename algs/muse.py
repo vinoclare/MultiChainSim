@@ -115,6 +115,7 @@ class MuSE(nn.Module):
         entropy = dist.entropy().sum(dim=[1, 2])
         ratio = torch.exp(logp - log_probs_old)
 
+        adv = advantages.clone()
         if self.adv_norm:
             adv = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

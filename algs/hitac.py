@@ -3,7 +3,6 @@ HiTAC  (Hierarchical Transformer-based Adaptive Coordinator)
 ------------------------------------------------------------
 - 输入：全局 KPI token  +  各层最近局部 KPI 序列
 - 输出：每层选择子策略的 logits
-- 优化：默认用 PPO-Clip；也可以把 `clip_param=None` 退化成 REINFORCE
 """
 
 import torch

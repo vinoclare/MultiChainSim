@@ -92,9 +92,11 @@ class Distiller:
             # ---- 主策略前向 ----
             mean_s, std_s, _ = self.model(**obs_t)
 
-            is_pos_policy = cur_pid <= self.pos_pid_max
+            if self.neg_policy:
+                is_pos_policy = cur_pid <= self.pos_pid_max
+            else:
+                is_pos_policy = True
 
-            loss = torch.zeros(1, requires_grad=True).to(self.device)
             if is_pos_policy:
                 if self.loss_type == "mse":
                     loss_pos = F.mse_loss(mean_s, target_actions)
@@ -106,7 +108,7 @@ class Distiller:
                     dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
                     loss_kl = kl_divergence(dist_t, dist_s).mean()
                     loss = self.sup_coef * loss_kl
-            elif self.neg_policy:
+            else:
                 diff = F.relu(self.margin
                               - torch.abs(mean_s - target_actions))
                 loss_neg = diff.mean()
