@@ -2,8 +2,8 @@
   "training": {
     "num_episodes": 10000,
     "warmup_episodes": 1000,
-    "eval_interval": 20,
-    "eval_episodes": 5,
+    "eval_interval": 100,
+    "eval_episodes": 25,
     "log_interval": 100,
     "device": "cuda",
     "num_workers": 20
@@ -45,6 +45,7 @@
   },
 
   "distill": {
+    "hidden_dim": 64,
     "window_steps": 20000,
     "bc_steps": 300,
     "sup_coef": 1.0,

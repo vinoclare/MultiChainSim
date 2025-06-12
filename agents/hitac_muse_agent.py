@@ -34,7 +34,7 @@ class HiTACMuSEAgent:
             Distiller(
                 obs_spaces=obs_spaces[lid],
                 global_context_dim=global_context_dim,
-                hidden_dim=muse_cfg["hidden_dim"],
+                hidden_dim=distill_cfg["hidden_dim"],
                 act_dim=act_spaces[lid],
                 device=device,
                 sup_coef=distill_cfg["sup_coef"],
