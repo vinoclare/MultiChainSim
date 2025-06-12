@@ -46,7 +46,10 @@
 
   "distill": {
     "hidden_dim": 64,
-    "window_steps": 20000,
+    "loss_type": "mse",
+    "warmup_ep": 1000,
+    "batch_size": 256,
+    "min_reward_ratio": 0.6,
     "bc_steps": 300,
     "sup_coef": 1.0,
     "neg_coef": 1.0,

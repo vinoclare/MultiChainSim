@@ -51,6 +51,9 @@ distill_interval = algo_config["scheduler"]["bc_update_interval"]
 switch_interval = algo_config["scheduler"]["switch_interval"]
 
 steps_per_episode = env_config["max_steps"]
+K = algo_config["muse"]["K"]
+warmup_ep = algo_config["distill"]["warmup_ep"]
+min_reward_ratio = algo_config["distill"]["min_reward_ratio"]
 update_epochs = algo_config["muse"]["update_epochs"]
 gamma = algo_config["muse"]["gamma"]
 lam = algo_config["muse"]["lam"]
@@ -264,8 +267,10 @@ for episode in range(num_episodes):
     #     for lid in range(num_layers):
     #         writer.add_scalar(f"layer_{lid}/selected_pid", current_pid_tensor[0][lid], episode)
 
-    # 固定子策略0
-    current_pid_tensor = torch.tensor([[0 for _ in range(num_layers)]])
+    # # 固定子策略0
+    # current_pid_tensor = torch.tensor([[0 for _ in range(num_layers)]])
+
+    current_pid_tensor = torch.tensor([[episode % K for _ in range(num_layers)]], device=device)
 
     obs = env.reset(with_new_schedule=False)
     episode_reward = {lid: 0.0 for lid in range(num_layers)}
@@ -343,17 +348,11 @@ for episode in range(num_episodes):
             buffers[lid]["dones"].append(done)
             buffers[lid]["pid"].append(sample_out[lid]["pid"].item())
 
-            # === 存入蒸馏 buffer（仅 collect） ===
-            agent.distill_collect(lid,
-                                  {k: v.detach() for k, v in obs_dicts[lid].items()},
-                                  sample_out[lid]["actions"],
-                                  sample_out[lid]["pid"])
-
         if done:
             break
 
     global_step = (episode + 1) * steps_per_episode
-    if episode % eval_interval == 0:
+    if episode % eval_interval and episode > (warmup_ep * K) == 0:
         evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_interval, device)
 
     ppo_stats = {}
@@ -423,9 +422,6 @@ for episode in range(num_episodes):
 
                 stats = agent.muse_learn(lid, global_step, mini_batch)
                 ppo_stats.update(stats)
-
-        # === Step 5: 清空当前层的 buffer ===
-        buffers[lid] = {k: [] for k in buf}
 
     # === Step 6: TensorBoard 记录 PPO loss ===
     if episode % log_interval == 0:
@@ -504,6 +500,20 @@ for episode in range(num_episodes):
         writer.add_scalar("global/episode_assign_bonus", np.mean(episodes_ab_deque), global_step)
         writer.add_scalar("global/episode_wait_penalty", np.mean(episodes_wp_deque), global_step)
 
+    # === 存入蒸馏 buffer ===
+    if reward_sum > np.mean(episodes_reward_deque) * min_reward_ratio:
+        for lid in range(num_layers):
+            agent.distill_collect(lid,
+                                  {"task_obs": torch.stack(buffers[lid]["task_obs"], dim=0),
+                                   "worker_loads": torch.stack(buffers[lid]["worker_loads"], dim=0),
+                                   "worker_profile": torch.stack(buffers[lid]["worker_profile"], dim=0),
+                                   "global_context": torch.stack(buffers[lid]["global_context"], dim=0),
+                                   "valid_mask": torch.stack(buffers[lid]["valid_mask"], dim=0)},
+                                  torch.stack(buffers[lid]["actions"], dim=0),
+                                  buffers[lid]["pid"])
+
+            buffers[lid] = {k: [] for k in buffers[lid]}
+
     # === 计算 EMA baseline ===
     global_episode_reward = sum(episode_reward.values())  # 标量
     advantage = global_episode_reward - ema_return
@@ -523,7 +533,7 @@ for episode in range(num_episodes):
     #         writer.add_scalar(k, v, episode)
 
     # === 蒸馏更新 ===
-    if episode % distill_interval == 0:
+    if episode % distill_interval == 0 and episode > (warmup_ep * K):
         for lid in range(num_layers):
-            loss = agent.distill_update(lid)
+            loss = agent.distill_update(lid, current_pid_tensor)
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)

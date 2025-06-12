@@ -2,7 +2,8 @@ import torch
 import torch.nn.functional as F
 from collections import deque
 
-from torch.distributions import Normal
+from numpy.random import random
+from torch.distributions import Normal, kl_divergence
 
 from models.ppo_model import PPOIndustrialModel
 
@@ -14,6 +15,8 @@ class Distiller:
         global_context_dim,
         hidden_dim,
         act_dim,
+        K,
+        loss_type="mse",
         device="cuda",
         buffer_size=10000,
         sup_coef=1.0,
@@ -30,7 +33,6 @@ class Distiller:
             global_context_dim=global_context_dim,
             hidden_dim=hidden_dim
         ).to(self.device)
-        self.buffer = deque(maxlen=buffer_size)
 
         self.act_dim = act_dim
         self.sup_coef = sup_coef
@@ -39,75 +41,78 @@ class Distiller:
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
 
+        self.K = K
+        self.loss_type = loss_type  # mse or kl
+
+        self.buffers = {pid: deque(maxlen=buffer_size) for pid in range(K)}
+
     def collect(self, obs_dict, actions, pid):
         """
         收集一批数据，obs_dict 字典含 task_obs、worker_loads 等张量；
         actions: [B, n_worker, num_pad_tasks]
         pid:     [B]，对应每条轨迹来源的子策略 index
         """
+        obs_cpu = {k: v.detach().cpu() for k, v in obs_dict.items()}
         for i in range(actions.shape[0]):
-            item = {
-                "task_obs": obs_dict["task_obs"][i],
-                "worker_loads": obs_dict["worker_loads"][i],
-                "worker_profiles": obs_dict["worker_profile"][i],
-                "global_context": obs_dict["global_context"][i],
-                "valid_mask": obs_dict["valid_mask"][i],
-                "action": actions[i],
-                "pid": pid[i].item()
-            }
-            self.buffer.append(item)
+            cur_pid = pid[i]
+            self.buffers[cur_pid].append({
+                "obs": {k: obs_cpu[k][i] for k in obs_cpu},
+                "action": actions[i].detach().cpu()
+            })
 
-    def bc_update(self, steps=300):
-        """
-        从 buffer 中取数据进行蒸馏训练，默认训练若干 step（不清空 buffer）
-        """
-        if len(self.buffer) < 32:
-            return
+    def _sample_from_buffers(self, cur_pid: int, batch_size: int):
+        buf = self.buffers[cur_pid]
+        if len(buf) < batch_size:
+            return random.sample(buf, len(buf))  # 不足则全取
+        return random.sample(buf, batch_size)
 
+    def bc_update(self, cur_pid: int, batch_size: int = 64, steps: int = 300):
+        """对主策略进行若干步蒸馏更新"""
+        if len(self.buffers[cur_pid]) < batch_size:
+            return 0.0   # 数据不足
+
+        total_loss = 0.0
         for _ in range(steps):
-            batch = [self.buffer[i] for i in torch.randint(0, len(self.buffer), (32,))]
-            obs_keys = ["task_obs", "worker_loads", "worker_profiles", "global_context", "valid_mask"]
-            inputs = {k: torch.stack([torch.tensor(d[k]) for d in batch]).to(self.device)
-                      for k in obs_keys}
-            target_actions = torch.stack([torch.tensor(d["action"]) for d in batch]).to(self.device)
-            pids = torch.tensor([d["pid"] for d in batch], device=self.device)
+            batch = self._sample_from_buffers(cur_pid, batch_size)
+            if len(batch) == 0:
+                break
 
-            # 分为正负样本
-            pos_mask = (pids >= 0)
-            neg_mask = (pids < 0)
+            # ---- 构造张量 ----
+            obs_keys = ["task_obs", "worker_loads", "worker_profiles",
+                        "global_context", "valid_mask"]
+            obs_t = {k: torch.stack([torch.tensor(d["obs"][k])
+                                     for d in batch]).to(self.device)
+                     for k in obs_keys}
+            target_actions = torch.stack([torch.tensor(d["action"])
+                                          for d in batch]).to(self.device)
 
-            mean, _, _ = self.model(**inputs)
+            # ---- 主策略前向 ----
+            mean_s, std_s, _ = self.model(**obs_t)
+            if self.loss_type == "mse":
+                loss_pos = F.mse_loss(mean_s, target_actions)
+                loss = self.sup_coef * loss_pos                           # 无负样本逻辑
+            else:  # "kl"
+                # teacher 视为 N(mean_t, σ=0.1) 的固定高斯
+                teacher_std = torch.full_like(mean_s, 0.1)
+                dist_t = Normal(target_actions, teacher_std)
+                dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
+                loss_kl = kl_divergence(dist_t, dist_s).mean()
+                loss = self.sup_coef * loss_kl
 
-            pos_loss, neg_loss = 0.0, 0.0
-            if pos_mask.any():
-                a_pos = target_actions[pos_mask]
-                mean_pos = mean[pos_mask]
-                pos_loss = F.mse_loss(mean_pos, a_pos)
-
-            if neg_mask.any():
-                a_neg = target_actions[neg_mask]
-                mean_neg = mean[neg_mask]
-                # margin-based 对比蒸馏（压制负样本行为）
-                dist = F.mse_loss(mean_neg, a_neg, reduction="none")  # [B, W, T]
-                margin_loss = F.relu(self.margin - dist).mean()
-                neg_loss = margin_loss
-
-            loss = self.sup_coef * pos_loss + self.neg_coef * neg_loss
+            # ---- 反向更新 ----
             self.optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
 
-            return loss.item()
+            total_loss += loss.item()
 
+        return total_loss / max(1, steps)
+
+    @torch.no_grad()
     def predict(self, obs_dict):
-        """
-        推理接口（用于部署主策略）
-        """
-        with torch.no_grad():
-            inputs = {k: obs_dict[k].to(self.device) for k in [
-                "task_obs", "worker_loads", "worker_profiles", "global_context", "valid_mask"]}
-            mean, std, _ = self.model(**inputs)
-            dist = Normal(mean, std)
-            action = dist.sample()
-            action = torch.clamp(action, 0, 1)
+        inputs = {k: v.to(self.device) for k, v in obs_dict.items()}
+        mean, std, _ = self.model(**inputs)
+        dist = Normal(mean, std)
+        action = dist.sample().clamp(0, 1)
         return action

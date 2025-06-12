@@ -22,6 +22,8 @@ class HiTACMuSEAgent:
         self.device = torch.device(device)
         self.num_layers = num_layers
         self.K = muse_cfg["K"]
+        self.distill_batch_size = distill_cfg["batch_size"]
+        self.bc_steps = distill_cfg["bc_steps"]
 
         # === 各层 MuSE ===
         self.muses = [
@@ -36,6 +38,8 @@ class HiTACMuSEAgent:
                 global_context_dim=global_context_dim,
                 hidden_dim=distill_cfg["hidden_dim"],
                 act_dim=act_spaces[lid],
+                K=self.K,
+                loss_type=distill_cfg["loss_type"],
                 device=device,
                 sup_coef=distill_cfg["sup_coef"],
                 neg_coef=distill_cfg["neg_coef"],
@@ -107,8 +111,8 @@ class HiTACMuSEAgent:
     def distill_collect(self, layer_id, buffer_obs, buffer_actions, buffer_pid):
         self.distillers[layer_id].collect(buffer_obs, buffer_actions, buffer_pid)
 
-    def distill_update(self, layer_id, steps=300):
-        return self.distillers[layer_id].bc_update(steps)
+    def distill_update(self, layer_id, cur_pid):
+        return self.distillers[layer_id].bc_update(cur_pid, self.distill_batch_size, self.bc_steps)
 
     def main_policy_predict(self, layer_id, obs_dict):
         return self.distillers[layer_id].predict(obs_dict)
