@@ -94,7 +94,7 @@ class Distiller:
 
             is_pos_policy = cur_pid <= self.pos_pid_max
 
-            loss = 0.0
+            loss = torch.zeros(1, requires_grad=True).to(self.device)
             if is_pos_policy:
                 if self.loss_type == "mse":
                     loss_pos = F.mse_loss(mean_s, target_actions)
