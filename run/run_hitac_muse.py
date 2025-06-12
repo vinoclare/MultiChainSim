@@ -61,6 +61,7 @@ batch_size = algo_config["muse"]["batch_size"]
 return_norm = algo_config["muse"]["return_normalization"]
 
 current_pid_tensor = None
+distill_count = 0
 
 # === 每层 obs 结构描述（供 MuSE init）===
 obs_shapes = []
@@ -534,6 +535,8 @@ for episode in range(num_episodes):
 
     # === 蒸馏更新 ===
     if episode % distill_interval == 0 and episode > (warmup_ep * K):
+        distill_count += 1
+        distill_pid = distill_count % K
         for lid in range(num_layers):
-            loss = agent.distill_update(lid, int(current_pid_tensor[0, lid]))
+            loss = agent.distill_update(lid, distill_pid)
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
