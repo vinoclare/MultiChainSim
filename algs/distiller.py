@@ -95,7 +95,7 @@ class Distiller:
             if is_pos_policy:
                 if self.loss_type == "mse":
                     loss_pos = F.mse_loss(mean_s, target_actions)
-                    loss = self.sup_coef * loss_pos                           # 无负样本逻辑
+                    loss = self.sup_coef * loss_pos
                 else:  # "kl"
                     # teacher 视为 N(mean_t, σ=0.1) 的固定高斯
                     teacher_std = torch.full_like(mean_s, 0.1)

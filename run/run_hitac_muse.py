@@ -352,7 +352,7 @@ for episode in range(num_episodes):
             break
 
     global_step = (episode + 1) * steps_per_episode
-    if episode % eval_interval and episode > (warmup_ep * K) == 0:
+    if (episode % eval_interval == 0) and (episode > warmup_ep * K):
         evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_interval, device)
 
     ppo_stats = {}
