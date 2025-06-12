@@ -4,12 +4,12 @@
     "warmup_episodes": 1000,
     "eval_interval": 20,
     "eval_episodes": 5,
-    "log_interval": 20,
+    "log_interval": 100,
     "device": "cuda",
     "num_workers": 20
   },
 
-  "subpolicy": {
+  "muse": {
     "K": 4,
     "alphas": [0.2, 0.8, 0, -1],
     "betas":  [0.8, 0.2, -1, 0],
@@ -24,7 +24,8 @@
     "entropy_coef": 0.01,
     "initial_lr": 3e-4,
     "max_grad_norm": 0.5,
-    "return_normalization": true
+    "return_normalization": true,
+    "advantage_normalization": true
   },
 
   "hitac": {
@@ -37,7 +38,7 @@
     "kpi_window_size": 10,
 
     "clip_param": 0.2,
-    "entropy_coef": 0.005,
+    "entropy_coef": 0.05,
     "gamma": 1.0,
     "initial_lr": 3e-4,
     "max_grad_norm": 0.5

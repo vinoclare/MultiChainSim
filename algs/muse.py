@@ -30,6 +30,9 @@ class MuSE(nn.Module):
             K=self.K
         ).to(self.device)
 
+        # with torch.no_grad():
+        #     self.model.log_stds.fill_(-0.5)
+
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg["initial_lr"])
 
         # α,β 系数
@@ -38,6 +41,8 @@ class MuSE(nn.Module):
 
         self.value_loss_coef = cfg["value_loss_coef"]
         self.entropy_coef = cfg["entropy_coef"]
+
+        self.adv_norm = cfg["advantage_normalization"]
 
         # ---------- 采样 ---------- #
     @torch.no_grad()
@@ -110,7 +115,8 @@ class MuSE(nn.Module):
         entropy = dist.entropy().sum(dim=[1, 2])
         ratio = torch.exp(logp - log_probs_old)
 
-        adv = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if self.adv_norm:
+            adv = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Policy loss
         surr1 = ratio * adv

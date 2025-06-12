@@ -51,11 +51,11 @@ distill_interval = algo_config["scheduler"]["bc_update_interval"]
 switch_interval = algo_config["scheduler"]["switch_interval"]
 
 steps_per_episode = env_config["max_steps"]
-update_epochs = algo_config["subpolicy"]["update_epochs"]
-gamma = algo_config["subpolicy"]["gamma"]
-lam = algo_config["subpolicy"]["lam"]
-batch_size = algo_config["subpolicy"]["batch_size"]
-return_norm = algo_config["subpolicy"]["return_normalization"]
+update_epochs = algo_config["muse"]["update_epochs"]
+gamma = algo_config["muse"]["gamma"]
+lam = algo_config["muse"]["lam"]
+batch_size = algo_config["muse"]["batch_size"]
+return_norm = algo_config["muse"]["return_normalization"]
 
 current_pid_tensor = None
 
@@ -82,7 +82,7 @@ writer = SummaryWriter(log_dir=log_dir)
 
 # ===== 创建 HiTACMuSEAgent =====
 agent = HiTACMuSEAgent(
-    muse_cfg=algo_config["subpolicy"],
+    muse_cfg=algo_config["muse"],
     hitac_cfg=algo_config["hitac"],
     distill_cfg=algo_config["distill"],
     obs_spaces=obs_shapes,
@@ -274,6 +274,12 @@ for episode in range(num_episodes):
     episode_ab = {lid: 0.0 for lid in range(num_layers)}
     episode_wp = {lid: 0.0 for lid in range(num_layers)}
 
+    episodes_reward_deque = deque(maxlen=log_interval)
+    episodes_cost_deque = deque(maxlen=log_interval)
+    episodes_util_deque = deque(maxlen=log_interval)
+    episodes_ab_deque = deque(maxlen=log_interval)
+    episodes_wp_deque = deque(maxlen=log_interval)
+
     for step in range(steps_per_episode):
         # === 构造每层 obs_dict ===
         obs_dicts = {}
@@ -390,7 +396,7 @@ for episode in range(num_episodes):
 
         # === Step 4: PPO 多 epoch 更新 ===
         for _ in range(update_epochs):
-            np.random.shuffle(batch_data)
+            # np.random.shuffle(batch_data)
             for i in range(0, len(batch_data), batch_size):
                 mini = batch_data[i:i + batch_size]
                 if len(mini) == 0:
@@ -472,6 +478,12 @@ for episode in range(num_episodes):
     wait_penalty_sum = sum(episode_wp.values())
     assign_bonus_sum = sum(episode_ab.values())
 
+    episodes_reward_deque.append(reward_sum)
+    episodes_cost_deque.append(cost_sum)
+    episodes_util_deque.append(util_sum)
+    episodes_wp_deque.append(wait_penalty_sum)
+    episodes_ab_deque.append(assign_bonus_sum)
+
     raw_global_kpi = torch.tensor([
         reward_sum, cost_sum, util_sum, global_done_rate
     ], dtype=torch.float32, device=device).unsqueeze(0)
@@ -486,11 +498,11 @@ for episode in range(num_episodes):
             writer.add_scalar(f"layer_{lid}/utility", episode_util[lid], global_step)
             writer.add_scalar(f"layer_{lid}/assign_bonus", episode_ab[lid], global_step)
             writer.add_scalar(f"layer_{lid}/wait_penalty", episode_wp[lid], global_step)
-        writer.add_scalar("global/episode_total_cost", cost_sum, global_step)
-        writer.add_scalar("global/episode_total_reward", reward_sum, global_step)
-        writer.add_scalar("global/episode_total_utility", util_sum, global_step)
-        writer.add_scalar("global/episode_assign_bonus", assign_bonus_sum, global_step)
-        writer.add_scalar("global/episode_wait_penalty", wait_penalty_sum, global_step)
+        writer.add_scalar("global/episode_total_cost", np.mean(episodes_cost_deque), global_step)
+        writer.add_scalar("global/episode_total_reward", np.mean(episodes_reward_deque), global_step)
+        writer.add_scalar("global/episode_total_utility", np.mean(episodes_util_deque), global_step)
+        writer.add_scalar("global/episode_assign_bonus", np.mean(episodes_ab_deque), global_step)
+        writer.add_scalar("global/episode_wait_penalty", np.mean(episodes_wp_deque), global_step)
 
     # === 计算 EMA baseline ===
     global_episode_reward = sum(episode_reward.values())  # 标量
