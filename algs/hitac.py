@@ -133,7 +133,7 @@ class HiTAC(nn.Module):
         avg_rewards = policies_info[0, :, :, 0]
         freq = self.freq_counter + 1.0
         ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
-        logits = logits + self.ucb_lambda * ucb_bonus + avg_rewards
+        logits = logits + self.ucb_lambda * ucb_bonus + 0.01 * avg_rewards
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         if greedy:
