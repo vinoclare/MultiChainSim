@@ -70,7 +70,8 @@ class HiTACMuSEAgent:
             sticky_prob=hitac_cfg["sticky_prob"],
             update_epochs=hitac_cfg["update_epochs"],
             temperature=hitac_cfg["temperature"],
-            epsilon=hitac_cfg["epsilon"]
+            epsilon=hitac_cfg["epsilon"],
+            writer=writer
         ).to(device)
 
     def select_subpolicies(self, local_kpis, global_kpi, policies_info, step, greedy=False):

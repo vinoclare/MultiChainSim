@@ -219,23 +219,23 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_int
             cost_sums[lid].append(episode_cost[lid])
             util_sums[lid].append(episode_util[lid])
 
-        # 打印任务状态
-        num_total_tasks = 0
-        num_waiting_tasks = 0
-        num_done_tasks = 0
-        num_failed_tasks = 0
-        for step_task_list in eval_env.task_schedule.values():
-            for task in step_task_list:
-                num_total_tasks += 1
-                status = task.status
-                if status == "waiting":
-                    num_waiting_tasks += 1
-                elif status == "done":
-                    num_done_tasks += 1
-                elif status == "failed":
-                    num_failed_tasks += 1
-        print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-              f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
+        # # 打印任务状态
+        # num_total_tasks = 0
+        # num_waiting_tasks = 0
+        # num_done_tasks = 0
+        # num_failed_tasks = 0
+        # for step_task_list in eval_env.task_schedule.values():
+        #     for task in step_task_list:
+        #         num_total_tasks += 1
+        #         status = task.status
+        #         if status == "waiting":
+        #             num_waiting_tasks += 1
+        #         elif status == "done":
+        #             num_done_tasks += 1
+        #         elif status == "failed":
+        #             num_failed_tasks += 1
+        # print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
+        #       f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # === TensorBoard logging ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in range(num_layers)])
@@ -477,24 +477,24 @@ for episode in range(num_episodes):
         for k, v in ppo_stats.items():
             writer.add_scalar(k, v, episode)
 
-    # ===== 统计各种任务状态的数量 =====
-    num_total_tasks = 0
-    num_waiting_tasks = 0
-    num_done_tasks = 0
-    num_failed_tasks = 0
-    for step_task_list in env.task_schedule.values():
-        for task in step_task_list:
-            num_total_tasks += 1
-            status = task.status
-            if status == "waiting":
-                num_waiting_tasks += 1
-            elif status == "done":
-                num_done_tasks += 1
-            elif status == "failed":
-                num_failed_tasks += 1
-    global_done_rate = num_done_tasks / num_total_tasks
-    print(f"[Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-          f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
+    # # ===== 统计各种任务状态的数量 =====
+    # num_total_tasks = 0
+    # num_waiting_tasks = 0
+    # num_done_tasks = 0
+    # num_failed_tasks = 0
+    # for step_task_list in env.task_schedule.values():
+    #     for task in step_task_list:
+    #         num_total_tasks += 1
+    #         status = task.status
+    #         if status == "waiting":
+    #             num_waiting_tasks += 1
+    #         elif status == "done":
+    #             num_done_tasks += 1
+    #         elif status == "failed":
+    #             num_failed_tasks += 1
+    # global_done_rate = num_done_tasks / num_total_tasks
+    # print(f"[Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
+    #       f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # ---------- 更新 EMA 统计 ----------
     for lid in range(num_layers):
@@ -554,7 +554,7 @@ for episode in range(num_episodes):
     episodes_ab_deque.append(assign_bonus_sum)
 
     raw_global_kpi = torch.tensor([
-        reward_sum, cost_sum, util_sum, global_done_rate
+        reward_sum, cost_sum, util_sum
     ], dtype=torch.float32, device=device).unsqueeze(0)
 
     global_kpi_history.append(raw_global_kpi.squeeze(0))

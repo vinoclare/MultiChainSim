@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+from torch.utils.tensorboard import SummaryWriter
 
 
 class HiTAC(nn.Module):
@@ -32,7 +33,8 @@ class HiTAC(nn.Module):
             sticky_prob: float = 0.1,
             update_epochs: int = 10,
             temperature: float = 0.5,
-            epsilon: float = 0.1
+            epsilon: float = 0.1,
+            writer: SummaryWriter = None
     ):
         super().__init__()
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -45,6 +47,7 @@ class HiTAC(nn.Module):
         self.update_epochs = update_epochs
         self.temperature = temperature
         self.epsilon = epsilon
+        self.writer = writer
 
         # === 编码器 ===
         self.local_embed = nn.Linear(local_kpi_dim, hidden_dim)
@@ -133,7 +136,7 @@ class HiTAC(nn.Module):
         avg_rewards = policies_info[0, :, :, 0]
         freq = self.freq_counter + 1.0
         ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
-        logits = logits + self.ucb_lambda * ucb_bonus + 0.01 * avg_rewards
+        logits = logits + self.ucb_lambda * ucb_bonus + 0.05 * avg_rewards
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         if greedy:
@@ -152,6 +155,12 @@ class HiTAC(nn.Module):
 
         self.last_pid = pids.detach()
         self.store_for_update(logits.unsqueeze(0).detach(), pids.unsqueeze(0).detach())
+
+        # log 每个子策略被选择的次数
+        print(f"Step: {step}")
+        for l in range(self.num_layers):
+            counts = [int(self.freq_counter[l, k].item()) for k in range(self.num_subpolicies)]
+            print(f"  Layer {l}: {counts}")
 
         return pids
 
