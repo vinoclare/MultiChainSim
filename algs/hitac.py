@@ -30,7 +30,8 @@ class HiTAC(nn.Module):
             lr: float = 3e-4,
             ucb_lambda: float = 0.2,
             sticky_prob: float = 0.1,
-            update_epochs: int = 10
+            update_epochs: int = 10,
+            temperature: float = 0.5
     ):
         super().__init__()
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -41,6 +42,7 @@ class HiTAC(nn.Module):
         self.max_grad_norm = max_grad_norm
         self.total_steps = total_steps
         self.update_epochs = update_epochs
+        self.temperature = temperature
 
         # === 编码器 ===
         self.local_embed = nn.Linear(local_kpi_dim, hidden_dim)
@@ -115,11 +117,12 @@ class HiTAC(nn.Module):
         logits = logits[0]
 
         # === 计算 UCB 奖励 ===
-        ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=logits.device)) /
-                               (self.freq_counter + 1.0))  # (L, K)
+        avg_rewards = policies_info[0, :, :, 0]
+        freq = self.freq_counter + 1.0
+        ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=logits.device)) / freq) + avg_rewards  # (L, K)
         logits = logits + self.ucb_lambda * ucb_bonus
 
-        probs = F.softmax(logits, dim=-1)
+        probs = F.softmax(logits / self.temperature, dim=-1)
         if greedy:
             pids = torch.argmax(probs, dim=-1)  # (L)
         else:

@@ -267,7 +267,11 @@ for episode in range(num_episodes):
         for _ in range(num_layers)
     ]
 
-    if episode % switch_interval == 0:
+    # warmup stage：轮询训练每个子策略
+    if episode < (warmup_ep * K):
+        current_pid_tensor = torch.tensor([[episode % K for _ in range(num_layers)]], device=device)
+
+    if episode % switch_interval == 0 and episode >= (warmup_ep * K):
         # === 构造滑动平均 KPI（用于 HiTAC select）===
         local_kpis_tensor = torch.zeros((1, num_layers, 8), dtype=torch.float32, device=device)
         for lid in range(num_layers):
@@ -284,7 +288,7 @@ for episode in range(num_episodes):
 
         for lid in range(num_layers):
             for k in range(K):
-                cnt = max(pol_cnt[lid][k], 1e-6)
+                cnt = max(pol_cnt[lid][k], 1)
                 st = pol_stats[lid][k]
                 mu_r = st["avg_reward"] / cnt
                 mu_c = st["avg_cost"] / cnt
@@ -586,19 +590,14 @@ for episode in range(num_episodes):
 
             buffers[lid] = {k: [] for k in buffers[lid]}
 
-    # === 计算 EMA baseline ===
-    global_episode_reward = sum(episode_reward.values())  # 标量
-    advantage = global_episode_reward - ema_return
-    ema_return = (1 - ema_alpha) * ema_return + ema_alpha * global_episode_reward
-
     # === HiTAC PPO 更新 ===
-    if episode % hitac_update_interval == 0:
+    if episode % hitac_update_interval and episode >= (warmup_ep * K) == 0:
         # ---- 构造 policies_info 张量 ----
         policies_info_tensor = torch.zeros((1, num_layers, K, 6), dtype=torch.float32, device=device)
 
         for lid in range(num_layers):
             for k in range(K):
-                cnt = max(pol_cnt[lid][k], 1e-6)
+                cnt = max(pol_cnt[lid][k], 1)
                 st = pol_stats[lid][k]
                 mu_r = st["avg_reward"] / cnt
                 mu_c = st["avg_cost"] / cnt
@@ -628,13 +627,13 @@ for episode in range(num_episodes):
                                          returns_L,  # shape (L,)
                                          global_step)
 
-    # === TensorBoard 记录 ===
-    if episode % log_interval == 0:
-        for k, v in hitac_stats.items():
-            writer.add_scalar(k, v, episode)
+        # === TensorBoard 记录 ===
+        if episode % log_interval == 0:
+            for k, v in hitac_stats.items():
+                writer.add_scalar(k, v, episode)
 
     # === 蒸馏更新 ===
-    if episode % distill_interval == 0 and episode > (warmup_ep * K):
+    if episode % distill_interval == 0 and episode >= (warmup_ep * K):
         for lid in range(num_layers):
             loss = agent.distill_update(lid, current_pid_tensor[0, lid].item())
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)

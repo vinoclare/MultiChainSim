@@ -69,6 +69,7 @@ class HiTACMuSEAgent:
             ucb_lambda=hitac_cfg["ucb_lambda"],
             sticky_prob=hitac_cfg["sticky_prob"],
             update_epochs=hitac_cfg["update_epochs"],
+
         ).to(device)
 
     def select_subpolicies(self, local_kpis, global_kpi, policies_info, step, greedy=False):
