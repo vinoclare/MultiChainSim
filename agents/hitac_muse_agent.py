@@ -1,5 +1,7 @@
 # agents/hitac_muse_agent.py
 import torch
+from torch.distributions import Categorical
+
 from algs.muse import MuSE
 from algs.hitac import HiTAC
 from algs.distiller import Distiller
@@ -61,18 +63,16 @@ class HiTACMuSEAgent:
             clip_param=hitac_cfg["clip_param"],
             entropy_coef=hitac_cfg["entropy_coef"],
             max_grad_norm=hitac_cfg["max_grad_norm"],
-            device=device
+            device=device,
+            total_steps=total_training_steps,
+            lr=hitac_cfg["lr"],
+            ucb_lambda=hitac_cfg["ucb_lambda"],
+            sticky_prob=hitac_cfg["sticky_prob"],
+            update_epochs=hitac_cfg["update_epochs"],
         ).to(device)
 
-    def select_subpolicies(self, local_kpis, global_kpi, greedy=False):
-        """
-        Args:
-          local_kpis: Tensor (B, L, d_l)
-          global_kpi: Tensor (B, d_g)
-        Return:
-          pid: Tensor (B, L)
-        """
-        return self.hitac.select(local_kpis, global_kpi, greedy=greedy)
+    def select_subpolicies(self, local_kpis, global_kpi, policies_info, step, greedy=False):
+        return self.hitac.select(local_kpis, global_kpi, policies_info, step, greedy=greedy)
 
     @torch.no_grad()
     def sample(self, obs_dicts, pids):
@@ -118,10 +118,5 @@ class HiTACMuSEAgent:
     def main_policy_predict(self, layer_id, obs_dict):
         return self.distillers[layer_id].predict(obs_dict)
 
-    def hitac_update(self, local_kpis, global_kpi, pid, advantage, lr=None):
-        """
-        存储 + PPO 更新 HiTAC
-        """
-        logits = self.hitac.forward(local_kpis, global_kpi)
-        self.hitac.store_for_update(logits, pid, advantage)
-        return self.hitac.update(local_kpis, global_kpi, pid, advantage, lr)
+    def hitac_update(self, local_kpis, global_kpi, policies_info, returns, step):
+        return self.hitac.update(local_kpis, global_kpi, policies_info, returns, step)
