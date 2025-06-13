@@ -35,7 +35,7 @@
     "hidden_dim": 64,
     "n_heads": 4,
     "transformer_layers": 2,
-    "kpi_window_size": 10,
+    "kpi_window_size": 50,
     "update_epochs": 10,
 
     "clip_param": 0.2,
@@ -54,7 +54,7 @@
     "hidden_dim": 64,
     "loss_type": "kl",
     "neg_policy": false,
-    "warmup_ep": 10,
+    "warmup_ep": 50,
     "batch_size": 512,
     "min_reward_ratio": 0.6,
     "bc_steps": 50,
