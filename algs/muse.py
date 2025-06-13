@@ -54,8 +54,9 @@ class MuSE(nn.Module):
         dist = Normal(mean, std)
         action = dist.rsample().clamp(0, 1)
         logp = dist.log_prob(action).sum(dim=[1, 2])
-        entropy = dist.entropy().sum(dim=[1, 2])
-        return v_u, v_c, action, logp, entropy
+        entropy = dist.entropy().mean(dim=[1, 2])
+        action_std = action.std(dim=[1, 2])
+        return v_u, v_c, action, logp, entropy, action_std
 
     # ---------- 训练 ---------- #
     def learn(

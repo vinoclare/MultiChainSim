@@ -55,6 +55,7 @@ class HiTACMuSEAgent:
         self.hitac = HiTAC(
             local_kpi_dim=hitac_cfg["local_kpi_dim"],
             global_kpi_dim=hitac_cfg["global_kpi_dim"],
+            policies_info_dim=hitac_cfg["policies_info_dim"],
             num_layers=self.num_layers,
             num_subpolicies=self.K,
             hidden_dim=hitac_cfg["hidden_dim"],
@@ -88,13 +89,13 @@ class HiTACMuSEAgent:
         for lid in range(self.num_layers):
             muse = self.muses[lid]
             obs = obs_dicts[lid]
-            v_u, v_c, actions, logp, ent = muse.sample(
+            v_u, v_c, actions, logp, ent, act_std = muse.sample(
                 obs["task_obs"], obs["worker_loads"],
                 obs["worker_profile"], obs["global_context"], obs["valid_mask"], pids[lid]
             )
             output[lid] = {
                 "v_u": v_u, "v_c": v_c, "actions": actions,
-                "logp": logp, "ent": ent, "pid": pids[lid]
+                "logp": logp, "ent": ent, "act_std": act_std, "pid": pids[lid]
             }
 
         return output

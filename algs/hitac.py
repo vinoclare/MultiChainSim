@@ -18,6 +18,7 @@ class HiTAC(nn.Module):
             self,
             local_kpi_dim: int,
             global_kpi_dim: int,
+            policies_info_dim: int,
             num_layers: int,
             num_subpolicies: int,
             hidden_dim: int = 64,
@@ -55,7 +56,7 @@ class HiTAC(nn.Module):
         self.layer_pos = nn.Embedding(num_layers, hidden_dim)
 
         self.policies_encoder = nn.Sequential(
-            nn.Linear(num_subpolicies * 6, hidden_dim),
+            nn.Linear(num_subpolicies * policies_info_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim)
         )
