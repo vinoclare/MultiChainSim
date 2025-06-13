@@ -72,6 +72,8 @@ class HiTAC(nn.Module):
         self.act_head = nn.Linear(hidden_dim, num_subpolicies)
         self.value_head = nn.Linear(hidden_dim, 1)
 
+        self.logits_norm = nn.LayerNorm(num_subpolicies)
+
         self.value_loss_coef = 0.5
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
@@ -106,6 +108,7 @@ class HiTAC(nn.Module):
         encoded = self.encoder(tokens)  # (B, L+1, d)
         h = encoded[:, 1:, :]  # 取出每层的表示 (B, L, d)
         logits = self.act_head(h)  # (B, L, K)
+        logits = self.logits_norm(logits)
         values = self.value_head(h).squeeze(-1)  # (B, L)
         return logits, values
 
