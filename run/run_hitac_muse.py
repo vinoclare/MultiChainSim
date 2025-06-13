@@ -46,7 +46,7 @@ num_episodes = algo_config["training"]["num_episodes"]
 eval_interval = algo_config["training"]["eval_interval"]
 log_interval = algo_config["training"]["log_interval"]
 eval_episodes = algo_config["training"]["eval_episodes"]
-distill_interval = algo_config["scheduler"]["bc_update_interval"]
+distill_interval = algo_config["scheduler"]["distill_interval"]
 switch_interval = algo_config["scheduler"]["switch_interval"]
 hitac_update_interval = algo_config["scheduler"]["hitac_update_interval"]
 
@@ -61,7 +61,6 @@ batch_size = algo_config["muse"]["batch_size"]
 return_norm = algo_config["muse"]["return_normalization"]
 
 current_pid_tensor = None
-distill_count = 0
 
 # === 每层 obs 结构描述（供 MuSE init）===
 obs_shapes = []
@@ -636,8 +635,6 @@ for episode in range(num_episodes):
 
     # === 蒸馏更新 ===
     if episode % distill_interval == 0 and episode > (warmup_ep * K):
-        distill_count += 1
-        distill_pid = distill_count % K
         for lid in range(num_layers):
-            loss = agent.distill_update(lid, distill_pid)
+            loss = agent.distill_update(lid, current_pid_tensor[0, lid].item())
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)

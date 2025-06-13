@@ -64,6 +64,6 @@
   "scheduler": {
     "switch_interval": 50,
     "hitac_update_interval": 1,
-    "bc_update_interval": 10
+    "distill_interval": 10
   }
 }
