@@ -108,7 +108,6 @@ pol_stats = [
         for _ in range(K)
     ] for _ in range(num_layers)
 ]
-pol_cnt = [[0 for _ in range(K)] for _ in range(num_layers)]
 
 local_kpi_history = {
     lid: deque(maxlen=kpi_window_size)
@@ -288,14 +287,13 @@ for episode in range(num_episodes):
 
         for lid in range(num_layers):
             for k in range(K):
-                cnt = max(pol_cnt[lid][k], 1)
                 st = pol_stats[lid][k]
-                mu_r = st["avg_reward"] / cnt
-                mu_c = st["avg_cost"] / cnt
-                mu_u = st["avg_util"] / cnt
-                mu_rt = st["avg_return"] / cnt
-                var_rt = max(st["var_ret"] / cnt - mu_rt ** 2, 1e-6)
-                var_r = max(st["var_rew"] / cnt - mu_r ** 2, 1e-6)
+                mu_r = st["avg_reward"]
+                mu_c = st["avg_cost"]
+                mu_u = st["avg_util"]
+                mu_rt = st["avg_return"]
+                var_rt = max(st["var_ret"] - mu_rt ** 2, 1e-6)
+                var_r = max(st["var_rew"] - mu_r ** 2, 1e-6)
                 policies_info_tensor[0, lid, k] = torch.tensor(
                                 [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r], device=device)
 
@@ -506,7 +504,6 @@ for episode in range(num_episodes):
                 continue
 
             coef = 1.0 - ema_beta
-            pol_cnt[lid][k] = ema_beta * pol_cnt[lid][k] + coef
 
             mean_r = ep_sums[lid][k]["r"] / n
             mean_c = ep_sums[lid][k]["c"] / n
@@ -597,14 +594,13 @@ for episode in range(num_episodes):
 
         for lid in range(num_layers):
             for k in range(K):
-                cnt = max(pol_cnt[lid][k], 1)
                 st = pol_stats[lid][k]
-                mu_r = st["avg_reward"] / cnt
-                mu_c = st["avg_cost"] / cnt
-                mu_u = st["avg_util"] / cnt
-                mu_rt = st["avg_return"] / cnt
-                var_rt = max(st["var_ret"] / cnt - mu_rt ** 2, 1e-6)
-                var_r = max(st["var_rew"] / cnt - mu_r ** 2, 1e-6)
+                mu_r = st["avg_reward"]
+                mu_c = st["avg_cost"]
+                mu_u = st["avg_util"]
+                mu_rt = st["avg_return"]
+                var_rt = max(st["var_ret"] - mu_rt ** 2, 1e-6)
+                var_r = max(st["var_rew"] - mu_r ** 2, 1e-6)
                 policies_info_tensor[0, lid, k] = torch.tensor(
                     [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r], device=device)
 

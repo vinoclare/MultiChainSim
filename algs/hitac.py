@@ -31,7 +31,8 @@ class HiTAC(nn.Module):
             ucb_lambda: float = 0.2,
             sticky_prob: float = 0.1,
             update_epochs: int = 10,
-            temperature: float = 0.5
+            temperature: float = 0.5,
+            epsilon: float = 0.1
     ):
         super().__init__()
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -43,6 +44,7 @@ class HiTAC(nn.Module):
         self.total_steps = total_steps
         self.update_epochs = update_epochs
         self.temperature = temperature
+        self.epsilon = epsilon
 
         # === 编码器 ===
         self.local_embed = nn.Linear(local_kpi_dim, hidden_dim)
@@ -113,14 +115,22 @@ class HiTAC(nn.Module):
         Return:
           pids: LongTensor[B, L]
         """
+        if torch.rand(1).item() < self.epsilon:
+            pids = torch.randint(0, self.num_subpolicies, (self.num_layers,), device=self.device)
+            for l in range(self.num_layers):
+                self.freq_counter[l, pids[l]] += 1
+            dummy_logits = torch.zeros((1, self.num_layers, self.num_subpolicies), device=self.device)
+            self.store_for_update(dummy_logits, pids.unsqueeze(0))
+            return pids
+
         logits, _ = self.forward(local_kpis, global_kpi, policies_info)  # (B, L, K)
         logits = logits[0]
 
         # === 计算 UCB 奖励 ===
         avg_rewards = policies_info[0, :, :, 0]
         freq = self.freq_counter + 1.0
-        ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=logits.device)) / freq) + avg_rewards  # (L, K)
-        logits = logits + self.ucb_lambda * ucb_bonus
+        ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
+        logits = logits + self.ucb_lambda * ucb_bonus + avg_rewards
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         if greedy:
@@ -138,7 +148,7 @@ class HiTAC(nn.Module):
             self.freq_counter[l, pids[l]] += 1
 
         self.last_pid = pids.detach()
-        self.store_for_update(logits.detach(), pids.detach())
+        self.store_for_update(logits.unsqueeze(0).detach(), pids.unsqueeze(0).detach())
 
         return pids
 

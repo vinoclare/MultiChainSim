@@ -46,7 +46,8 @@
     "ucb_lambda": 20,
     "sticky_prob": 0.1,
     "lr": 3e-4,
-    "temperature": 5
+    "temperature": 5,
+    "epsilon": 0.1
   },
 
   "distill": {
