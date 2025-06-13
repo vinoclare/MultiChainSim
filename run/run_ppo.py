@@ -14,8 +14,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
-num_layers = 2
-env_config_path = f'../configs/{num_layers}/env_config.json'
+dire = "task/0.5"
+env_config_path = f'../configs/{dire}/env_config.json'
 ppo_config_path = '../configs/ppo_config.json'
 with open(env_config_path, 'r') as f:
     env_config = json.load(f)
@@ -24,9 +24,9 @@ with open(ppo_config_path, 'r') as f:
     ppo_config = json.load(f)
 
 # ===== Setup environment =====
-train_schedule_path = f"../configs/{num_layers}/train_schedule.json"
-eval_schedule_path = f"../configs/{num_layers}/eval_schedule.json"
-worker_config_path = f"../configs/{num_layers}/worker_config.json"
+train_schedule_path = f"../configs/{dire}/train_schedule.json"
+eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
+worker_config_path = f"../configs/{dire}/worker_config.json"
 
 mode = env_config["mode"]
 if mode == "save":
@@ -38,6 +38,7 @@ else:  # mode == "load"
 eval_env.worker_config = env.worker_config
 eval_env.chain = IndustrialChain(eval_env.worker_config)
 
+num_layers = env_config["num_layers"]
 max_steps = env_config["max_steps"]
 reset_schedule_interval = env_config["reset_schedule_interval"]
 
@@ -58,7 +59,7 @@ agents = {}
 buffers = {}
 global_step = [0]
 
-log_dir = f'../logs/ppo/{num_layers}/' + time.strftime("%Y%m%d-%H%M%S")
+log_dir = f'../logs/ppo/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir=log_dir)
 return_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
 
@@ -201,21 +202,20 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in agents])
     total_cost_all = sum([np.mean(cost_sums[lid]) for lid in agents])
     total_util_all = sum([np.mean(util_sums[lid]) for lid in agents])
-    log_interval = ppo_config['log_interval']
-    if global_step % log_interval == 0:
-        for lid in agents:
-            writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
-            writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bouns_sum[lid]), global_step)
-            writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sum[lid]), global_step)
-            writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
-            writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
-            print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
-                  f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
 
-        # === 写入所有层的总 reward、cost、utility 到 TensorBoard ===
-        writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
-        writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
-        writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
+    for lid in agents:
+        writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
+        writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bouns_sum[lid]), global_step)
+        writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sum[lid]), global_step)
+        writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
+        writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
+        print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
+              f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
+
+    # === 写入所有层的总 reward、cost、utility 到 TensorBoard ===
+    writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
+    writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
+    writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
 
     print(f"[Eval Total] reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
 
