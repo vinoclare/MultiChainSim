@@ -269,7 +269,7 @@ for episode in range(num_episodes):
 
     # warmup stage：轮询训练每个子策略
     if episode < (warmup_ep * K):
-        current_pid_tensor = torch.tensor([[episode % K for _ in range(num_layers)]], device=device)
+        current_pid_tensor = torch.tensor([episode % K for _ in range(num_layers)], device=device)
 
     if episode % switch_interval == 0 and episode >= (warmup_ep * K):
         # === 构造滑动平均 KPI（用于 HiTAC select）===
@@ -304,13 +304,13 @@ for episode in range(num_episodes):
                 policies_info_tensor, episode * steps_per_episode)
 
         for lid in range(num_layers):
-            writer.add_scalar(f"layer_{lid}/selected_pid", current_pid_tensor[0][lid], episode)
+            writer.add_scalar(f"layer_{lid}/selected_pid", current_pid_tensor[lid], episode)
 
     # # 固定子策略0
-    # current_pid_tensor = torch.tensor([[0 for _ in range(num_layers)]])
+    # current_pid_tensor = torch.tensor([0 for _ in range(num_layers)])
 
     # # 轮询子策略
-    # current_pid_tensor = torch.tensor([[episode % K for _ in range(num_layers)]], device=device)
+    # current_pid_tensor = torch.tensor([episode % K for _ in range(num_layers)], device=device)
 
     obs = env.reset(with_new_schedule=False)
     episode_reward = {lid: 0.0 for lid in range(num_layers)}
@@ -347,14 +347,14 @@ for episode in range(num_episodes):
         actions = {lid: sample_out[lid]["actions"].squeeze(0).cpu().numpy() for lid in range(num_layers)}
         sample_vu = {lid: sample_out[lid]["v_u"].item() for lid in range(num_layers)}
         sample_vc = {lid: sample_out[lid]["v_c"].item() for lid in range(num_layers)}
-        pid = torch.stack([sample_out[lid]["pid"] for lid in range(num_layers)], dim=1)  # (B=1, L)
+        pid = torch.stack([sample_out[lid]["pid"] for lid in range(num_layers)], dim=0)  # (L)
 
         # === 与环境交互 ===
         obs, (total_reward, reward_detail), done, _ = env.step(actions)
 
         for lid in range(num_layers):
-            alpha_k = agent.muses[lid].alphas[current_pid_tensor[0, lid]].item()
-            beta_k = agent.muses[lid].betas[current_pid_tensor[0, lid]].item()
+            alpha_k = agent.muses[lid].alphas[current_pid_tensor[lid]].item()
+            beta_k = agent.muses[lid].betas[current_pid_tensor[lid]].item()
 
             # === 奖励信息 ===
             rew = reward_detail["layer_rewards"][lid]["reward"]
@@ -373,7 +373,7 @@ for episode in range(num_episodes):
             episode_wp[lid] += wp
 
             # ---- 统计到 ep_sums ----
-            cur_pid = current_pid_tensor[0, lid].item()
+            cur_pid = current_pid_tensor[lid].item()
             bucket = ep_sums[lid][cur_pid]
             bucket["r"] += rew
             bucket["c"] += cost
@@ -531,7 +531,7 @@ for episode in range(num_episodes):
         util = episode_util[lid]
         ab = episode_ab[lid]
         wp = episode_wp[lid]
-        pid_val = current_pid_tensor[0, lid].item()
+        pid_val = current_pid_tensor[lid].item()
         done_rate, task_load_ratio = env.chain.layers[lid].get_kpi_snapshot()
 
         local_kpi = torch.tensor([
@@ -611,7 +611,7 @@ for episode in range(num_episodes):
         # === 计算 episode-level return ===
         layer_returns = []
         for lid in range(num_layers):
-            pid_k = current_pid_tensor[0, lid].item()
+            pid_k = current_pid_tensor[lid].item()
             alpha_k = agent.muses[lid].alphas[pid_k].item()
             beta_k = agent.muses[lid].betas[pid_k].item()
 
@@ -635,5 +635,5 @@ for episode in range(num_episodes):
     # === 蒸馏更新 ===
     if episode % distill_interval == 0 and episode >= (warmup_ep * K):
         for lid in range(num_layers):
-            loss = agent.distill_update(lid, current_pid_tensor[0, lid].item())
+            loss = agent.distill_update(lid, current_pid_tensor[lid].item())
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)

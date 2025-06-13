@@ -113,7 +113,7 @@ class HiTAC(nn.Module):
         Return:
           pids: LongTensor[B, L]
         """
-        logits = self.forward(local_kpis, global_kpi, policies_info)  # (B, L, K)
+        logits, _ = self.forward(local_kpis, global_kpi, policies_info)  # (B, L, K)
         logits = logits[0]
 
         # === 计算 UCB 奖励 ===
@@ -135,7 +135,7 @@ class HiTAC(nn.Module):
 
         # 更新状态
         for l in range(self.num_layers):
-            self.freq_counter[l, pids[0, l]] += 1
+            self.freq_counter[l, pids[l]] += 1
 
         self.last_pid = pids.detach()
         self.store_for_update(logits.detach(), pids.detach())

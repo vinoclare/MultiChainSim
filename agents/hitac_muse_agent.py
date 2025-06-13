@@ -88,11 +88,11 @@ class HiTACMuSEAgent:
             obs = obs_dicts[lid]
             v_u, v_c, actions, logp, ent = muse.sample(
                 obs["task_obs"], obs["worker_loads"],
-                obs["worker_profile"], obs["global_context"], obs["valid_mask"], pids[:, lid]
+                obs["worker_profile"], obs["global_context"], obs["valid_mask"], pids[lid]
             )
             output[lid] = {
                 "v_u": v_u, "v_c": v_c, "actions": actions,
-                "logp": logp, "ent": ent, "pid": pids[:, lid]
+                "logp": logp, "ent": ent, "pid": pids[lid]
             }
 
         return output
