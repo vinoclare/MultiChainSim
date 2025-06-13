@@ -11,8 +11,8 @@
 
   "muse": {
     "K": 3,
-    "alphas": [0.2, 0, -1],
-    "betas":  [0.8, -1, 0],
+    "alphas": [0.2, 1, 0],
+    "betas":  [0.8, 0, 1],
 
     "hidden_dim": 64,
     "batch_size": 512,
@@ -51,7 +51,7 @@
   "distill": {
     "hidden_dim": 64,
     "loss_type": "kl",
-    "neg_policy": true,
+    "neg_policy": false,
     "warmup_ep": 10,
     "batch_size": 512,
     "min_reward_ratio": 0.6,
