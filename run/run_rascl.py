@@ -6,6 +6,7 @@ import random
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+import concurrent.futures as cf, multiprocessing as mp
 
 from envs.core_chain import IndustrialChain
 from envs.env import MultiplexEnv
@@ -318,10 +319,11 @@ if __name__ == "__main__":
     need_files = {"env_config.json", "train_schedule.json",
                   "eval_schedule.json", "worker_config.json"}
 
-    n_workers = 10
+    n_workers = 12
 
     print("\n===== RASCL 批量实验开始 =====\n")
 
+    tasks = []
     for cat in CATS:
         cat_dir = os.path.join(CFG_ROOT, cat)
         if not os.path.isdir(cat_dir):
@@ -338,10 +340,17 @@ if __name__ == "__main__":
 
             for k in range(REPEAT):
                 log_dir = f"logs/rascl/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
-                tag = f"{cat}/{exp_name} (run {k})"
-                print(f"▶️  开始 {tag}")
-                run_once(exp_dir, log_dir)
-                print(f"✅ 完成 {tag}\n")
+                tasks.append((exp_dir, log_dir))
+
+    with cf.ProcessPoolExecutor(max_workers=n_workers) as ex:
+        futures = [ex.submit(run_once, exp_dir, run_idx)
+                   for (exp_dir, run_idx) in tasks]
+        for i, fut in enumerate(cf.as_completed(futures), 1):
+            try:
+                fut.result()  # 捕获子进程异常
+            except Exception as e:
+                print(f"❌ 任务出错：{e}")
+            print(f"✔️  已完成 {i}/{len(tasks)}")
 
     print("🎉 全部 RASCL 实验已结束\n")
 
