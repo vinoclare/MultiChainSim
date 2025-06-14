@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from collections import deque
 
@@ -133,7 +134,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
         # 逐步采样直到所有层都 done 或达到最大步数
         while not done and step_count < max_steps:
             step_count += 1
-            actions = {}          # 存放每层的动作
+            actions = {}  # 存放每层的动作
             step_data_per_layer = {}  # 缓存各层本 step 的中间数据
 
             # 5.1 对每一层先推理动作并把临时数据存到对应 buffer
@@ -143,11 +144,11 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
                 # a) 从原始 obs 中取出该层的观测
                 layer_obs = raw_obs[layer_id]
-                task_obs = np.array(layer_obs["task_queue"], dtype=np.float32)        # (T, task_dim)
+                task_obs = np.array(layer_obs["task_queue"], dtype=np.float32)  # (T, task_dim)
                 worker_loads = np.array(layer_obs["worker_loads"], dtype=np.float32)  # (W, worker_load_dim)
                 worker_profiles = np.array(layer_obs["worker_profile"], dtype=np.float32)  # (W, worker_profile_dim)
-                gctx = np.array(raw_obs["global_context"], dtype=np.float32)          # (global_context_dim,)
-                valid_mask = task_obs[:, -1].astype(np.float32)                        # (T,)
+                gctx = np.array(raw_obs["global_context"], dtype=np.float32)  # (global_context_dim,)
+                valid_mask = task_obs[:, -1].astype(np.float32)  # (T,)
 
                 # b) 转为张量并调用 Agent.sample
                 task_obs_t = torch.tensor(task_obs, dtype=torch.float32).unsqueeze(0).to(device)
@@ -159,7 +160,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 v_u, v_c, action_t, logp_t, _ = agents[layer_id].sample(
                     task_obs_t, worker_loads_t, worker_profiles_t, gctx_t, valid_mask_t, pid
                 )
-                action = action_t.squeeze(0).cpu().numpy()   # (W, T)
+                action = action_t.squeeze(0).cpu().numpy()  # (W, T)
                 v_u_val = v_u.item()
                 v_c_val = v_c.item()
                 logp_val = logp_t.item()
@@ -306,8 +307,10 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, current_steps)
                 writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, current_steps)
                 writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id], current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id], current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id],
+                                  current_steps)
+                writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id],
+                                  current_steps)
 
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
@@ -439,44 +442,80 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             eval_log_buffer["global_cost"].append(total_cost_all)
             eval_log_buffer["global_util"].append(total_util_all)
 
-            if episode % log_interval == 0:
-                for layer_id in range(n_layers):
-                    writer.add_scalar(f"eval/layer{layer_id}_avg_reward", np.mean(eval_log_buffer["reward"][layer_id]),
-                                      current_steps)
-                    writer.add_scalar(f"eval/layer{layer_id}_avg_cost", np.mean(eval_log_buffer["cost"][layer_id]),
-                                      current_steps)
-                    writer.add_scalar(f"eval/layer{layer_id}_avg_utility", np.mean(eval_log_buffer["util"][layer_id]),
-                                      current_steps)
-                    writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus",
-                                      np.mean(eval_log_buffer["assign"][layer_id]), current_steps)
-                    writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty",
-                                      np.mean(eval_log_buffer["wait"][layer_id]), current_steps)
+            for layer_id in range(n_layers):
+                writer.add_scalar(f"eval/layer{layer_id}_avg_reward", np.mean(eval_log_buffer["reward"][layer_id]),
+                                  current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_cost", np.mean(eval_log_buffer["cost"][layer_id]),
+                                  current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_utility", np.mean(eval_log_buffer["util"][layer_id]),
+                                  current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus",
+                                  np.mean(eval_log_buffer["assign"][layer_id]), current_steps)
+                writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty",
+                                  np.mean(eval_log_buffer["wait"][layer_id]), current_steps)
 
-                writer.add_scalar("global/eval_avg_reward", np.mean(eval_log_buffer["global_reward"]), current_steps)
-                writer.add_scalar("global/eval_avg_cost", np.mean(eval_log_buffer["global_cost"]), current_steps)
-                writer.add_scalar("global/eval_avg_utility", np.mean(eval_log_buffer["global_util"]), current_steps)
+            writer.add_scalar("global/eval_avg_reward", np.mean(eval_log_buffer["global_reward"]), current_steps)
+            writer.add_scalar("global/eval_avg_cost", np.mean(eval_log_buffer["global_cost"]), current_steps)
+            writer.add_scalar("global/eval_avg_utility", np.mean(eval_log_buffer["global_util"]), current_steps)
 
     writer.close()
 
 
+def list_exp_dirs(cfg_root, categories):
+    for cat in categories:
+        cat_dir = os.path.join(cfg_root, cat)
+        if not os.path.isdir(cat_dir):
+            continue
+        for exp_name in sorted(os.listdir(cat_dir)):
+            exp_dir = os.path.join(cat_dir, exp_name)
+            if os.path.isdir(exp_dir):
+                yield cat, exp_name, exp_dir
+
+
+def run_one(exp_dir, agent57_cfg):
+    env_cfg_path = os.path.join(exp_dir, "env_config.json")
+    train_sched_path = os.path.join(exp_dir, "train_schedule.json")
+    eval_sched_path = os.path.join(exp_dir, "eval_schedule.json")
+    worker_cfg_path = os.path.join(exp_dir, "worker_config.json")
+
+    # 确保四个文件都在
+    for f in [env_cfg_path, train_sched_path, eval_sched_path, worker_cfg_path]:
+        if not os.path.isfile(f):
+            print(f"⚠️  跳过 {exp_dir}（缺少 {os.path.basename(f)}）")
+            return
+
+    # 创建环境
+    env = MultiplexEnv(
+        env_cfg_path,
+        schedule_load_path=train_sched_path,
+        worker_config_load_path=worker_cfg_path,
+    )
+    eval_env = MultiplexEnv(
+        env_cfg_path,
+        schedule_load_path=eval_sched_path,
+        worker_config_load_path=worker_cfg_path,
+    )
+
+    # 加载配置并训练
+    env_cfg = load_config(env_cfg_path)
+    agent57_cfg = load_config(agent57_cfg)
+
+    run_agent57_multi_layer(env, eval_env, env_cfg, agent57_cfg)
+
+
 if __name__ == "__main__":
-    # 配置文件路径
-    num_layers = 2
-    env_config_path = f'../configs/{num_layers}/env_config.json'
-    agent57_config_path = '../configs/agent57_config.json'
-    train_schedule_path = f"../configs/{num_layers}/train_schedule.json"
-    eval_schedule_path = f"../configs/{num_layers}/eval_schedule.json"
-    worker_config_path = f"../configs/{num_layers}/worker_config.json"
+    CFG_ROOT = "../configs"
+    AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
+    REPEAT_EACH_EXP = 1  # 如果要同一实验跑多次就改 >1
 
-    # 创建训练与评估环境
-    env = MultiplexEnv(env_config_path,
-                       schedule_load_path=train_schedule_path,
-                       worker_config_load_path=worker_config_path)
-    eval_env = MultiplexEnv(env_config_path,
-                            schedule_load_path=eval_schedule_path,
-                            worker_config_load_path=worker_config_path)
+    print("\n=== Agent57 批量实验开始 ===\n")
+    categories = ["task", "layer", "worker", "step"]
 
-    env_config = load_config(env_config_path)
-    agent57_config = load_config(agent57_config_path)
+    for cat, exp_name, exp_dir in list_exp_dirs(CFG_ROOT, categories):
+        for k in range(REPEAT_EACH_EXP):
+            tag = f"{cat}/{exp_name} (run {k})"
+            print(f"▶️  开始 {tag}")
+            run_one(exp_dir, AGENT57_CFG)
+            print(f"✅ 完成 {tag}\n")
 
-    run_agent57_multi_layer(env, eval_env, env_config, agent57_config)
+    print(f"🎉 全部实验结束\n")

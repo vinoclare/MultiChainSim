@@ -1,6 +1,6 @@
 {
   "task_types": ["A", "B", "C"],
-  "task_route": [0, 1],
+  "task_route": [0, 1, 2],
   "task_amount_range": [1, 5],
   "max_steps": 100,
   "task_arrival_mode": "poisson",
