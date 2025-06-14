@@ -318,6 +318,8 @@ if __name__ == "__main__":
     need_files = {"env_config.json", "train_schedule.json",
                   "eval_schedule.json", "worker_config.json"}
 
+    n_workers = 10
+
     print("\n===== RASCL 批量实验开始 =====\n")
 
     for cat in CATS:
