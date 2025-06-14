@@ -22,7 +22,8 @@ def load_config(path):
 def run_agent57_multi_layer(env: MultiplexEnv,
                             eval_env: MultiplexEnv,
                             env_config: dict,
-                            agent57_config: dict):
+                            agent57_config: dict,
+                            log_dir: str):
     """
     多层版 Agent57 训练脚本。
     - env: 训练用 MultiplexEnv 实例
@@ -97,7 +98,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
         buffers.append(RolloutBuffer())
 
     # 4. TensorBoard Writer
-    log_dir = f'../logs/agent57/{num_layers}/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir)
     return_u_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
     return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
@@ -472,7 +472,7 @@ def list_exp_dirs(cfg_root, categories):
                 yield cat, exp_name, exp_dir
 
 
-def run_one(exp_dir, agent57_cfg):
+def run_one(exp_dir, agent57_cfg, log_dir):
     env_cfg_path = os.path.join(exp_dir, "env_config.json")
     train_sched_path = os.path.join(exp_dir, "train_schedule.json")
     eval_sched_path = os.path.join(exp_dir, "eval_schedule.json")
@@ -500,12 +500,13 @@ def run_one(exp_dir, agent57_cfg):
     env_cfg = load_config(env_cfg_path)
     agent57_cfg = load_config(agent57_cfg)
 
-    run_agent57_multi_layer(env, eval_env, env_cfg, agent57_cfg)
+    run_agent57_multi_layer(env, eval_env, env_cfg, agent57_cfg, log_dir)
 
 
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
+    log_dir = "logs/agent57/"
     REPEAT_EACH_EXP = 1  # 如果要同一实验跑多次就改 >1
 
     print("\n=== Agent57 批量实验开始 ===\n")
@@ -513,9 +514,10 @@ if __name__ == "__main__":
 
     for cat, exp_name, exp_dir in list_exp_dirs(CFG_ROOT, categories):
         for k in range(REPEAT_EACH_EXP):
+            log_dir = f"logs/agent57/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
             tag = f"{cat}/{exp_name} (run {k})"
             print(f"▶️  开始 {tag}")
-            run_one(exp_dir, AGENT57_CFG)
+            run_one(exp_dir, AGENT57_CFG, log_dir)
             print(f"✅ 完成 {tag}\n")
 
     print(f"🎉 全部实验结束\n")
