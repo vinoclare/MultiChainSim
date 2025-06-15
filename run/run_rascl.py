@@ -339,7 +339,7 @@ if __name__ == "__main__":
                 continue
 
             for k in range(REPEAT):
-                log_dir = f"logs/rascl/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
+                log_dir = f"../logs/rascl/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
                 tasks.append((exp_dir, log_dir))
 
     with cf.ProcessPoolExecutor(max_workers=n_workers) as ex:

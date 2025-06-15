@@ -506,7 +506,7 @@ def run_one(exp_dir, agent57_cfg, log_dir):
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
-    log_dir = "logs/agent57/"
+    log_dir = "../old_logs/agent57/"
     REPEAT_EACH_EXP = 1  # 如果要同一实验跑多次就改 >1
 
     print("\n=== Agent57 批量实验开始 ===\n")

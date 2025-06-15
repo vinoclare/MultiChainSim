@@ -49,7 +49,7 @@
     "sticky_prob": 0.1,
     "lr": 3e-4,
     "temperature": 0.5,
-    "epsilon": 0.1
+    "epsilon": 0.0
   },
 
   "distill": {

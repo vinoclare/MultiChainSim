@@ -11,8 +11,8 @@ from agents.hitac_muse_agent import HiTACMuSEAgent
 from utils.utils import RunningMeanStd
 
 # ======== Load Configurations ========
-num_layers = 2
-env_config_path = f'../configs/{num_layers}/env_config.json'
+dire = "standard"
+env_config_path = f'../configs/{dire}/env_config.json'
 algo_config_path = f'../configs/hitac_muse_config.json'
 
 with open(env_config_path, 'r') as f:
@@ -21,9 +21,9 @@ with open(algo_config_path, 'r') as f:
     algo_config = json.load(f)
 
 # === 路径配置 ===
-train_schedule_path = f"../configs/{num_layers}/train_schedule.json"
-eval_schedule_path = f"../configs/{num_layers}/eval_schedule.json"
-worker_config_path = f"../configs/{num_layers}/worker_config.json"
+train_schedule_path = f"../configs/{dire}/train_schedule.json"
+eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
+worker_config_path = f"../configs/{dire}/worker_config.json"
 
 env = MultiplexEnv(env_config_path, schedule_load_path=train_schedule_path, worker_config_load_path=worker_config_path)
 eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
@@ -82,7 +82,7 @@ act_spaces = [
 ]
 
 # ===== TensorBoard 日志器 =====
-log_dir = f'../logs/hitac_muse/{num_layers}/' + time.strftime("%Y%m%d-%H%M%S")
+log_dir = f'../logs/hitac_muse/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir=log_dir)
 
 # ===== 创建 HiTACMuSEAgent =====
