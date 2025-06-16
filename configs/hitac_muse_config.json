@@ -1,7 +1,6 @@
 {
   "training": {
     "num_episodes": 50000,
-    "warmup_episodes": 1000,
     "eval_interval": 100,
     "eval_episodes": 25,
     "log_interval": 100,
@@ -37,7 +36,7 @@
     "hidden_dim": 64,
     "n_heads": 4,
     "transformer_layers": 2,
-    "kpi_window_size": 50,
+    "kpi_window_size": 100,
     "update_epochs": 10,
 
     "clip_param": 0.2,
@@ -48,15 +47,16 @@
     "ucb_lambda": 0.2,
     "sticky_prob": 0.1,
     "lr": 3e-4,
-    "temperature": 0.5,
-    "epsilon": 0.0
+    "temperature": 0.3,
+    "epsilon": 0.0,
+    "greedy_prob": 0.5
   },
 
   "distill": {
     "hidden_dim": 64,
     "loss_type": "kl",
     "neg_policy": false,
-    "warmup_ep": 50,
+    "warmup_ep": 1000,
     "batch_size": 512,
     "min_reward_ratio": 0.6,
     "bc_steps": 50,
@@ -66,8 +66,8 @@
   },
 
   "scheduler": {
-    "switch_interval": 50,
+    "switch_interval": 100,
     "hitac_update_interval": 1,
-    "distill_interval": 10
+    "distill_interval": 20
   }
 }

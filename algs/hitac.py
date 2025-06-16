@@ -35,6 +35,7 @@ class HiTAC(nn.Module):
             update_epochs: int = 10,
             temperature: float = 0.5,
             epsilon: float = 0.1,
+            greedy_prob: float = 0.5,
             writer: SummaryWriter = None
     ):
         super().__init__()
@@ -48,6 +49,7 @@ class HiTAC(nn.Module):
         self.update_epochs = update_epochs
         self.temperature = temperature
         self.epsilon = epsilon
+        self.greedy_prob = greedy_prob
         self.writer = writer
 
         # === 编码器 ===
@@ -84,8 +86,8 @@ class HiTAC(nn.Module):
         self.ucb_lambda = ucb_lambda
         self.sticky_prob = sticky_prob
 
-        self.last_pid = torch.zeros(self.num_layers, dtype=torch.long, device=self.device)
-        self.freq_counter = torch.zeros(self.num_layers, self.num_subpolicies, device=self.device)
+        self.last_pid = torch.zeros(2, self.num_layers, dtype=torch.long, device=self.device)
+        self.freq_counter = torch.zeros(2, self.num_layers, self.num_subpolicies)
 
         # === PPO缓存 ===
         self.old_log_probs = None
@@ -116,7 +118,7 @@ class HiTAC(nn.Module):
         values = self.value_head(h).squeeze(-1)  # (B, L)
         return logits, values
 
-    def select(self, local_kpis, global_kpi, policies_info, step, greedy=False):
+    def select(self, local_kpis, global_kpi, policies_info, step):
         """
         推理接口：为每一层选择子策略
         Return:
@@ -125,26 +127,23 @@ class HiTAC(nn.Module):
         if torch.rand(1).item() < self.epsilon:
             pids = torch.randint(0, self.num_subpolicies, (self.num_layers,), device=self.device)
             for l in range(self.num_layers):
-                self.freq_counter[l, pids[l]] += 1
+                self.freq_counter[0, l, pids[l]] += 1
             dummy_logits = torch.zeros((1, self.num_layers, self.num_subpolicies), device=self.device)
             self.store_for_update(dummy_logits, pids.unsqueeze(0))
             return pids
 
-        logits, _ = self.forward(local_kpis, global_kpi, policies_info)  # (B, L, K)
-        logits = logits[0]
+        raw_logits, _ = self.forward(local_kpis, global_kpi, policies_info)  # (B, L, K)
+        logits = raw_logits[0]
 
         # === 计算 UCB 奖励 ===
         avg_rewards = policies_info[0, :, :, 0]
-        freq = self.freq_counter + 1.0
+        freq = self.freq_counter[0] + 1.0
         ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
         logits = logits + self.ucb_lambda * ucb_bonus + 0.05 * avg_rewards
 
         probs = F.softmax(logits / self.temperature, dim=-1)
-        if greedy:
-            pids = torch.argmax(probs, dim=-1)  # (L)
-        else:
-            dist = Categorical(probs)
-            pids = dist.sample()  # (L)
+        dist = Categorical(probs)
+        pids = dist.sample()  # (L)
 
         # # —— Sticky 保留机制 ——
         # mask = torch.rand_like(pids.float()) < self.sticky_prob  # (L,)
@@ -152,15 +151,51 @@ class HiTAC(nn.Module):
 
         # 更新状态
         for l in range(self.num_layers):
-            self.freq_counter[l, pids[l]] += 1
+            self.freq_counter[0, l, pids[l]] += 1
 
-        self.last_pid = pids.detach()
-        self.store_for_update(logits.unsqueeze(0).detach(), pids.unsqueeze(0).detach())
+        self.last_pid[0] = pids.detach()
+        self.store_for_update(raw_logits.detach(), pids.unsqueeze(0).detach())
 
         # log 每个子策略被选择的次数
         print(f"Step: {step}")
         for l in range(self.num_layers):
-            counts = [int(self.freq_counter[l, k].item()) for k in range(self.num_subpolicies)]
+            counts = [int(self.freq_counter[0, l, k].item()) for k in range(self.num_subpolicies)]
+            print(f"  Layer {l}: {counts}")
+
+        return pids
+
+    def select_distill(self, local_kpis, global_kpi, policies_info, step):
+        logits, _ = self.forward(local_kpis, global_kpi, policies_info)  # (B, L, K)
+        logits = logits[0]
+
+        # === 计算 UCB 奖励 ===
+        avg_rewards = policies_info[0, :, :, 0]
+        freq = self.freq_counter[1] + 1.0
+        ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
+        logits = logits + self.ucb_lambda * ucb_bonus + 0.05 * avg_rewards
+
+        probs = F.softmax(logits / self.temperature, dim=-1)
+
+        if torch.rand(1).item() < self.greedy_prob:
+            pids = torch.argmax(probs, dim=-1)
+        else:
+            dist = Categorical(probs)
+            pids = dist.sample()  # (L)
+
+        # —— Sticky 保留机制 ——
+        mask = torch.rand_like(pids.float()) < self.sticky_prob  # (L,)
+        pids = torch.where(mask, self.last_pid[1].to(pids.device), pids)
+
+        # 更新状态
+        for l in range(self.num_layers):
+            self.freq_counter[1, l, pids[l]] += 1
+
+        self.last_pid[1] = pids.detach()
+
+        # log 每个子策略被选择的次数
+        print(f"Select times (Distill):")
+        for l in range(self.num_layers):
+            counts = [int(self.freq_counter[1, l, k].item()) for k in range(self.num_subpolicies)]
             print(f"  Layer {l}: {counts}")
 
         return pids

@@ -72,11 +72,15 @@ class HiTACMuSEAgent:
             update_epochs=hitac_cfg["update_epochs"],
             temperature=hitac_cfg["temperature"],
             epsilon=hitac_cfg["epsilon"],
+            greedy_prob=hitac_cfg["greedy_prob"],
             writer=writer
         ).to(device)
 
-    def select_subpolicies(self, local_kpis, global_kpi, policies_info, step, greedy=False):
-        return self.hitac.select(local_kpis, global_kpi, policies_info, step, greedy=greedy)
+    def select_subpolicies(self, local_kpis, global_kpi, policies_info, step):
+        return self.hitac.select(local_kpis, global_kpi, policies_info, step)
+
+    def select_subpolicies_distill(self, local_kpis, global_kpi, policies_info, step):
+        return self.hitac.select_distill(local_kpis, global_kpi, policies_info, step)
 
     @torch.no_grad()
     def sample(self, obs_dicts, pids):

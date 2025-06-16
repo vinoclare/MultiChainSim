@@ -62,7 +62,6 @@ lam = algo_config["muse"]["lam"]
 batch_size = algo_config["muse"]["batch_size"]
 return_norm = algo_config["muse"]["return_normalization"]
 
-current_pid_tensor = None
 
 # === 每层 obs 结构描述（供 MuSE init）===
 obs_shapes = []
@@ -241,6 +240,11 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_int
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in range(num_layers)])
     total_cost_all = sum([np.mean(cost_sums[lid]) for lid in range(num_layers)])
     total_util_all = sum([np.mean(util_sums[lid]) for lid in range(num_layers)])
+    episode_total_rewards = [
+        sum([reward_sums[lid][i] for lid in range(num_layers)])
+        for i in range(len(reward_sums[0]))
+    ]
+    global_reward_std = np.std(episode_total_rewards)
 
     if global_step % log_interval == 0:
         for lid in range(num_layers):
@@ -253,6 +257,7 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_int
         writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
         writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
         writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
+        writer.add_scalar("global/eval_reward_std", global_reward_std, global_step)
 
     print(
         f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
@@ -305,6 +310,9 @@ for episode in range(num_episodes):
                     [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r, ent, std], device=device)
 
         current_pid_tensor = agent.select_subpolicies(
+                local_kpis_tensor, global_kpi_tensor,
+                policies_info_tensor, episode * steps_per_episode)
+        distill_pid = agent.select_subpolicies_distill(
                 local_kpis_tensor, global_kpi_tensor,
                 policies_info_tensor, episode * steps_per_episode)
 
@@ -650,5 +658,5 @@ for episode in range(num_episodes):
     # === 蒸馏更新 ===
     if episode % distill_interval == 0 and episode >= (warmup_ep * K):
         for lid in range(num_layers):
-            loss = agent.distill_update(lid, current_pid_tensor[lid].item())
+            loss = agent.distill_update(lid, distill_pid[lid].item())
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
