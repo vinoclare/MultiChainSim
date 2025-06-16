@@ -319,13 +319,14 @@ def run_once(exp_dir, log_dir):
 
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
-    CATS = ["task", "layer", "worker", "step"]       # 四大类实验
+    # CATS = ["task", "layer", "worker", "step"]       # 四大类实验
+    CATS = ["worker", "step"]
     REPEAT = 1                                       # 每份配置重复次数
 
     need_files = {"env_config.json", "train_schedule.json",
                   "eval_schedule.json", "worker_config.json"}
 
-    n_workers = 12
+    n_workers = 4
 
     print("\n===== RASCL 批量实验开始 =====\n")
 

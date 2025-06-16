@@ -2,7 +2,7 @@
   "training": {
     "num_episodes": 50000,
     "eval_interval": 100,
-    "eval_episodes": 25,
+    "eval_episodes": 10,
     "log_interval": 100,
     "device": "cuda",
     "num_workers": 20,
@@ -36,7 +36,7 @@
     "hidden_dim": 64,
     "n_heads": 4,
     "transformer_layers": 2,
-    "kpi_window_size": 100,
+    "kpi_window_size": 50,
     "update_epochs": 10,
 
     "clip_param": 0.2,
@@ -47,7 +47,7 @@
     "ucb_lambda": 0.2,
     "sticky_prob": 0.1,
     "lr": 3e-4,
-    "temperature": 0.3,
+    "temperature": 0.5,
     "epsilon": 0.0,
     "greedy_prob": 0.5
   },
@@ -56,18 +56,19 @@
     "hidden_dim": 64,
     "loss_type": "kl",
     "neg_policy": false,
-    "warmup_ep": 1000,
+    "warmup_ep": 50,
     "batch_size": 512,
     "min_reward_ratio": 0.6,
     "bc_steps": 50,
     "sup_coef": 1.0,
-    "neg_coef": 1.0,
-    "margin": 0.2
+    "neg_coef": 0.5,
+    "margin": 3.0
   },
 
   "scheduler": {
-    "switch_interval": 100,
+    "switch_interval": 50,
     "hitac_update_interval": 1,
-    "distill_interval": 20
+    "distill_interval": 10,
+    "neg_interval": 50
   }
 }

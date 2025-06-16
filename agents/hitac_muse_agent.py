@@ -24,6 +24,7 @@ class HiTACMuSEAgent:
         self.device = torch.device(device)
         self.num_layers = num_layers
         self.K = muse_cfg["K"]
+        self.num_pos_subpolicies = self.K - 2 if distill_cfg["neg_policy"] else self.K
         self.distill_batch_size = distill_cfg["batch_size"]
         self.bc_steps = distill_cfg["bc_steps"]
 
@@ -57,7 +58,7 @@ class HiTACMuSEAgent:
             global_kpi_dim=hitac_cfg["global_kpi_dim"],
             policies_info_dim=hitac_cfg["policies_info_dim"],
             num_layers=self.num_layers,
-            num_subpolicies=self.K,
+            num_subpolicies=self.num_pos_subpolicies,
             hidden_dim=hitac_cfg["hidden_dim"],
             n_heads=hitac_cfg["n_heads"],
             transformer_layers=hitac_cfg["transformer_layers"],

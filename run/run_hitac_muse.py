@@ -51,9 +51,12 @@ distill_interval = algo_config["scheduler"]["distill_interval"]
 switch_interval = algo_config["scheduler"]["switch_interval"]
 hitac_update_interval = algo_config["scheduler"]["hitac_update_interval"]
 reset_schedule_interval = algo_config["training"]["reset_schedule_interval"]
+neg_interval = algo_config["scheduler"]["neg_interval"]
 
 steps_per_episode = env_config["max_steps"]
 K = algo_config["muse"]["K"]
+neg_policy = algo_config["distill"]["neg_policy"]
+num_pos_subpolicies = K - 2 if algo_config["distill"]["neg_policy"] else K
 warmup_ep = algo_config["distill"]["warmup_ep"]
 min_reward_ratio = algo_config["distill"]["min_reward_ratio"]
 update_epochs = algo_config["muse"]["update_epochs"]
@@ -104,7 +107,7 @@ kpi_window_size = algo_config["hitac"].get("kpi_window_size", 5)
 pol_hist = [
     [
         deque(maxlen=kpi_window_size)   # 每个 deque 里存最近若干 episode 的指标 dict
-        for _ in range(K)
+        for _ in range(num_pos_subpolicies)
     ] for _ in range(num_layers)
 ]
 
@@ -131,6 +134,8 @@ return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
 ema_return = 0.0
 ema_alpha = 0.1
 
+select_cnt = 0
+skip_hitac_train = False
 
 def compute_gae_single_head(rewards, dones, values, next_value, gamma, lam):
     T = len(rewards)
@@ -275,45 +280,56 @@ for episode in range(num_episodes):
         current_pid_tensor = torch.tensor([episode % K for _ in range(num_layers)], device=device)
 
     if episode % switch_interval == 0 and episode >= (warmup_ep * K):
-        # === 构造滑动平均 KPI（用于 HiTAC select）===
-        local_kpis_tensor = torch.zeros((1, num_layers, 8), dtype=torch.float32, device=device)
-        for lid in range(num_layers):
-            if len(local_kpi_history[lid]) > 0:
-                local_kpis_tensor[0, lid] = torch.stack(list(local_kpi_history[lid]), dim=0).mean(dim=0)
-
-        if len(global_kpi_history) > 0:
-            global_kpi_tensor = torch.stack(list(global_kpi_history), dim=0).mean(dim=0).unsqueeze(0)
+        select_cnt += 1
+        if select_cnt % neg_interval == 0 and neg_policy:
+            skip_hitac_train = True
+            current_pid_tensor = torch.tensor([K - 1 for _ in range(num_layers)])
+            distill_pid = torch.tensor([K - 1 for _ in range(num_layers)])
+        elif select_cnt % neg_interval == 1 and neg_policy:
+            skip_hitac_train = True
+            current_pid_tensor = torch.tensor([K - 2 for _ in range(num_layers)])
+            distill_pid = torch.tensor([K - 2 for _ in range(num_layers)])
         else:
-            global_kpi_tensor = torch.zeros((1, 4), dtype=torch.float32, device=device)
+            skip_hitac_train = False
+            # === 构造滑动平均 KPI（用于 HiTAC select）===
+            local_kpis_tensor = torch.zeros((1, num_layers, 8), dtype=torch.float32, device=device)
+            for lid in range(num_layers):
+                if len(local_kpi_history[lid]) > 0:
+                    local_kpis_tensor[0, lid] = torch.stack(list(local_kpi_history[lid]), dim=0).mean(dim=0)
 
-        # ---- 构造 policies_info 张量 ----
-        policies_info_tensor = torch.zeros((1, num_layers, K, policies_info_dim), dtype=torch.float32, device=device)
+            if len(global_kpi_history) > 0:
+                global_kpi_tensor = torch.stack(list(global_kpi_history), dim=0).mean(dim=0).unsqueeze(0)
+            else:
+                global_kpi_tensor = torch.zeros((1, 4), dtype=torch.float32, device=device)
 
-        for lid in range(num_layers):
-            for k in range(K):
-                hist = pol_hist[lid][k]
-                if len(hist) == 0:
-                    mu_r = mu_c = mu_u = mu_rt = ent = std = 0.0
-                    var_r = var_rt = 1e-6
-                else:
-                    mu_r = np.mean([h["r"] for h in hist])
-                    mu_c = np.mean([h["c"] for h in hist])
-                    mu_u = np.mean([h["u"] for h in hist])
-                    mu_rt = np.mean([h["rt"] for h in hist])
-                    var_r = max(np.mean([h["var_r"] for h in hist]), 1e-6)
-                    var_rt = max(np.mean([h["var_rt"] for h in hist]), 1e-6)
-                    ent = np.mean([h["ent"] for h in hist])
-                    std = np.mean([h["std"] for h in hist])
+            # ---- 构造 policies_info 张量 ----
+            policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, policies_info_dim), dtype=torch.float32, device=device)
 
-                policies_info_tensor[0, lid, k] = torch.tensor(
-                    [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r, ent, std], device=device)
+            for lid in range(num_layers):
+                for k in range(num_pos_subpolicies):
+                    hist = pol_hist[lid][k]
+                    if len(hist) == 0:
+                        mu_r = mu_c = mu_u = mu_rt = ent = std = 0.0
+                        var_r = var_rt = 1e-6
+                    else:
+                        mu_r = np.mean([h["r"] for h in hist])
+                        mu_c = np.mean([h["c"] for h in hist])
+                        mu_u = np.mean([h["u"] for h in hist])
+                        mu_rt = np.mean([h["rt"] for h in hist])
+                        var_r = max(np.mean([h["var_r"] for h in hist]), 1e-6)
+                        var_rt = max(np.mean([h["var_rt"] for h in hist]), 1e-6)
+                        ent = np.mean([h["ent"] for h in hist])
+                        std = np.mean([h["std"] for h in hist])
 
-        current_pid_tensor = agent.select_subpolicies(
-                local_kpis_tensor, global_kpi_tensor,
-                policies_info_tensor, episode * steps_per_episode)
-        distill_pid = agent.select_subpolicies_distill(
-                local_kpis_tensor, global_kpi_tensor,
-                policies_info_tensor, episode * steps_per_episode)
+                    policies_info_tensor[0, lid, k] = torch.tensor(
+                        [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r, ent, std], device=device)
+
+            current_pid_tensor = agent.select_subpolicies(
+                    local_kpis_tensor, global_kpi_tensor,
+                    policies_info_tensor, episode * steps_per_episode)
+            distill_pid = agent.select_subpolicies_distill(
+                    local_kpis_tensor, global_kpi_tensor,
+                    policies_info_tensor, episode * steps_per_episode)
 
         for lid in range(num_layers):
             writer.add_scalar(f"layer_{lid}/selected_pid", current_pid_tensor[lid], episode)
@@ -517,7 +533,7 @@ for episode in range(num_episodes):
 
     # ---------- update policies_info ----------
     for lid in range(num_layers):
-        for k in range(K):
+        for k in range(num_pos_subpolicies):
             n = ep_sums[lid][k]["n"]
             if n == 0:
                 continue
@@ -606,7 +622,7 @@ for episode in range(num_episodes):
             buffers[lid] = {k: [] for k in buffers[lid]}
 
     # === HiTAC PPO 更新 ===
-    if episode % hitac_update_interval == 0 and episode >= (warmup_ep * K):
+    if episode % hitac_update_interval == 0 and episode >= (warmup_ep * K) and not skip_hitac_train:
         # ---- 构造 kpi 张量 ----
         local_kpis_tensor = torch.zeros((1, num_layers, 8), dtype=torch.float32, device=device)
         for lid in range(num_layers):
@@ -619,9 +635,9 @@ for episode in range(num_episodes):
             global_kpi_tensor = torch.zeros((1, 4), dtype=torch.float32, device=device)
 
         # ---- 构造 policies_info 张量 ----
-        policies_info_tensor = torch.zeros((1, num_layers, K, policies_info_dim), dtype=torch.float32, device=device)
+        policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, policies_info_dim), dtype=torch.float32, device=device)
         for lid in range(num_layers):
-            for k in range(K):
+            for k in range(num_pos_subpolicies):
                 hist = pol_hist[lid][k]
                 if len(hist) == 0:
                     mu_r = mu_c = mu_u = mu_rt = ent = std = 0.0

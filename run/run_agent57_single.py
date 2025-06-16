@@ -515,7 +515,8 @@ if __name__ == "__main__":
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
     REPEAT_EACH_EXP = 1
     MAX_WORKERS = 12
-    categories = ["task", "layer", "worker", "step"]
+    # categories = ["task", "layer", "worker", "step"]
+    categories = ["layer", "worker", "step"]
 
     print("\n=== Agent57 批量实验开始 ===\n")
 

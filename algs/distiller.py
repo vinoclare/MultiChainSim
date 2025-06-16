@@ -22,7 +22,7 @@ class Distiller:
         buffer_size=10000,
         sup_coef=1.0,
         neg_coef=1.0,
-        margin=0.2
+        margin=3.0
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model = PPOIndustrialModel(
@@ -39,6 +39,8 @@ class Distiller:
         self.sup_coef = sup_coef
         self.neg_coef = neg_coef
         self.margin = margin
+        self.var_coef = 0.05
+        self.sigma_target = 0.25
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
 
@@ -75,6 +77,7 @@ class Distiller:
             return 0.0   # 数据不足
 
         total_loss = 0.0
+        effective_steps = 0
         for _ in range(steps):
             batch = self._sample_from_buffers(cur_pid, batch_size)
             if len(batch) == 0:
@@ -109,10 +112,17 @@ class Distiller:
                     loss_kl = kl_divergence(dist_t, dist_s).mean()
                     loss = self.sup_coef * loss_kl
             else:
-                diff = F.relu(self.margin
-                              - torch.abs(mean_s - target_actions))
-                loss_neg = diff.mean()
-                loss = self.neg_coef * loss_neg
+                dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
+
+                # ---- Softplus-log 概率惩罚 ----
+                # log π(a⁻|s) 在多维动作上需按维求和
+                logp_neg = dist_s.log_prob(target_actions).sum(-1)  # [B]
+                loss_sp = F.softplus(logp_neg + self.margin).mean()  # margin≈2-4
+
+                # ---- σ 正则，防止放大 σ 绕过约束 ----
+                loss_var = (std_s - self.sigma_target).clamp(min=0).pow(2).mean()
+
+                loss = self.neg_coef * loss_sp + self.var_coef * loss_var
 
             # ---- 反向更新 ----
             self.optimizer.zero_grad()

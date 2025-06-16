@@ -87,7 +87,7 @@ class HiTAC(nn.Module):
         self.sticky_prob = sticky_prob
 
         self.last_pid = torch.zeros(2, self.num_layers, dtype=torch.long, device=self.device)
-        self.freq_counter = torch.zeros(2, self.num_layers, self.num_subpolicies)
+        self.freq_counter = torch.zeros(2, self.num_layers, self.num_subpolicies, device=self.device)
 
         # === PPO缓存 ===
         self.old_log_probs = None
