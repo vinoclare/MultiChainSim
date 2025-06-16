@@ -6,7 +6,7 @@ import random
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
-import concurrent.futures as cf, multiprocessing as mp
+import concurrent.futures as cf
 
 from envs.core_chain import IndustrialChain
 from envs.env import MultiplexEnv
@@ -155,6 +155,11 @@ def run_once(exp_dir, log_dir):
         total_reward_all = sum(np.mean(reward_sums[lid]) for lid in agents)
         total_cost_all = sum(np.mean(cost_sums[lid]) for lid in agents)
         total_util_all = sum(np.mean(util_sums[lid]) for lid in agents)
+        episode_total_rewards = [
+            sum([reward_sums[lid][i] for lid in range(num_layers)])
+            for i in range(len(reward_sums[0]))
+        ]
+        global_reward_std = np.std(episode_total_rewards)
 
         log_interval = ppo_cfg["log_interval"]  # 引用配置字典
         if global_step % log_interval == 0:
@@ -170,6 +175,7 @@ def run_once(exp_dir, log_dir):
             writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
             writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
             writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
+            writer.add_scalar("global/eval_reward_std", global_reward_std, global_step)
 
         print(f"[Eval Total] reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
 

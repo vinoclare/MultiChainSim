@@ -259,8 +259,7 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_int
         writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
         writer.add_scalar("global/eval_reward_std", global_reward_std, global_step)
 
-    print(
-        f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
+    print(f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
 
 
 # ======= 训练主循环 =======

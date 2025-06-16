@@ -6,6 +6,7 @@ from collections import deque
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+import concurrent.futures as cf
 
 from utils.agent57_scheduler import SoftUCB
 from utils.buffer import RolloutBuffer, compute_gae
@@ -425,6 +426,11 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             total_reward_all = sum([np.mean(eval_reward_sums[lid]) for lid in range(n_layers)])
             total_cost_all = sum([np.mean(eval_cost_sums[lid]) for lid in range(n_layers)])
             total_util_all = sum([np.mean(eval_util_sums[lid]) for lid in range(n_layers)])
+            episode_total_rewards = [
+                sum([eval_reward_sums[lid][i] for lid in range(num_layers)])
+                for i in range(len(eval_reward_sums[0]))
+            ]
+            global_reward_std = np.std(episode_total_rewards)
             for layer_id in range(n_layers):
                 avg_r = float(np.mean(eval_reward_sums[layer_id]))
                 avg_c = float(np.mean(eval_cost_sums[layer_id]))
@@ -457,6 +463,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             writer.add_scalar("global/eval_avg_reward", np.mean(eval_log_buffer["global_reward"]), current_steps)
             writer.add_scalar("global/eval_avg_cost", np.mean(eval_log_buffer["global_cost"]), current_steps)
             writer.add_scalar("global/eval_avg_utility", np.mean(eval_log_buffer["global_util"]), current_steps)
+            writer.add_scalar("global/eval_reward_std", global_reward_std, current_steps)
 
     writer.close()
 
@@ -506,18 +513,29 @@ def run_one(exp_dir, agent57_cfg, log_dir):
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
-    log_dir = "../old_logs/agent57/"
-    REPEAT_EACH_EXP = 1  # 如果要同一实验跑多次就改 >1
-
-    print("\n=== Agent57 批量实验开始 ===\n")
+    REPEAT_EACH_EXP = 1
+    MAX_WORKERS = 12
     categories = ["task", "layer", "worker", "step"]
 
+    print("\n=== Agent57 批量实验开始 ===\n")
+
+    tasks = []
     for cat, exp_name, exp_dir in list_exp_dirs(CFG_ROOT, categories):
         for k in range(REPEAT_EACH_EXP):
-            log_dir = f"logs/agent57/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
-            tag = f"{cat}/{exp_name} (run {k})"
-            print(f"▶️  开始 {tag}")
-            run_one(exp_dir, AGENT57_CFG, log_dir)
-            print(f"✅ 完成 {tag}\n")
+            log_dir = f"../logs/agent57/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
+            tasks.append((exp_dir, AGENT57_CFG, log_dir, f"{cat}/{exp_name} (run {k})"))
 
-    print(f"🎉 全部实验结束\n")
+    with cf.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [
+            ex.submit(run_one, exp_dir, agent_cfg, log_dir)
+            for (exp_dir, agent_cfg, log_dir, tag) in tasks
+        ]
+
+        for i, (fut, (_, _, _, tag)) in enumerate(zip(cf.as_completed(futures), tasks), 1):
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"❌ {tag} 出错：{e}")
+            print(f"✔️  已完成 {i}/{len(tasks)}：{tag}")
+
+    print("🎉 全部 Agent57 实验已结束\n")
