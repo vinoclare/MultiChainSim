@@ -1,5 +1,5 @@
 {
-  "num_episodes": 10000,
+  "num_episodes": 50000,
   "eval_interval": 100,
   "eval_episodes": 10,
   "log_interval": 20,

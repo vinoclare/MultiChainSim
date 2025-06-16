@@ -307,7 +307,7 @@ def run_once(exp_dir, log_dir):
                 eval_env=eval_env,
                 eval_episodes=eval_eps,
                 writer=writer,
-                global_step=ep
+                global_step=global_step
             )
 
 
