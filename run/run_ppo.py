@@ -1,5 +1,7 @@
 import torch
 import numpy as np
+import os
+import argparse
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
@@ -14,7 +16,11 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
-dire = "worker/4"
+parser = argparse.ArgumentParser()
+parser.add_argument("--dire", type=str, default="worker/4",
+                    help="子配置目录，相对 ../configs/ 的路径，例如 task/expA")
+args, _ = parser.parse_known_args()
+dire = args.dire
 env_config_path = f'../configs/{dire}/env_config.json'
 ppo_config_path = '../configs/ppo_config.json'
 with open(env_config_path, 'r') as f:
@@ -180,28 +186,33 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
             cost_sums[lid].append(episode_cost[lid])
             util_sums[lid].append(episode_util[lid])
 
-        # ===== 统计各种任务状态的数量 =====
-        num_total_tasks = 0
-        num_waiting_tasks = 0
-        num_done_tasks = 0
-        num_failed_tasks = 0
-        for step_task_list in eval_env.task_schedule.values():
-            for task in step_task_list:
-                num_total_tasks += 1
-                status = task.status
-                if status == "waiting":
-                    num_waiting_tasks += 1
-                elif status == "done":
-                    num_done_tasks += 1
-                elif status == "failed":
-                    num_failed_tasks += 1
-        print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-              f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
+        # # ===== 统计各种任务状态的数量 =====
+        # num_total_tasks = 0
+        # num_waiting_tasks = 0
+        # num_done_tasks = 0
+        # num_failed_tasks = 0
+        # for step_task_list in eval_env.task_schedule.values():
+        #     for task in step_task_list:
+        #         num_total_tasks += 1
+        #         status = task.status
+        #         if status == "waiting":
+        #             num_waiting_tasks += 1
+        #         elif status == "done":
+        #             num_done_tasks += 1
+        #         elif status == "failed":
+        #             num_failed_tasks += 1
+        # print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
+        #       f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # === 写入 TensorBoard ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in agents])
     total_cost_all = sum([np.mean(cost_sums[lid]) for lid in agents])
     total_util_all = sum([np.mean(util_sums[lid]) for lid in agents])
+    episode_total_rewards = [
+        sum([reward_sums[lid][i] for lid in range(num_layers)])
+        for i in range(len(reward_sums[0]))
+    ]
+    global_reward_std = np.std(episode_total_rewards)
 
     for lid in agents:
         writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
@@ -216,6 +227,7 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
     writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
     writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
     writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
+    writer.add_scalar("global/eval_reward_std", global_reward_std, global_step)
 
     print(f"[Eval Total] reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
 

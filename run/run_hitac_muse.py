@@ -4,6 +4,8 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from collections import deque
+import os
+import argparse
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
@@ -11,7 +13,11 @@ from agents.hitac_muse_agent import HiTACMuSEAgent
 from utils.utils import RunningMeanStd
 
 # ======== Load Configurations ========
-dire = "standard"
+parser = argparse.ArgumentParser()
+parser.add_argument('--dire', type=str, default='standard',
+                    help='name of sub-folder under ../configs/ 作为本次实验的配置目录')
+args, _ = parser.parse_known_args()
+dire = args.dire
 env_config_path = f'../configs/{dire}/env_config.json'
 algo_config_path = f'../configs/hitac_muse_config.json'
 
