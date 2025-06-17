@@ -1,10 +1,3 @@
-"""
-HiTAC  (Hierarchical Transformer-based Adaptive Coordinator)
-------------------------------------------------------------
-- 输入：全局 KPI token  +  各层最近局部 KPI 序列
-- 输出：每层选择子策略的 logits
-"""
-
 import numpy as np
 import torch
 import torch.nn as nn
