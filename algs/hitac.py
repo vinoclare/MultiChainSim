@@ -74,6 +74,7 @@ class HiTAC(nn.Module):
         self.logits_norm = nn.LayerNorm(num_subpolicies)
 
         self.value_loss_coef = 0.5
+        self.reward_coef = 0.2
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         self.ucb_lambda = ucb_lambda
@@ -81,6 +82,8 @@ class HiTAC(nn.Module):
 
         self.last_pid = torch.zeros(2, self.num_layers, dtype=torch.long, device=self.device)
         self.freq_counter = torch.zeros(2, self.num_layers, self.num_subpolicies, device=self.device)
+
+        self.progress = 0.0
 
         # === PPO缓存 ===
         self.old_log_probs = None
@@ -132,7 +135,8 @@ class HiTAC(nn.Module):
         avg_rewards = policies_info[0, :, :, 0]
         freq = self.freq_counter[0] + 1.0
         ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
-        logits = logits + self.ucb_lambda * ucb_bonus + 0.05 * avg_rewards
+        reward_coef = max(5e-3, self.reward_coef * (1 - self.progress))
+        logits = logits + self.ucb_lambda * ucb_bonus + reward_coef * avg_rewards
 
         probs = F.softmax(logits / self.temperature, dim=-1)
         dist = Categorical(probs)
@@ -224,8 +228,8 @@ class HiTAC(nn.Module):
             value_loss = F.mse_loss(values, returns)
 
             entropy = - (new_log_probs * new_log_probs.exp()).sum(dim=-1).mean()
-            progress = step / self.total_steps
-            entropy_coef = max(1e-4, self.entropy_coef * (1 - progress))
+            self.progress = step / self.total_steps
+            entropy_coef = max(1e-4, self.entropy_coef * (1 - self.progress))
 
             loss = policy_loss + self.value_loss_coef * value_loss - entropy_coef * entropy
 
