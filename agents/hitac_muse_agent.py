@@ -30,7 +30,7 @@ class HiTACMuSEAgent:
 
         # === 各层 MuSE ===
         self.muses = [
-            MuSE(muse_cfg, obs_spaces[l], device=device, writer=writer, total_training_steps=total_training_steps)
+            MuSE(muse_cfg, distill_cfg, obs_spaces[l], device=device, writer=writer, total_training_steps=total_training_steps)
             for l in range(self.num_layers)
         ]
 

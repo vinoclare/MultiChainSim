@@ -10,10 +10,12 @@ class MuSE(nn.Module):
     多子策略管理器（共享一个 Agent57IndustrialModel，多个策略 head）
     """
 
-    def __init__(self, cfg, obs_shapes, device="cuda",
+    def __init__(self, cfg, distill_cfg, obs_shapes, device="cuda",
                  writer=None, total_training_steps=None):
         super().__init__()
         self.K = cfg["K"]
+        self.lambda_div = cfg["lambda_div"]
+        self.neg_policy = distill_cfg["neg_policy"]
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.writer = writer
         self.total_training_steps = total_training_steps
@@ -132,11 +134,44 @@ class MuSE(nn.Module):
 
         entropy_loss = -entropy.mean()
 
+        # diversity loss
+        if self.neg_policy and head_id > (self.K - 3):
+            is_pos_policy = False
+        elif self.neg_policy:
+            is_pos_policy = True
+            num_pos = self.K - 2
+        else:
+            is_pos_policy = True
+            num_pos = self.K
+
+        if is_pos_policy and self.lambda_div > 0:
+            mean_j = mean.detach()  # detach 不传梯度给自己
+            std_j = std.detach()
+
+            kl_terms = []
+            for k in range(num_pos):
+                if k == head_id:
+                    continue
+                with torch.no_grad():
+                    mean_k, std_k, *_ = self.model(
+                        task_obs, worker_loads, worker_profile,
+                        global_context, valid_mask,
+                        policy_id=k
+                    )
+                # KL(π_j || π_k)，高斯 closed-form
+                kl = (std_k.log() - std_j.log() +
+                      (std_j.pow(2) + (mean_j - mean_k).pow(2)) / (2 * std_k.pow(2)) - 0.5)
+                kl_sum = kl.sum(dim=[1, 2])  # 对动作维度求和
+                kl_terms.append(kl_sum)
+                div_loss = self.lambda_div * torch.stack(kl_terms).mean()
+        else:
+            div_loss = 0.0
+
         # entropy_coef decay
         progress = step / self.total_training_steps
         entropy_coef = max(1e-3, self.entropy_coef * (1 - progress))
 
-        loss = pi_loss + self.value_loss_coef * value_loss + entropy_coef * entropy_loss
+        loss = pi_loss + self.value_loss_coef * value_loss + entropy_coef * entropy_loss + div_loss
 
         self.optimizer.zero_grad()
         loss.backward()
