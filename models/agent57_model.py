@@ -15,13 +15,17 @@ class Agent57IndustrialModel(nn.Module):
             num_pad_tasks: int,
             global_context_dim: int,
             hidden_dim: int,
-            K: int
+            K: int,
+            neg_policy: bool = False
     ):
         super().__init__()
         self.K = K
         self.n_worker = n_worker
         self.num_pad_tasks = num_pad_tasks
         D = hidden_dim
+
+        if neg_policy:
+            self.neg_pids = [K-2, K-1]
 
         # —— 三路编码器（共享） —— #
         self.task_enc = RowWiseEncoder(task_input_dim, D, D)
@@ -130,6 +134,12 @@ class Agent57IndustrialModel(nn.Module):
         t_feat, w_feat, g_feat = self._encode(
             task_obs, worker_loads, worker_profiles, global_context
         )  # t_feat: (B, T, D), w_feat: (B, W, D), g_feat: (B, D)
+
+        # 若为负策略 ⇒ 冻结梯度
+        if pid in self.neg_pids:
+            t_feat = t_feat.detach()
+            w_feat = w_feat.detach()
+            g_feat = g_feat.detach()
 
         # —— 构造 Actor 融合特征 —— #
         w_exp = w_feat.unsqueeze(2).expand(-1, -1, self.num_pad_tasks, -1)  # (B, W, T, D)

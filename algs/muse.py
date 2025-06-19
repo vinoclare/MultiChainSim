@@ -29,7 +29,8 @@ class MuSE(nn.Module):
             num_pad_tasks=obs_shapes["num_pad_tasks"],
             global_context_dim=obs_shapes["global_context_dim"],
             hidden_dim=cfg["hidden_dim"],
-            K=self.K
+            K=self.K,
+            neg_policy=self.neg_policy
         ).to(self.device)
 
         # with torch.no_grad():
