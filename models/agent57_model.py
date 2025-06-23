@@ -24,6 +24,7 @@ class Agent57IndustrialModel(nn.Module):
         self.num_pad_tasks = num_pad_tasks
         D = hidden_dim
 
+        self.neg_policy = neg_policy
         if neg_policy:
             self.neg_pids = [K-2, K-1]
 
@@ -136,7 +137,7 @@ class Agent57IndustrialModel(nn.Module):
         )  # t_feat: (B, T, D), w_feat: (B, W, D), g_feat: (B, D)
 
         # 若为负策略 ⇒ 冻结梯度
-        if pid in self.neg_pids:
+        if self.neg_policy and pid in self.neg_pids:
             t_feat = t_feat.detach()
             w_feat = w_feat.detach()
             g_feat = g_feat.detach()

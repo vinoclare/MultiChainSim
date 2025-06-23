@@ -1,89 +1,115 @@
 import os
+import csv
 import numpy as np
+from pathlib import Path
 from envs import MultiplexEnv
-from visualization.monitor import plot_task_trajectories
-
-eval_schedule_path = "./configs/5/train_schedule.json"
-eval_worker_path = "./configs/5/worker_config.json"
-config_path = './configs/env_config.json'
-
-env = MultiplexEnv(config_path, schedule_load_path=eval_schedule_path, worker_config_load_path=eval_worker_path)
 
 
-def round_robin_baseline(env, num_episodes: int = 20):
+def round_robin_baseline(env, num_episodes=10):
+    """返回五个标量：avg_reward, avg_cost, avg_utility, reward_std, tasks_done"""
     num_layers = len(env.chain.layers)
     rr_pointer = [0] * num_layers
 
-    total_rewards = []
-    total_costs = []
-    total_utils = []
-    total_done = []
-    total_fails = []
+    ep_rewards, ep_costs, ep_utils, ep_done = [], [], [], []
 
-    for ep in range(num_episodes):
+    for _ in range(num_episodes):
         obs = env.reset()
-        done = False
-        total_reward = 0.0
+        done, total_reward = False, 0.0
 
         while not done:
             action_dict = {}
             for l, layer in enumerate(env.chain.layers):
-                task_queue = layer.task_queue
-                num_workers = len(layer.workers)
-                num_tasks = len(task_queue)
-                layer_action = [[0] * num_tasks for _ in range(num_workers)]
+                tq, n_worker, n_task = layer.task_queue, len(layer.workers), len(layer.task_queue)
+                act = [[0] * n_task for _ in range(n_worker)]
 
-                for t_idx, task in enumerate(task_queue):
-                    remain = task.unassigned_amount
-                    ptr = rr_pointer[l]
-                    tried = 0
-
-                    while remain > 0 and tried < num_workers:
-                        w_idx = ptr % num_workers
-                        worker = layer.workers[w_idx]
-
-                        cap_t = worker.capacity_map.get(task.task_type, 0)
-                        used_t = worker.current_load_map.get(task.task_type, 0)
-                        type_avail = cap_t - used_t
-                        total_avail = worker.max_total_load - worker.total_current_load
-
-                        assign_amt = min(remain, type_avail, total_avail)
-
+                for t_idx, task in enumerate(tq):
+                    remain, ptr, tried = task.unassigned_amount, rr_pointer[l], 0
+                    while remain > 0 and tried < n_worker:
+                        w_idx = ptr % n_worker
+                        w = layer.workers[w_idx]
+                        cap_t = w.capacity_map.get(task.task_type, 0)
+                        used_t = w.current_load_map.get(task.task_type, 0)
+                        assign_amt = min(remain,
+                                         cap_t - used_t,
+                                         w.max_total_load - w.total_current_load)
                         if assign_amt > 0:
-                            layer_action[w_idx][t_idx] += assign_amt
+                            act[w_idx][t_idx] += assign_amt
                             remain -= assign_amt
-
                         ptr += 1
                         tried += 1
-
-                    rr_pointer[l] = ptr % num_workers
-
-                action_dict[l] = layer_action
+                    rr_pointer[l] = ptr % n_worker
+                action_dict[l] = act
 
             obs, reward, done, info = env.step(action_dict)
-            total_reward += reward if isinstance(reward, (int, float)) else reward[0]
+            total_reward += reward if np.isscalar(reward) else reward[0]
 
         kpi = info["kpi"]
-        print(f"[Episode {ep}] Reward: {total_reward:.2f} | Done: {kpi['tasks_done']} | Fail: {kpi['total_failures']} | Cost: {kpi['total_cost']:.2f} | Utility: {kpi['total_utility']:.2f}")
+        ep_rewards.append(total_reward)
+        ep_costs.append(kpi["total_cost"])
+        ep_utils.append(kpi["total_utility"])
+        ep_done.append(kpi["tasks_done"])
 
-        total_rewards.append(total_reward)
-        total_done.append(kpi["tasks_done"])
-        total_fails.append(kpi["total_failures"])
-        total_costs.append(kpi["total_cost"])
-        total_utils.append(kpi["total_utility"])
+    return dict(
+        avg_reward=np.mean(ep_rewards),
+        avg_cost=np.mean(ep_costs),
+        avg_utility=np.mean(ep_utils),
+        reward_std=np.std(ep_rewards),
+        avg_tasks_done=np.mean(ep_done),
+    )
 
-    # === 汇总统计信息 ===
-    print("\n========== Average over all episodes ==========")
-    print(f"Avg Reward: {np.mean(total_rewards):.2f}")
-    print(f"Avg Tasks Done: {np.mean(total_done):.2f}")
-    print(f"Avg Failures: {np.mean(total_fails):.2f}")
-    print(f"Avg Cost: {np.mean(total_costs):.2f}")
-    print(f"Avg Utility: {np.mean(total_utils):.2f}")
 
-    # # 可视化最后一轮轨迹
-    # plot_task_trajectories(env.chain.finished_tasks)
-    env.close()
+def is_config_leaf(dir_path: Path):
+    """判断该目录是否含四个核心 JSON."""
+    files = {p.name for p in dir_path.iterdir() if p.is_file()}
+    need = {"env_config.json", "worker_config.json",
+            "train_schedule.json", "eval_schedule.json"}
+    return need.issubset(files)
+
+
+def save_metric_csv(path: Path, value: float):
+    """生成形如 step,value 的单列 CSV 文件."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["step", "value"])
+        w.writerow([0, f"{value:.6f}"])
+
+
+def batch_run(config_root="./configs", result_root="./RR"):
+    config_root = Path(config_root).resolve()
+    result_root = Path(result_root).resolve()
+
+    # 深度优先搜索所有叶子配置目录
+    for dir_path in config_root.rglob("*"):
+        if not dir_path.is_dir() or not is_config_leaf(dir_path):
+            continue
+
+        # 读取四个 JSON 路径
+        env_cfg   = dir_path / "env_config.json"
+        worker_cfg = dir_path / "worker_config.json"
+        eval_sch  = dir_path / "eval_schedule.json"
+
+        try:
+            env = MultiplexEnv(env_cfg,
+                               schedule_load_path=eval_sch,
+                               worker_config_load_path=worker_cfg)
+
+            metrics = round_robin_baseline(env, num_episodes=10)
+            env.close()
+        except Exception as e:
+            print(f"[{dir_path.relative_to(config_root)}] 运行失败：{e}")
+            continue
+
+        # 结果目录 = RR / 相对路径
+        rel_dir = dir_path.relative_to(config_root)
+        out_dir = result_root / rel_dir
+        save_metric_csv(out_dir / "eval_avg_reward.csv",  metrics["avg_reward"])
+        save_metric_csv(out_dir / "eval_avg_cost.csv",    metrics["avg_cost"])
+        save_metric_csv(out_dir / "eval_avg_utility.csv", metrics["avg_utility"])
+        save_metric_csv(out_dir / "eval_reward_std.csv",  metrics["reward_std"])
+        # 如需 tasks_done 也可保存
+        print(f"[{rel_dir}] OK → {out_dir}")
 
 
 if __name__ == "__main__":
-    round_robin_baseline(env=env, num_episodes=20)
+    batch_run("./configs", "./RR")
