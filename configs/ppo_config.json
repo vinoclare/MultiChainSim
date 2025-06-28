@@ -1,8 +1,8 @@
 {
   "num_episodes": 50000,
-  "eval_interval": 100,
+  "eval_interval": 500,
   "eval_episodes": 10,
-  "log_interval": 20,
+  "log_interval": 1000,
   "update_epochs": 4,
   "gamma": 0.99,
   "lam": 0.95,
@@ -15,5 +15,7 @@
   "max_grad_norm": 0.5,
   "return_normalization": true,
   "num_workers": 20,
-  "device": "cuda"
+  "device": "cuda",
+  "alpha": 0.2,
+  "beta": 0.8
 }

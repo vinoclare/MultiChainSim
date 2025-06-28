@@ -29,17 +29,21 @@ def list_exp_dirs(root, cats):
 def run_once(exp_dir, run_idx):
     """
     单次实验：把相对路径 <cat/exp> 作为 --dire 传给 run_ppo.py
+    并用 run_idx 作为 --seed 保证每次不同 seed。
     """
     dire = os.path.relpath(exp_dir, CFG_ROOT)  # 例如 "worker/4" 或 "task/expA"
     tag = f"{dire} (run {run_idx})"
     print(f"▶️  开始 {tag}")
 
-    # 如需控制 GPU，可在 env 中设定 CUDA_VISIBLE_DEVICES
     env = os.environ.copy()
-    # env["CUDA_VISIBLE_DEVICES"] = ""          # ← 强制 CPU
 
+    # 这里我们把 run_idx 当作 seed 传入
     subprocess.run(
-        ["python", "run_ppo.py", "--dire", dire],
+        [
+            "python", "run_ppo.py",
+            "--dire", dire,
+            "--seed", str(run_idx)
+        ],
         env=env,
         check=True
     )
@@ -58,7 +62,10 @@ if __name__ == "__main__":
 
     # ---------- 并行执行 ----------
     with cf.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [ex.submit(run_once, exp_dir, run_idx) for exp_dir, run_idx in tasks]
+        futures = [
+            ex.submit(run_once, exp_dir, run_idx)
+            for exp_dir, run_idx in tasks
+        ]
 
         for i, fut in enumerate(cf.as_completed(futures), 1):
             try:

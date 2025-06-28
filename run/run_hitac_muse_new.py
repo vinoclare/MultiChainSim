@@ -31,11 +31,19 @@ train_schedule_path = f"../configs/{dire}/train_schedule.json"
 eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
 worker_config_path = f"../configs/{dire}/worker_config.json"
 
-env = MultiplexEnv(env_config_path, schedule_load_path=train_schedule_path, worker_config_load_path=worker_config_path)
-eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
+alphas = env_config["alphas"]
+betas = env_config["betas"]
+n_combos = len(alphas)
+envs = []
+eval_envs = []
 
-eval_env.worker_config = env.worker_config
-eval_env.chain = IndustrialChain(eval_env.worker_config)
+for i in range(n_combos):
+    env_config["alpha"] = alphas[i]
+    env_config["beta"] = betas[i]
+    env = MultiplexEnv(env_config, schedule_load_path=train_schedule_path, worker_config_load_path=worker_config_path)
+    eval_env = MultiplexEnv(env_config, schedule_load_path=eval_schedule_path, worker_config_load_path=worker_config_path)
+    envs.append(env)
+    eval_envs.append(eval_env)
 
 # === 基本参数 ===
 device = algo_config["training"]["device"] if torch.cuda.is_available() else "cpu"
@@ -47,6 +55,7 @@ n_task_types = len(task_types)
 profile_dim = 2 * n_task_types
 global_context_dim = 1
 policies_info_dim = algo_config["hitac"]["policies_info_dim"]
+switch_combo_interval = env_config["switch_combo_interval"]
 
 # ======= 超参提取 =======
 num_episodes = algo_config["training"]["num_episodes"]
@@ -143,6 +152,7 @@ ema_alpha = 0.1
 select_cnt = 0
 skip_hitac_train = False
 
+
 def compute_gae_single_head(rewards, dones, values, next_value, gamma, lam):
     T = len(rewards)
     advs = [0.0] * T
@@ -180,54 +190,54 @@ def process_obs(obs, lid, device="cuda"):
     return task_obs, worker_loads, worker_profile, global_context
 
 
-def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_interval, device):
-    num_layers = eval_env.num_layers
+def evaluate_policy(agent, eval_episodes_per_env, writer, global_step, device):
     reward_sums = {lid: [] for lid in range(num_layers)}
     assign_bonus_sums = {lid: [] for lid in range(num_layers)}
     wait_penalty_sums = {lid: [] for lid in range(num_layers)}
     cost_sums = {lid: [] for lid in range(num_layers)}
     util_sums = {lid: [] for lid in range(num_layers)}
 
-    for episode in range(eval_episodes):
-        obs = eval_env.reset(with_new_schedule=False)
-        episode_reward = {lid: 0.0 for lid in range(num_layers)}
-        episode_assign_bonus = {lid: 0.0 for lid in range(num_layers)}
-        episode_wait_penalty = {lid: 0.0 for lid in range(num_layers)}
-        episode_cost = {lid: 0.0 for lid in range(num_layers)}
-        episode_util = {lid: 0.0 for lid in range(num_layers)}
+    for eval_env in eval_envs:
+        for episode in range(eval_episodes_per_env):
+            obs = eval_env.reset(with_new_schedule=False)
+            episode_reward = {lid: 0.0 for lid in range(num_layers)}
+            episode_assign_bonus = {lid: 0.0 for lid in range(num_layers)}
+            episode_wait_penalty = {lid: 0.0 for lid in range(num_layers)}
+            episode_cost = {lid: 0.0 for lid in range(num_layers)}
+            episode_util = {lid: 0.0 for lid in range(num_layers)}
 
-        done = False
-        while not done:
-            actions = {}
+            done = False
+            while not done:
+                actions = {}
+                for lid in range(num_layers):
+                    task_obs, worker_loads, worker_profile, global_context = process_obs(obs, lid, device)
+                    valid_mask = task_obs[:, :, 3]
+                    obs_dict = {
+                        "task_obs": task_obs,
+                        "worker_loads": worker_loads,
+                        "worker_profiles": worker_profile,
+                        "global_context": global_context,
+                        "valid_mask": valid_mask,
+                    }
+                    action = agent.main_policy_predict(lid, obs_dict)
+                    actions[lid] = action.squeeze(0).detach().cpu().numpy()
+
+                obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
+
+                for lid in range(num_layers):
+                    r = reward_detail["layer_rewards"][lid]
+                    episode_reward[lid] += r["reward"]
+                    episode_assign_bonus[lid] += r["assign_bonus"]
+                    episode_wait_penalty[lid] += r["wait_penalty"]
+                    episode_cost[lid] += r["cost"]
+                    episode_util[lid] += r["utility"]
+
             for lid in range(num_layers):
-                task_obs, worker_loads, worker_profile, global_context = process_obs(obs, lid, device)
-                valid_mask = task_obs[:, :, 3]
-                obs_dict = {
-                    "task_obs": task_obs,
-                    "worker_loads": worker_loads,
-                    "worker_profiles": worker_profile,
-                    "global_context": global_context,
-                    "valid_mask": valid_mask,
-                }
-                action = agent.main_policy_predict(lid, obs_dict)
-                actions[lid] = action.squeeze(0).detach().cpu().numpy()
-
-            obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
-
-            for lid in range(num_layers):
-                r = reward_detail["layer_rewards"][lid]
-                episode_reward[lid] += r["reward"]
-                episode_assign_bonus[lid] += r["assign_bonus"]
-                episode_wait_penalty[lid] += r["wait_penalty"]
-                episode_cost[lid] += r["cost"]
-                episode_util[lid] += r["utility"]
-
-        for lid in range(num_layers):
-            reward_sums[lid].append(episode_reward[lid])
-            assign_bonus_sums[lid].append(episode_assign_bonus[lid])
-            wait_penalty_sums[lid].append(episode_wait_penalty[lid])
-            cost_sums[lid].append(episode_cost[lid])
-            util_sums[lid].append(episode_util[lid])
+                reward_sums[lid].append(episode_reward[lid])
+                assign_bonus_sums[lid].append(episode_assign_bonus[lid])
+                wait_penalty_sums[lid].append(episode_wait_penalty[lid])
+                cost_sums[lid].append(episode_cost[lid])
+                util_sums[lid].append(episode_util[lid])
 
     # === TensorBoard logging ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in range(num_layers)])
@@ -424,7 +434,7 @@ for episode in range(num_episodes):
 
     global_step = (episode + 1) * steps_per_episode
     if (episode % eval_interval == 0) and (episode > warmup_ep * K):
-        evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_interval, device)
+        evaluate_policy(agent, eval_episodes, writer, global_step, device)
 
     ppo_stats = {}
 
