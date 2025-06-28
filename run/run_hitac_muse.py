@@ -171,8 +171,7 @@ def process_obs(obs, lid, device="cuda"):
     """
     layer_obs = obs[lid]  # 取出该层 observation（类型为 dict）
 
-    task_obs = torch.tensor(layer_obs["task_queue"], dtype=torch.float32, device=device).unsqueeze(
-        0)  # [1, N, task_dim]
+    task_obs = torch.tensor(layer_obs["task_queue"], dtype=torch.float32, device=device).unsqueeze(0)  # [1, N, task_dim]
     worker_loads = torch.tensor(layer_obs["worker_loads"], dtype=torch.float32, device=device).unsqueeze(0)
     worker_profile = torch.tensor(layer_obs["worker_profile"], dtype=torch.float32, device=device).unsqueeze(0)
     global_context = torch.tensor(obs["global_context"], dtype=torch.float32, device=device).unsqueeze(0)

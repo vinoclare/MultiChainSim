@@ -37,7 +37,7 @@ class PPO:
         self.global_step_ref = global_step_ref
         self.total_training_steps = total_training_steps
 
-        self.train_log_interval = 1000
+        self.train_log_interval = 10000000
         self._clip_frac_buffer = []
         self._v_pred_error_buffer = []
         self._action_mean_buffer = []

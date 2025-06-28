@@ -208,26 +208,28 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in agents])
     total_cost_all = sum([np.mean(cost_sums[lid]) for lid in agents])
     total_util_all = sum([np.mean(util_sums[lid]) for lid in agents])
+    total_wp_all = sum([np.mean(wait_penalty_sum[lid]) for lid in agents])
     episode_total_rewards = [
         sum([reward_sums[lid][i] for lid in range(num_layers)])
         for i in range(len(reward_sums[0]))
     ]
     global_reward_std = np.std(episode_total_rewards)
 
-    for lid in agents:
-        writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bouns_sum[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sum[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
-        print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
-              f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
+    # for lid in agents:
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bouns_sum[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sum[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
+    #     print(f"[Eval] Layer {lid}: reward={np.mean(reward_sums[lid]):.2f}, "
+    #           f"cost={np.mean(cost_sums[lid]):.2f}, utility={np.mean(util_sums[lid]):.2f}")
 
     # === 写入所有层的总 reward、cost、utility 到 TensorBoard ===
     writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
     writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
     writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
     writer.add_scalar("global/eval_reward_std", global_reward_std, global_step)
+    writer.add_scalar("global/eval_avg_wp", total_wp_all, global_step)
 
     print(f"[Eval Total] reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
 
