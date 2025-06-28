@@ -10,8 +10,8 @@ import subprocess
 
 CFG_ROOT = "../configs"  # 根目录
 CATEGORIES = ["task", "layer", "worker", "step"]
-REPEAT_EACH_EXP = 1  # 同一实验重复次数
-MAX_WORKERS = 12  # 并行进程数
+REPEAT_EACH_EXP = 4  # 同一实验重复次数
+MAX_WORKERS = 9  # 并行进程数
 
 
 def list_exp_dirs(root, cats):
@@ -40,7 +40,7 @@ def run_once(exp_dir, run_idx):
     # 这里我们把 run_idx 当作 seed 传入
     subprocess.run(
         [
-            "python", "run_ppo.py",
+            "python", "run_ppo_new.py",
             "--dire", dire,
             "--seed", str(run_idx)
         ],
