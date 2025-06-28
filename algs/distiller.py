@@ -120,7 +120,7 @@ class Distiller:
                 loss_sp = F.softplus(logp_neg + self.margin).mean()  # margin≈2-4
 
                 # ---- σ 正则，防止放大 σ 绕过约束 ----
-                loss_var = (std_s - self.sigma_target).clamp(min=0).pow(2).mean()
+                loss_var = (self.sigma_target - std_s).clamp(min=0).pow(2).mean()
 
                 loss = self.neg_coef * loss_sp + self.var_coef * loss_var
 
