@@ -4,7 +4,6 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from collections import deque
-import os
 import argparse
 
 from envs import IndustrialChain
@@ -70,6 +69,9 @@ gamma = algo_config["muse"]["gamma"]
 lam = algo_config["muse"]["lam"]
 batch_size = algo_config["muse"]["batch_size"]
 return_norm = algo_config["muse"]["return_normalization"]
+local_kpi_dim = algo_config["hitac"]["local_kpi_dim"]
+global_kpi_dim = algo_config["hitac"]["global_kpi_dim"]
+policies_info_dim = algo_config["hitac"]["policies_info_dim"]
 
 
 # === 每层 obs 结构描述（供 MuSE init）===
@@ -143,6 +145,7 @@ ema_alpha = 0.1
 select_cnt = 0
 skip_hitac_train = False
 
+
 def compute_gae_single_head(rewards, dones, values, next_value, gamma, lam):
     T = len(rewards)
     advs = [0.0] * T
@@ -179,7 +182,7 @@ def process_obs(obs, lid, device="cuda"):
     return task_obs, worker_loads, worker_profile, global_context
 
 
-def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_interval, device):
+def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device):
     num_layers = eval_env.num_layers
     reward_sums = {lid: [] for lid in range(num_layers)}
     assign_bonus_sums = {lid: [] for lid in range(num_layers)}
@@ -296,7 +299,7 @@ for episode in range(num_episodes):
         else:
             skip_hitac_train = False
             # === 构造滑动平均 KPI（用于 HiTAC select）===
-            local_kpis_tensor = torch.zeros((1, num_layers, 8), dtype=torch.float32, device=device)
+            local_kpis_tensor = torch.zeros((1, num_layers, local_kpi_dim), dtype=torch.float32, device=device)
             for lid in range(num_layers):
                 if len(local_kpi_history[lid]) > 0:
                     local_kpis_tensor[0, lid] = torch.stack(list(local_kpi_history[lid]), dim=0).mean(dim=0)
@@ -441,7 +444,7 @@ for episode in range(num_episodes):
 
     global_step = (episode + 1) * steps_per_episode
     if (episode % eval_interval == 0) and (episode > warmup_ep * K):
-        evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, log_interval, device)
+        evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
     ppo_stats = {}
 

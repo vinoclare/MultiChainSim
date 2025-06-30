@@ -77,7 +77,6 @@ class Distiller:
             return 0.0   # 数据不足
 
         total_loss = 0.0
-        effective_steps = 0
         for _ in range(steps):
             batch = self._sample_from_buffers(cur_pid, batch_size)
             if len(batch) == 0:
@@ -132,7 +131,7 @@ class Distiller:
 
             total_loss += loss.item()
 
-        return total_loss / max(1, steps)
+        return total_loss / steps
 
     @torch.no_grad()
     def predict(self, obs_dict):

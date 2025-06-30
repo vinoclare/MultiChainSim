@@ -1,5 +1,4 @@
 from typing import List, Optional, Dict, Tuple
-from collections import deque
 import random
 
 
