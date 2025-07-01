@@ -22,8 +22,8 @@ class MultiplexEnv(gym.Env):
 
         self.max_steps = self.config.get("max_steps", 50)
         self.current_step = 0
-        self.alpha = self.config.get("alpha", 1.0)
-        self.beta = self.config.get("beta", 1.0)
+        self.alphas = self.config["alphas"]
+        self.betas = self.config["betas"]
 
         self.num_layers = self.config["num_layers"]
         self.num_pad_tasks = self.config.get("num_pad_tasks", 10)
@@ -180,7 +180,7 @@ class MultiplexEnv(gym.Env):
         total_assign_bonus = 0.0
         total_wait_penalty = 0.0
 
-        for layer_id, kpi in step_kpis.items():
+        for i, (layer_id, kpi) in enumerate(step_kpis.items()):
             step_cost = kpi.get("step_cost", 0.0)  # 当前步内所有 task 的 partial cost 累计
             step_util = kpi.get("step_utility", 0.0)  # 当前步内所有 task 的 partial utility 累计
 
@@ -194,7 +194,7 @@ class MultiplexEnv(gym.Env):
                 wait_penalty += wait_penalty_coef * wait_time
 
             # 最终 reward（即时）
-            reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
+            reward = self.betas[i] * step_util - self.alphas[i] * step_cost + assign_bonus - wait_penalty
 
             layer_rewards[layer_id] = {
                 "cost": step_cost,
@@ -227,8 +227,6 @@ class MultiplexEnv(gym.Env):
         # 输出详细KPI与episode参数，方便后续分析
         info = {
             "kpi": self.chain.collect_kpis(),
-            "alpha": self.alpha,
-            "beta": self.beta,
             "current_step": self.current_step
         }
         return info
@@ -238,10 +236,10 @@ class MultiplexEnv(gym.Env):
 
         # 实时单位时间指标（step_kpis）
         print("Step-wise KPIs:")
-        for layer_id, kpi in self.chain.step_kpis.items():
+        for i, (layer_id, kpi) in enumerate(self.chain.step_kpis.items()):
             step_cost = kpi.get("step_cost", 0.0)
             step_util = kpi.get("step_utility", 0.0)
-            step_reward = self.beta * step_util - self.alpha * step_cost
+            step_reward = self.betas[i] * step_util - self.alphas[i] * step_cost
             print(f"  Layer {layer_id}: "
                   f"Cost = {step_cost:.2f}, Utility = {step_util:.2f}, Reward = {step_reward:.2f}")
 
@@ -251,7 +249,6 @@ class MultiplexEnv(gym.Env):
         print(f"  Total Time: {kpis['time']}")
         print(f"  Tasks Done: {kpis['tasks_done']}, Total Failures: {kpis['total_failures']}")
         print(f"  Total Cost: {kpis['total_cost']:.2f}, Total Utility: {kpis['total_utility']:.2f}")
-        print(f"  Alpha: {self.alpha:.2f}, Beta: {self.beta:.2f}")
 
         print("\nPer-layer cumulative stats:")
         for layer_id, stats in kpis["per_layer"].items():
