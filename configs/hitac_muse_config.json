@@ -11,8 +11,8 @@
 
   "muse": {
     "K": 5,
-    "alphas": [0.2, 1, 0, -1, 0],
-    "betas":  [0.8, 0, 1, 0, -1],
+    "alphas": [0.2, 0.5, 0.8, -1, 0],
+    "betas":  [0.8, 0.5, 0.2, 0, -1],
 
     "hidden_dim": 64,
     "batch_size": 512,
@@ -43,9 +43,9 @@
     "clip_param": 0.2,
     "entropy_coef": 0.05,
     "gamma": 1.0,
-    "initial_lr": 3e-4,
+    "initial_lr": 3e-3,
     "max_grad_norm": 0.5,
-    "ucb_lambda": 0.2,
+    "ucb_lambda": 0.1,
     "sticky_prob": 0.05,
     "lr": 3e-4,
     "temperature": 0.2,

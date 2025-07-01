@@ -30,13 +30,12 @@ def run_once(exp_dir, run_idx):
     """
     单次实验：把相对路径 <cat/exp> 作为 --dire 传给 run_ppo.py
     """
-    dire = os.path.relpath(exp_dir, CFG_ROOT)  # 例如 "worker/4" 或 "task/expA"
+    dire = os.path.relpath(exp_dir, CFG_ROOT)  # 例如 "worker/4"
     tag = f"{dire} (run {run_idx})"
     print(f"▶️  开始 {tag}")
 
     # 如需控制 GPU，可在 env 中设定 CUDA_VISIBLE_DEVICES
     env = os.environ.copy()
-    # env["CUDA_VISIBLE_DEVICES"] = ""          # ← 强制 CPU
 
     subprocess.run(
         ["python", "run_ppo.py", "--dire", dire],

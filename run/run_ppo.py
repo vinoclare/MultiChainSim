@@ -17,7 +17,7 @@ from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
-parser.add_argument("--dire", type=str, default="worker/4",
+parser.add_argument("--dire", type=str, default="standard",
                     help="子配置目录，相对 ../configs/ 的路径，例如 task/expA")
 args, _ = parser.parse_known_args()
 dire = args.dire
@@ -34,7 +34,7 @@ train_schedule_path = f"../configs/{dire}/train_schedule.json"
 eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
 worker_config_path = f"../configs/{dire}/worker_config.json"
 
-mode = env_config["mode"]
+mode = "save"
 if mode == "save":
     env = MultiplexEnv(env_config_path, schedule_save_path=train_schedule_path, worker_config_save_path=worker_config_path)
     eval_env = MultiplexEnv(env_config_path, schedule_save_path=eval_schedule_path)
@@ -98,6 +98,7 @@ for layer_id in range(num_layers):
         entropy_coef=ppo_config["entropy_coef"],
         initial_lr=ppo_config["initial_lr"],
         max_grad_norm=ppo_config["max_grad_norm"],
+        device=device,
         writer=writer,
         global_step_ref=global_step,
         total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
