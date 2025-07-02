@@ -282,6 +282,7 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
 
 # ======= 训练主循环 =======
+global_step = 0
 for episode in range(num_episodes):
     # warmup stage：轮询训练每个子策略
     if episode < (warmup_ep * K):
@@ -335,11 +336,11 @@ for episode in range(num_episodes):
             # === 调用 HiTAC 子策略选择 ===
             current_pid_tensor = agent.select_subpolicies(
                 local_kpis_tensor, global_kpi_tensor,
-                policies_info_tensor, episode * steps_per_episode)
+                policies_info_tensor, global_step)
 
             distill_pid = agent.select_subpolicies_distill(
                 local_kpis_tensor, global_kpi_tensor,
-                policies_info_tensor, episode * steps_per_episode)
+                policies_info_tensor, global_step)
 
         for lid in range(num_layers):
             writer.add_scalar(f"layer_{lid}/selected_pid", current_pid_tensor[lid], episode)
@@ -433,7 +434,7 @@ for episode in range(num_episodes):
             break
 
     global_step = (episode + 1) * steps_per_episode
-    if (episode % eval_interval == 0) and (episode > warmup_ep * K):
+    if (episode % eval_interval == 0) and (episode >= warmup_ep * K):
         evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
     ppo_stats = {}
@@ -641,7 +642,7 @@ for episode in range(num_episodes):
                 writer.add_scalar(k, v, episode)
 
     # === 蒸馏更新 ===
-    if episode % distill_interval == 0 and episode >= (warmup_ep * K):
+    if episode % distill_interval == 0 and episode > (warmup_ep * K):
         for lid in range(num_layers):
             loss = agent.distill_update(lid, distill_pid[lid].item())
             writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
