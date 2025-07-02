@@ -74,6 +74,7 @@ return_norm = algo_config["muse"]["return_normalization"]
 local_kpi_dim = algo_config["hitac"]["local_kpi_dim"]
 global_kpi_dim = algo_config["hitac"]["global_kpi_dim"]
 policies_info_dim = algo_config["hitac"]["policies_info_dim"]
+traj_save_threshold = (num_episodes - 10 * eval_interval) * steps_per_episode
 
 
 # === 每层 obs 结构描述（供 MuSE init）===
@@ -194,7 +195,7 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
     # === 保存当前eval所有episode的轨迹 ===
     eval_trajectories = []
-    is_save_traj = (global_step >= steps_per_episode * (num_episodes / eval_interval - 10))
+    is_save_traj = (global_step >= traj_save_threshold)
 
     for episode in range(eval_episodes):
         obs = eval_env.reset(with_new_schedule=False)
