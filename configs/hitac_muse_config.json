@@ -59,7 +59,7 @@
     "batch_size": 512,
     "min_reward_ratio": 0.9,
     "std_t": 0.2,
-    "bc_steps": 50,
+    "bc_steps": 25,
     "sup_coef": 1.0,
     "neg_coef": 0.5,
     "margin": 2.0

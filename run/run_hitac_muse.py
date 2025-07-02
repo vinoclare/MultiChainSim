@@ -647,4 +647,5 @@ for episode in range(num_episodes):
     if episode % distill_interval == 0 and episode > (warmup_ep * K):
         for lid in range(num_layers):
             loss = agent.distill_update(lid, distill_pid[lid].item())
-            writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
+            if not skip_hitac_train:  # 非负策略蒸馏时，记录蒸馏 loss
+                writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
