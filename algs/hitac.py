@@ -74,7 +74,7 @@ class HiTAC(nn.Module):
         self.logits_norm = nn.LayerNorm(num_subpolicies)
 
         self.value_loss_coef = 0.5
-        self.reward_coef = 0.2
+        self.reward_coef = 0.05
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         self.ucb_lambda = ucb_lambda
@@ -142,10 +142,6 @@ class HiTAC(nn.Module):
         dist = Categorical(probs)
         pids = dist.sample()  # (L)
 
-        # # —— Sticky 保留机制 ——
-        # mask = torch.rand_like(pids.float()) < self.sticky_prob  # (L,)
-        # pids = torch.where(mask, self.last_pid.to(pids.device), pids)
-
         # 更新状态
         for l in range(self.num_layers):
             self.freq_counter[0, l, pids[l]] += 1
@@ -155,6 +151,7 @@ class HiTAC(nn.Module):
 
         # log 每个子策略被选择的次数
         print(f"Step: {step}")
+        print(f"Current Pids: {pids.detach().cpu().numpy().tolist()}")
         for l in range(self.num_layers):
             counts = [int(self.freq_counter[0, l, k].item()) for k in range(self.num_subpolicies)]
             print(f"  Layer {l}: {counts}")
@@ -190,6 +187,7 @@ class HiTAC(nn.Module):
 
         # log 每个子策略被选择的次数
         print(f"Select times (Distill):")
+        print(f"Current Pids: {pids.detach().cpu().numpy().tolist()}")
         for l in range(self.num_layers):
             counts = [int(self.freq_counter[1, l, k].item()) for k in range(self.num_subpolicies)]
             print(f"  Layer {l}: {counts}")

@@ -1,5 +1,7 @@
 import json
 import time
+import os
+import pickle
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
@@ -185,20 +187,30 @@ def process_obs(obs, lid, device="cuda"):
 def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device):
     num_layers = eval_env.num_layers
     reward_sums = {lid: [] for lid in range(num_layers)}
-    assign_bonus_sums = {lid: [] for lid in range(num_layers)}
-    wait_penalty_sums = {lid: [] for lid in range(num_layers)}
     cost_sums = {lid: [] for lid in range(num_layers)}
     util_sums = {lid: [] for lid in range(num_layers)}
+    assign_bonus_sums = {lid: [] for lid in range(num_layers)}
+    wait_penalty_sums = {lid: [] for lid in range(num_layers)}
+
+    # === 保存当前eval所有episode的轨迹 ===
+    eval_trajectories = []
+    is_save_traj = (global_step >= steps_per_episode * (num_episodes / eval_interval - 10))
 
     for episode in range(eval_episodes):
         obs = eval_env.reset(with_new_schedule=False)
+        done = False
+
+        # 每个 episode 累计总指标
         episode_reward = {lid: 0.0 for lid in range(num_layers)}
-        episode_assign_bonus = {lid: 0.0 for lid in range(num_layers)}
-        episode_wait_penalty = {lid: 0.0 for lid in range(num_layers)}
         episode_cost = {lid: 0.0 for lid in range(num_layers)}
         episode_util = {lid: 0.0 for lid in range(num_layers)}
+        episode_assign_bonus = {lid: 0.0 for lid in range(num_layers)}
+        episode_wait_penalty = {lid: 0.0 for lid in range(num_layers)}
 
-        done = False
+        # 每个 episode 的 per-layer trajectory buffer
+        episode_trajectories = {lid: {"task_obs": [], "worker_loads": [], "worker_profile": [], "global_context": [], "actions": []}
+                                for lid in range(num_layers)}
+
         while not done:
             actions = {}
             for lid in range(num_layers):
@@ -214,62 +226,57 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
                 action = agent.main_policy_predict(lid, obs_dict)
                 actions[lid] = action.squeeze(0).detach().cpu().numpy()
 
+                # === 保存obs和action到该layer的buffer ===
+                if is_save_traj:
+                    episode_trajectories[lid]["task_obs"].append(task_obs.squeeze(0).cpu().numpy())
+                    episode_trajectories[lid]["worker_loads"].append(worker_loads.squeeze(0).cpu().numpy())
+                    episode_trajectories[lid]["worker_profile"].append(worker_profile.squeeze(0).cpu().numpy())
+                    episode_trajectories[lid]["global_context"].append(global_context.squeeze(0).cpu().numpy())
+                    episode_trajectories[lid]["actions"].append(action.squeeze(0).cpu().numpy())
+
             obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
 
             for lid in range(num_layers):
                 r = reward_detail["layer_rewards"][lid]
                 episode_reward[lid] += r["reward"]
-                episode_assign_bonus[lid] += r["assign_bonus"]
-                episode_wait_penalty[lid] += r["wait_penalty"]
                 episode_cost[lid] += r["cost"]
                 episode_util[lid] += r["utility"]
+                episode_assign_bonus[lid] += r["assign_bonus"]
+                episode_wait_penalty[lid] += r["wait_penalty"]
 
+        # === 一个 episode 完后，再 append 一次 episode-level 总和 ===
         for lid in range(num_layers):
             reward_sums[lid].append(episode_reward[lid])
-            assign_bonus_sums[lid].append(episode_assign_bonus[lid])
-            wait_penalty_sums[lid].append(episode_wait_penalty[lid])
             cost_sums[lid].append(episode_cost[lid])
             util_sums[lid].append(episode_util[lid])
+            assign_bonus_sums[lid].append(episode_assign_bonus[lid])
+            wait_penalty_sums[lid].append(episode_wait_penalty[lid])
 
-        # # 打印任务状态
-        # num_total_tasks = 0
-        # num_waiting_tasks = 0
-        # num_done_tasks = 0
-        # num_failed_tasks = 0
-        # for step_task_list in eval_env.task_schedule.values():
-        #     for task in step_task_list:
-        #         num_total_tasks += 1
-        #         status = task.status
-        #         if status == "waiting":
-        #             num_waiting_tasks += 1
-        #         elif status == "done":
-        #             num_done_tasks += 1
-        #         elif status == "failed":
-        #             num_failed_tasks += 1
-        # print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-        #       f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
+        if is_save_traj:
+            eval_trajectories.append(episode_trajectories)
 
-    # === TensorBoard logging ===
+    # === 在最后10次eval阶段才保存 ===
+    if is_save_traj:
+        os.makedirs("../logs/eval_trajectories", exist_ok=True)
+        with open(f"../logs/eval_trajectories/eval_step_{global_step}.pkl", "wb") as f:
+            pickle.dump(eval_trajectories, f)
+        print(f"[Eval Save] Trajectories saved at global_step {global_step}")
+
+    # === tensorboard logging (保持原有逻辑) ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in range(num_layers)])
     total_cost_all = sum([np.mean(cost_sums[lid]) for lid in range(num_layers)])
     total_util_all = sum([np.mean(util_sums[lid]) for lid in range(num_layers)])
-    episode_total_rewards = [
-        sum([reward_sums[lid][i] for lid in range(num_layers)])
-        for i in range(len(reward_sums[0]))
-    ]
-    global_reward_std = np.std(episode_total_rewards)
 
     for lid in range(num_layers):
         writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bonus_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sums[lid]), global_step)
         writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
         writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
+        writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bonus_sums[lid]), global_step)
+        writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sums[lid]), global_step)
 
     writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
     writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)
     writer.add_scalar("global/eval_avg_utility", total_util_all, global_step)
-    writer.add_scalar("global/eval_reward_std", global_reward_std, global_step)
 
     print(f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
 
@@ -518,25 +525,6 @@ for episode in range(num_episodes):
     if episode % log_interval == 0:
         for k, v in ppo_stats.items():
             writer.add_scalar(k, v, episode)
-
-    # # ===== 统计各种任务状态的数量 =====
-    # num_total_tasks = 0
-    # num_waiting_tasks = 0
-    # num_done_tasks = 0
-    # num_failed_tasks = 0
-    # for step_task_list in env.task_schedule.values():
-    #     for task in step_task_list:
-    #         num_total_tasks += 1
-    #         status = task.status
-    #         if status == "waiting":
-    #             num_waiting_tasks += 1
-    #         elif status == "done":
-    #             num_done_tasks += 1
-    #         elif status == "failed":
-    #             num_failed_tasks += 1
-    # global_done_rate = num_done_tasks / num_total_tasks
-    # print(f"[Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-    #       f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     # ---------- update policies_info ----------
     for lid in range(num_layers):
