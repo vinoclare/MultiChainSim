@@ -32,7 +32,7 @@
   "hitac": {
     "local_kpi_dim": 8,
     "global_kpi_dim": 3,
-    "policies_info_dim": 8,
+    "policies_info_dim": 6,
 
     "hidden_dim": 64,
     "n_heads": 4,
@@ -47,7 +47,7 @@
     "ucb_lambda": 0.2,
     "sticky_prob": 0.1,
     "lr": 3e-4,
-    "temperature": 0.3,
+    "temperature": 0.5,
     "epsilon": 0.01,
     "greedy_prob": 0.5
   },
@@ -58,7 +58,7 @@
     "neg_policy": true,
     "warmup_ep": 50,
     "batch_size": 512,
-    "min_reward_ratio": 0.6,
+    "min_reward_ratio": 0.95,
     "bc_steps": 50,
     "sup_coef": 1.0,
     "neg_coef": 0.5,

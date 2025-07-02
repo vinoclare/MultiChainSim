@@ -283,18 +283,13 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
 # ======= 训练主循环 =======
 for episode in range(num_episodes):
-    ep_sums = [
-        [dict(r=0.0, c=0.0, u=0.0, rt=0.0, r2=0.0, rt2=0.0, n=0, ent_sum=0.0, std_sum=0.0)
-         for _ in range(K)]
-        for _ in range(num_layers)
-    ]
-
     # warmup stage：轮询训练每个子策略
     if episode < (warmup_ep * K):
         current_pid_tensor = torch.tensor([episode % K for _ in range(num_layers)], device=device)
 
     if episode % switch_interval == 0 and episode >= (warmup_ep * K):
         select_cnt += 1
+
         if select_cnt % neg_interval == 0 and neg_policy:
             skip_hitac_train = True
             current_pid_tensor = torch.tensor([K - 1 for _ in range(num_layers)])
@@ -305,45 +300,46 @@ for episode in range(num_episodes):
             distill_pid = torch.tensor([K - 2 for _ in range(num_layers)])
         else:
             skip_hitac_train = False
-            # === 构造滑动平均 KPI（用于 HiTAC select）===
+
+            # === 构造 local KPI ===
             local_kpis_tensor = torch.zeros((1, num_layers, local_kpi_dim), dtype=torch.float32, device=device)
             for lid in range(num_layers):
                 if len(local_kpi_history[lid]) > 0:
                     local_kpis_tensor[0, lid] = torch.stack(list(local_kpi_history[lid]), dim=0).mean(dim=0)
 
+            # === 构造 global KPI ===
             if len(global_kpi_history) > 0:
                 global_kpi_tensor = torch.stack(list(global_kpi_history), dim=0).mean(dim=0).unsqueeze(0)
             else:
                 global_kpi_tensor = torch.zeros((1, 4), dtype=torch.float32, device=device)
 
-            # ---- 构造 policies_info 张量 ----
-            policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, policies_info_dim), dtype=torch.float32, device=device)
-
+            # === 构造 policies_info tensor (去掉 var_r/var_rt) ===
+            policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, 6), dtype=torch.float32,
+                                               device=device)
             for lid in range(num_layers):
                 for k in range(num_pos_subpolicies):
                     hist = pol_hist[lid][k]
                     if len(hist) == 0:
                         mu_r = mu_c = mu_u = mu_rt = ent = std = 0.0
-                        var_r = var_rt = 1e-6
                     else:
                         mu_r = np.mean([h["r"] for h in hist])
                         mu_c = np.mean([h["c"] for h in hist])
                         mu_u = np.mean([h["u"] for h in hist])
                         mu_rt = np.mean([h["rt"] for h in hist])
-                        var_r = max(np.mean([h["var_r"] for h in hist]), 1e-6)
-                        var_rt = max(np.mean([h["var_rt"] for h in hist]), 1e-6)
                         ent = np.mean([h["ent"] for h in hist])
                         std = np.mean([h["std"] for h in hist])
 
                     policies_info_tensor[0, lid, k] = torch.tensor(
-                        [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r, ent, std], device=device)
+                        [mu_r, mu_c, mu_u, mu_rt, ent, std], device=device)
 
+            # === 调用 HiTAC 子策略选择 ===
             current_pid_tensor = agent.select_subpolicies(
-                    local_kpis_tensor, global_kpi_tensor,
-                    policies_info_tensor, episode * steps_per_episode)
+                local_kpis_tensor, global_kpi_tensor,
+                policies_info_tensor, episode * steps_per_episode)
+
             distill_pid = agent.select_subpolicies_distill(
-                    local_kpis_tensor, global_kpi_tensor,
-                    policies_info_tensor, episode * steps_per_episode)
+                local_kpis_tensor, global_kpi_tensor,
+                policies_info_tensor, episode * steps_per_episode)
 
         for lid in range(num_layers):
             writer.add_scalar(f"layer_{lid}/selected_pid", current_pid_tensor[lid], episode)
@@ -358,17 +354,19 @@ for episode in range(num_episodes):
         obs = env.reset(with_new_schedule=True)
     else:
         obs = env.reset(with_new_schedule=False)
-    episode_reward = {lid: 0.0 for lid in range(num_layers)}
-    episode_cost = {lid: 0.0 for lid in range(num_layers)}
-    episode_util = {lid: 0.0 for lid in range(num_layers)}
-    episode_ab = {lid: 0.0 for lid in range(num_layers)}
-    episode_wp = {lid: 0.0 for lid in range(num_layers)}
 
-    episodes_reward_deque = deque(maxlen=log_interval)
-    episodes_cost_deque = deque(maxlen=log_interval)
-    episodes_util_deque = deque(maxlen=log_interval)
-    episodes_ab_deque = deque(maxlen=log_interval)
-    episodes_wp_deque = deque(maxlen=log_interval)
+    episode_stats = {
+        lid: {
+            "reward": 0.0,
+            "cost": 0.0,
+            "utility": 0.0,
+            "assign_bonus": 0.0,
+            "wait_penalty": 0.0,
+            "fused_reward": 0.0,
+            "ent_sum": 0.0,
+            "std_sum": 0.0
+        } for lid in range(num_layers)
+    }
 
     for step in range(steps_per_episode):
         # === 构造每层 obs_dict ===
@@ -378,67 +376,52 @@ for episode in range(num_episodes):
             valid_mask = layer_obs["task_queue"][:, 3].astype(np.float32)
             obs_dicts[lid] = {
                 "task_obs": torch.tensor(layer_obs["task_queue"], dtype=torch.float32, device=device).unsqueeze(0),
-                "worker_loads": torch.tensor(layer_obs["worker_loads"], dtype=torch.float32, device=device).unsqueeze(
-                    0),
+                "worker_loads": torch.tensor(layer_obs["worker_loads"], dtype=torch.float32, device=device).unsqueeze(0),
                 "worker_profile": torch.tensor(layer_obs["worker_profile"], dtype=torch.float32,
                                                device=device).unsqueeze(0),
                 "global_context": torch.tensor(obs["global_context"], dtype=torch.float32, device=device).unsqueeze(0),
                 "valid_mask": torch.tensor(valid_mask, dtype=torch.float32, device=device).unsqueeze(0)
             }
 
-        # === Agent 选择子策略 & 采样动作 ===
+        # === Agent 选择子策略 & 采样动作 & 环境交互 ===
         sample_out = agent.sample(obs_dicts, current_pid_tensor)
-
         actions = {lid: sample_out[lid]["actions"].squeeze(0).cpu().numpy() for lid in range(num_layers)}
-        sample_vu = {lid: sample_out[lid]["v_u"].item() for lid in range(num_layers)}
-        sample_vc = {lid: sample_out[lid]["v_c"].item() for lid in range(num_layers)}
-        pid = torch.stack([sample_out[lid]["pid"] for lid in range(num_layers)], dim=0)  # (L)
-
-        # === 与环境交互 ===
         obs, (total_reward, reward_detail), done, _ = env.step(actions)
 
         for lid in range(num_layers):
-            alpha_k = agent.muses[lid].alphas[current_pid_tensor[lid]].item()
-            beta_k = agent.muses[lid].betas[current_pid_tensor[lid]].item()
-
-            # === 奖励信息 ===
+            stats = episode_stats[lid]
             rew = reward_detail["layer_rewards"][lid]["reward"]
             cost = reward_detail["layer_rewards"][lid]["cost"]
             util = reward_detail["layer_rewards"][lid]["utility"]
             ab = reward_detail["layer_rewards"][lid]["assign_bonus"]
             wp = reward_detail["layer_rewards"][lid]["wait_penalty"]
+
+            alpha_k = agent.muses[lid].alphas[current_pid_tensor[lid]].item()
+            beta_k = agent.muses[lid].betas[current_pid_tensor[lid]].item()
+
             total_u = beta_k * util + ab
             total_c = -alpha_k * cost - wp
             fused_reward = total_u + total_c
 
-            episode_reward[lid] += rew
-            episode_cost[lid] += cost
-            episode_util[lid] += util
-            episode_ab[lid] += ab
-            episode_wp[lid] += wp
+            # === 累积 episode 指标 ===
+            stats["reward"] += rew
+            stats["cost"] += cost
+            stats["utility"] += util
+            stats["assign_bonus"] += ab
+            stats["wait_penalty"] += wp
+            stats["fused_reward"] += fused_reward
+            stats["ent_sum"] += sample_out[lid]["ent"].item()
+            stats["std_sum"] += sample_out[lid]["act_std"].item()
 
-            # ---- 统计到 ep_sums ----
-            cur_pid = current_pid_tensor[lid].item()
-            bucket = ep_sums[lid][cur_pid]
-            bucket["r"] += rew
-            bucket["c"] += cost
-            bucket["u"] += util
-            bucket["rt"] += fused_reward
-            bucket["r2"] += rew * rew
-            bucket["rt2"] += fused_reward * fused_reward
-            bucket["ent_sum"] += sample_out[lid]["ent"].item()
-            bucket["std_sum"] += sample_out[lid]["act_std"].item()
-            bucket["n"] += 1
-
-            # === 存入 PPO buffer ===
+            # === 存入 PPO buffer（保留）===
             buffers[lid]["task_obs"].append(obs_dicts[lid]["task_obs"].squeeze(0))
             buffers[lid]["worker_loads"].append(obs_dicts[lid]["worker_loads"].squeeze(0))
             buffers[lid]["worker_profile"].append(obs_dicts[lid]["worker_profile"].squeeze(0))
             buffers[lid]["global_context"].append(obs_dicts[lid]["global_context"].squeeze(0))
             buffers[lid]["valid_mask"].append(obs_dicts[lid]["valid_mask"].squeeze(0))
             buffers[lid]["actions"].append(sample_out[lid]["actions"].squeeze(0))
-            buffers[lid]["value_u"].append(sample_vu[lid])
-            buffers[lid]["value_c"].append(sample_vc[lid])
+            buffers[lid]["value_u"].append(sample_out[lid]["v_u"].item())
+            buffers[lid]["value_c"].append(sample_out[lid]["v_c"].item())
             buffers[lid]["logprobs"].append(sample_out[lid]["logp"].item())
             buffers[lid]["reward_u"].append(total_u)
             buffers[lid]["reward_c"].append(total_c)
@@ -526,84 +509,82 @@ for episode in range(num_episodes):
         for k, v in ppo_stats.items():
             writer.add_scalar(k, v, episode)
 
-    # ---------- update policies_info ----------
-    for lid in range(num_layers):
-        for k in range(num_pos_subpolicies):
-            n = ep_sums[lid][k]["n"]
-            if n == 0:
-                continue
+    if current_pid_tensor[0].item() < num_pos_subpolicies:
+        for lid in range(num_layers):
+            # ---------- update policies_info ----------
+            stats = episode_stats[lid]
+            cur_pid = current_pid_tensor[lid].item()
 
-            mean_r = ep_sums[lid][k]["r"] / n
-            mean_c = ep_sums[lid][k]["c"] / n
-            mean_u = ep_sums[lid][k]["u"] / n
-            mean_rt = ep_sums[lid][k]["rt"] / n
-            var_r = max(ep_sums[lid][k]["r2"] / n - mean_r ** 2, 1e-6)
-            var_rt = max(ep_sums[lid][k]["rt2"] / n - mean_rt ** 2, 1e-6)
-            mean_ent = ep_sums[lid][k]["ent_sum"] / n
-            mean_std = ep_sums[lid][k]["std_sum"] / n
+            mean_ent = stats["ent_sum"] / steps_per_episode
+            mean_std = stats["std_sum"] / steps_per_episode
 
-            pol_hist[lid][k].append({
-                "r": mean_r,
-                "c": mean_c,
-                "u": mean_u,
-                "rt": mean_rt,
-                "var_r": var_r,
-                "var_rt": var_rt,
+            pol_hist[lid][cur_pid].append({
+                "r": stats["reward"],
+                "c": stats["cost"],
+                "u": stats["utility"],
+                "rt": stats["fused_reward"],
                 "ent": mean_ent,
                 "std": mean_std
             })
 
-    # === 构造当前 episode 原始 KPI（用于 hitac_update）===
-    for lid in range(num_layers):
-        reward = episode_reward[lid]
-        cost = episode_cost[lid]
-        util = episode_util[lid]
-        ab = episode_ab[lid]
-        wp = episode_wp[lid]
-        pid_val = current_pid_tensor[lid].item()
-        done_rate, task_load_ratio = env.chain.layers[lid].get_kpi_snapshot()
+            # === 构造当前 episode 原始 KPI ===
+            stats = episode_stats[lid]
 
-        local_kpi = torch.tensor([
-            reward, cost, util, ab, wp,
-            done_rate, task_load_ratio, pid_val
+            pid_val = current_pid_tensor[lid].item()
+            done_rate, task_load_ratio = env.chain.layers[lid].get_kpi_snapshot()
+
+            local_kpi = torch.tensor([
+                stats["reward"],  # episode total reward
+                stats["cost"],  # episode total cost
+                stats["utility"],  # episode total utility
+                stats["assign_bonus"],  # episode total assign bonus
+                stats["wait_penalty"],  # episode total wait penalty
+                done_rate,  # 当前 layer 完成率
+                task_load_ratio,  # 当前 layer 负载比
+                pid_val  # 当前子策略 id
+            ], dtype=torch.float32, device=device)
+
+            local_kpi_history[lid].append(local_kpi)
+
+        # === 构造 global_kpi ===
+        reward_sum = sum(stats["reward"] for stats in episode_stats.values())
+        cost_sum = sum(stats["cost"] for stats in episode_stats.values())
+        util_sum = sum(stats["utility"] for stats in episode_stats.values())
+        assign_bonus_sum = sum(stats["assign_bonus"] for stats in episode_stats.values())
+        wait_penalty_sum = sum(stats["wait_penalty"] for stats in episode_stats.values())
+
+        # 构造 global KPI tensor（仅保留主要全局指标）
+        raw_global_kpi = torch.tensor([
+            reward_sum,
+            cost_sum,
+            util_sum
         ], dtype=torch.float32, device=device)
-        local_kpi_history[lid].append(local_kpi)
 
-    # === 构造 global_kpi（用于 update + 缓存） ===
-    reward_sum = sum(episode_reward.values())
-    cost_sum = sum(episode_cost.values())
-    util_sum = sum(episode_util.values())
-    wait_penalty_sum = sum(episode_wp.values())
-    assign_bonus_sum = sum(episode_ab.values())
+        global_kpi_history.append(raw_global_kpi)
 
-    episodes_reward_deque.append(reward_sum)
-    episodes_cost_deque.append(cost_sum)
-    episodes_util_deque.append(util_sum)
-    episodes_wp_deque.append(wait_penalty_sum)
-    episodes_ab_deque.append(assign_bonus_sum)
-
-    raw_global_kpi = torch.tensor([
-        reward_sum, cost_sum, util_sum
-    ], dtype=torch.float32, device=device)
-
-    global_kpi_history.append(raw_global_kpi)
-
-    # === Logging episode score ===
     if episode % log_interval == 0:
         for lid in range(num_layers):
-            writer.add_scalar(f"layer_{lid}/reward", episode_reward[lid], global_step)
-            writer.add_scalar(f"layer_{lid}/cost", episode_cost[lid], global_step)
-            writer.add_scalar(f"layer_{lid}/utility", episode_util[lid], global_step)
-            writer.add_scalar(f"layer_{lid}/assign_bonus", episode_ab[lid], global_step)
-            writer.add_scalar(f"layer_{lid}/wait_penalty", episode_wp[lid], global_step)
-        writer.add_scalar("global/episode_total_cost", np.mean(episodes_cost_deque), global_step)
-        writer.add_scalar("global/episode_total_reward", np.mean(episodes_reward_deque), global_step)
-        writer.add_scalar("global/episode_total_utility", np.mean(episodes_util_deque), global_step)
-        writer.add_scalar("global/episode_assign_bonus", np.mean(episodes_ab_deque), global_step)
-        writer.add_scalar("global/episode_wait_penalty", np.mean(episodes_wp_deque), global_step)
+            stats = episode_stats[lid]
+            writer.add_scalar(f"layer_{lid}/reward", stats["reward"], global_step)
+            writer.add_scalar(f"layer_{lid}/cost", stats["cost"], global_step)
+            writer.add_scalar(f"layer_{lid}/utility", stats["utility"], global_step)
+            writer.add_scalar(f"layer_{lid}/assign_bonus", stats["assign_bonus"], global_step)
+            writer.add_scalar(f"layer_{lid}/wait_penalty", stats["wait_penalty"], global_step)
+
+        writer.add_scalar("global/episode_total_cost", cost_sum, global_step)
+        writer.add_scalar("global/episode_total_reward", reward_sum, global_step)
+        writer.add_scalar("global/episode_total_utility", util_sum, global_step)
+        writer.add_scalar("global/episode_assign_bonus", assign_bonus_sum, global_step)
+        writer.add_scalar("global/episode_wait_penalty", wait_penalty_sum, global_step)
+
+    # === 更新 EMA baseline ===
+    if episode == 0:
+        ema_return = reward_sum
+    else:
+        ema_return = ema_alpha * reward_sum + (1 - ema_alpha) * ema_return
 
     # === 存入蒸馏 buffer ===
-    if reward_sum > np.mean(episodes_reward_deque) * min_reward_ratio:
+    if reward_sum > (ema_return * min_reward_ratio):
         for lid in range(num_layers):
             agent.distill_collect(lid,
                                   {"task_obs": torch.stack(buffers[lid]["task_obs"], dim=0),
@@ -619,15 +600,11 @@ for episode in range(num_episodes):
     # === HiTAC PPO 更新 ===
     if episode % hitac_update_interval == 0 and episode >= (warmup_ep * K) and not skip_hitac_train:
         # ---- 构造 kpi 张量 ----
-        local_kpis_tensor = torch.zeros((1, num_layers, 8), dtype=torch.float32, device=device)
+        local_kpis_tensor = torch.zeros((1, num_layers, local_kpi_dim), dtype=torch.float32, device=device)
         for lid in range(num_layers):
-            if len(local_kpi_history[lid]) > 0:
-                local_kpis_tensor[0, lid] = torch.stack(list(local_kpi_history[lid]), dim=0).mean(dim=0)
+            local_kpis_tensor[0, lid] = local_kpi_history[lid][-1]
 
-        if len(global_kpi_history) > 0:
-            global_kpi_tensor = torch.stack(list(global_kpi_history), dim=0).mean(dim=0).unsqueeze(0)
-        else:
-            global_kpi_tensor = torch.zeros((1, 4), dtype=torch.float32, device=device)
+        global_kpi_tensor = global_kpi_history[-1].unsqueeze(0)
 
         # ---- 构造 policies_info 张量 ----
         policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, policies_info_dim), dtype=torch.float32, device=device)
@@ -636,22 +613,20 @@ for episode in range(num_episodes):
                 hist = pol_hist[lid][k]
                 if len(hist) == 0:
                     mu_r = mu_c = mu_u = mu_rt = ent = std = 0.0
-                    var_r = var_rt = 1e-6
                 else:
-                    mu_r = np.mean([h["r"] for h in hist])
-                    mu_c = np.mean([h["c"] for h in hist])
-                    mu_u = np.mean([h["u"] for h in hist])
-                    mu_rt = np.mean([h["rt"] for h in hist])
-                    var_r = max(np.mean([h["var_r"] for h in hist]), 1e-6)
-                    var_rt = max(np.mean([h["var_rt"] for h in hist]), 1e-6)
-                    ent = np.mean([h["ent"] for h in hist])
-                    std = np.mean([h["std"] for h in hist])
+                    last = hist[-1]
+                    mu_r = last["r"]
+                    mu_c = last["c"]
+                    mu_u = last["u"]
+                    mu_rt = last["rt"]
+                    ent = last["ent"]
+                    std = last["std"]
 
                 policies_info_tensor[0, lid, k] = torch.tensor(
-                    [mu_r, mu_c, mu_u, mu_rt, var_rt, var_r, ent, std], device=device)
+                    [mu_r, mu_c, mu_u, mu_rt, ent, std], device=device)
 
         # === 计算 episode-level return ===
-        layer_returns = [episode_reward[lid] for lid in range(num_layers)]
+        layer_returns = [episode_stats[lid]["reward"] for lid in range(num_layers)]
         returns_L = torch.tensor([layer_returns], dtype=torch.float32, device=device)
 
         hitac_stats = agent.hitac_update(local_kpis_tensor,
