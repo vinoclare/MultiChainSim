@@ -56,10 +56,10 @@
     "loss_type": "kl",
     "neg_policy": true,
     "warmup_ep": 50,
-    "batch_size": 512,
+    "batch_size": 1024,
     "min_reward_ratio": 0.9,
     "std_t": 0.2,
-    "bc_steps": 25,
+    "bc_steps": 10,
     "sup_coef": 1.0,
     "neg_coef": 0.5,
     "margin": 2.0

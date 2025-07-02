@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from collections import deque
+import copy
 
 import random
 from torch.distributions import Normal, kl_divergence
@@ -35,6 +36,9 @@ class Distiller:
             global_context_dim=global_context_dim,
             hidden_dim=hidden_dim
         ).to(self.device)
+
+        self.target_model = copy.deepcopy(self.model).eval()
+        self.polyak_tau = 0.95
 
         self.act_dim = act_dim
         self.sup_coef = sup_coef
@@ -133,12 +137,16 @@ class Distiller:
 
             total_loss += loss.item()
 
+            with torch.no_grad():
+                for p_targ, p_main in zip(self.target_model.parameters(), self.model.parameters()):
+                    p_targ.data.mul_(self.polyak_tau).add_(p_main.data, alpha=1 - self.polyak_tau)
+
         return total_loss / steps
 
     @torch.no_grad()
     def predict(self, obs_dict):
         inputs = {k: v.to(self.device) for k, v in obs_dict.items()}
-        mean, std, _ = self.model(**inputs)
+        mean, std, _ = self.target_model(**inputs)
         dist = Normal(mean, std)
         action = dist.sample().clamp(0, 1)
         return action

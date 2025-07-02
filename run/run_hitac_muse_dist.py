@@ -10,7 +10,7 @@ import os
 import subprocess
 
 CFG_ROOT = "../configs"  # 所有实验配置的根目录
-CATEGORIES = ["task", "layer", "worker", "step"]  # 与之前保持一致
+CATEGORIES = ["layer", "worker"]  # 与之前保持一致
 REPEAT_EACH_EXP = 1  # 同一实验重复次数
 MAX_WORKERS = 12  # 并行进程数
 
