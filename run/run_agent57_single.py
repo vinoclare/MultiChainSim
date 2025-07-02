@@ -302,16 +302,16 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             )
 
             # 5.4.3 记录每层训练日志
-            if episode % 100 == 0:
-                writer.add_scalar(f"train/layer{layer_id}_episode_return", episode_returns[layer_id], current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_episode_reward", episode_rewards[layer_id], current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id],
-                                  current_steps)
-                writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id],
-                                  current_steps)
+            # if episode % 100 == 0:
+            #     writer.add_scalar(f"train/layer{layer_id}_episode_return", episode_returns[layer_id], current_steps)
+            #     writer.add_scalar(f"train/layer{layer_id}_episode_reward", episode_rewards[layer_id], current_steps)
+            #     writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, current_steps)
+            #     writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, current_steps)
+            #     writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, current_steps)
+            #     writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id],
+            #                       current_steps)
+            #     writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id],
+            #                       current_steps)
 
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
@@ -448,17 +448,17 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             eval_log_buffer["global_cost"].append(total_cost_all)
             eval_log_buffer["global_util"].append(total_util_all)
 
-            for layer_id in range(n_layers):
-                writer.add_scalar(f"eval/layer{layer_id}_avg_reward", np.mean(eval_log_buffer["reward"][layer_id]),
-                                  current_steps)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_cost", np.mean(eval_log_buffer["cost"][layer_id]),
-                                  current_steps)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_utility", np.mean(eval_log_buffer["util"][layer_id]),
-                                  current_steps)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus",
-                                  np.mean(eval_log_buffer["assign"][layer_id]), current_steps)
-                writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty",
-                                  np.mean(eval_log_buffer["wait"][layer_id]), current_steps)
+            # for layer_id in range(n_layers):
+            #     writer.add_scalar(f"eval/layer{layer_id}_avg_reward", np.mean(eval_log_buffer["reward"][layer_id]),
+            #                       current_steps)
+            #     writer.add_scalar(f"eval/layer{layer_id}_avg_cost", np.mean(eval_log_buffer["cost"][layer_id]),
+            #                       current_steps)
+            #     writer.add_scalar(f"eval/layer{layer_id}_avg_utility", np.mean(eval_log_buffer["util"][layer_id]),
+            #                       current_steps)
+            #     writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus",
+            #                       np.mean(eval_log_buffer["assign"][layer_id]), current_steps)
+            #     writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty",
+            #                       np.mean(eval_log_buffer["wait"][layer_id]), current_steps)
 
             writer.add_scalar("global/eval_avg_reward", np.mean(eval_log_buffer["global_reward"]), current_steps)
             writer.add_scalar("global/eval_avg_cost", np.mean(eval_log_buffer["global_cost"]), current_steps)
@@ -513,10 +513,10 @@ def run_one(exp_dir, agent57_cfg, log_dir):
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
-    REPEAT_EACH_EXP = 1
-    MAX_WORKERS = 12
-    # categories = ["task", "layer", "worker", "step"]
-    categories = ["layer", "worker", "step"]
+    REPEAT_EACH_EXP = 3
+    MAX_WORKERS = 9
+    categories = ["task", "layer", "worker", "step"]
+    # categories = ["task"]
 
     print("\n=== Agent57 批量实验开始 ===\n")
 

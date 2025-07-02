@@ -3,6 +3,7 @@ import time
 import os
 import pickle
 import torch
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from collections import deque
@@ -71,7 +72,7 @@ gamma = algo_config["muse"]["gamma"]
 lam = algo_config["muse"]["lam"]
 batch_size = algo_config["muse"]["batch_size"]
 return_norm = algo_config["muse"]["return_normalization"]
-local_kpi_dim = algo_config["hitac"]["local_kpi_dim"]
+local_kpi_dim = algo_config["hitac"]["local_kpi_dim"] + num_pos_subpolicies
 global_kpi_dim = algo_config["hitac"]["global_kpi_dim"]
 policies_info_dim = algo_config["hitac"]["policies_info_dim"]
 traj_save_threshold = (num_episodes - 10 * eval_interval) * steps_per_episode
@@ -533,18 +534,18 @@ for episode in range(num_episodes):
             stats = episode_stats[lid]
 
             pid_val = current_pid_tensor[lid].item()
-            done_rate, task_load_ratio = env.chain.layers[lid].get_kpi_snapshot()
+            pid_onehot = F.one_hot(torch.tensor(pid_val, device=device), num_classes=num_pos_subpolicies).float()
 
-            local_kpi = torch.tensor([
-                stats["reward"],  # episode total reward
-                stats["cost"],  # episode total cost
-                stats["utility"],  # episode total utility
-                stats["assign_bonus"],  # episode total assign bonus
-                stats["wait_penalty"],  # episode total wait penalty
-                done_rate,  # 当前 layer 完成率
-                task_load_ratio,  # 当前 layer 负载比
-                pid_val  # 当前子策略 id
-            ], dtype=torch.float32, device=device)
+            local_kpi = torch.cat([
+                torch.tensor([
+                    stats["reward"],
+                    stats["cost"],
+                    stats["utility"],
+                    stats["assign_bonus"],
+                    stats["wait_penalty"]
+                ], dtype=torch.float32, device=device),
+                pid_onehot
+            ])
 
             local_kpi_history[lid].append(local_kpi)
 

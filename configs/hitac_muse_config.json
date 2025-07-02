@@ -30,7 +30,7 @@
   },
 
   "hitac": {
-    "local_kpi_dim": 8,
+    "local_kpi_dim": 5,
     "global_kpi_dim": 3,
     "policies_info_dim": 6,
 

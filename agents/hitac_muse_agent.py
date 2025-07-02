@@ -54,7 +54,7 @@ class HiTACMuSEAgent:
 
         # === HiTAC ===
         self.hitac = HiTAC(
-            local_kpi_dim=hitac_cfg["local_kpi_dim"],
+            local_kpi_dim=hitac_cfg["local_kpi_dim"]+self.num_pos_subpolicies,
             global_kpi_dim=hitac_cfg["global_kpi_dim"],
             policies_info_dim=hitac_cfg["policies_info_dim"],
             num_layers=self.num_layers,
