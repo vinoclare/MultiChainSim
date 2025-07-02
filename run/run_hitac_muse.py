@@ -297,7 +297,7 @@ for episode in range(num_episodes):
             skip_hitac_train = True
             current_pid_tensor = torch.tensor([K - 1 for _ in range(num_layers)])
             distill_pid = torch.tensor([K - 1 for _ in range(num_layers)])
-        elif select_cnt % neg_interval == 1 and neg_policy:
+        elif select_cnt % neg_interval == 25 and neg_policy:
             skip_hitac_train = True
             current_pid_tensor = torch.tensor([K - 2 for _ in range(num_layers)])
             distill_pid = torch.tensor([K - 2 for _ in range(num_layers)])

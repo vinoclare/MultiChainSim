@@ -10,19 +10,20 @@ from models.ppo_model import PPOIndustrialModel
 
 class Distiller:
     def __init__(
-        self,
-        obs_spaces,
-        global_context_dim,
-        hidden_dim,
-        act_dim,
-        K,
-        loss_type="mse",
-        neg_policy=False,
-        device="cuda",
-        buffer_size=10000,
-        sup_coef=1.0,
-        neg_coef=1.0,
-        margin=3.0
+            self,
+            obs_spaces,
+            global_context_dim,
+            hidden_dim,
+            act_dim,
+            K,
+            loss_type="mse",
+            neg_policy=False,
+            device="cuda",
+            buffer_size=10000,
+            sup_coef=1.0,
+            neg_coef=1.0,
+            margin=3.0,
+            std_t=0.2
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model = PPOIndustrialModel(
@@ -40,7 +41,8 @@ class Distiller:
         self.neg_coef = neg_coef
         self.margin = margin
         self.var_coef = 0.05
-        self.sigma_target = 0.25
+        self.sigma_target = 0.4
+        self.std_t = std_t
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
 
@@ -74,7 +76,7 @@ class Distiller:
     def bc_update(self, cur_pid: int, batch_size: int = 512, steps: int = 50):
         """对主策略进行若干步蒸馏更新"""
         if len(self.buffers[cur_pid]) < batch_size:
-            return 0.0   # 数据不足
+            return 0.0  # 数据不足
 
         total_loss = 0.0
         for _ in range(steps):
@@ -105,7 +107,7 @@ class Distiller:
                     loss = self.sup_coef * loss_pos
                 else:  # "kl"
                     # teacher 视为 N(mean_t, σ=0.1) 的固定高斯
-                    teacher_std = torch.full_like(mean_s, 0.1)
+                    teacher_std = torch.full_like(mean_s, self.std_t)
                     dist_t = Normal(target_actions, teacher_std)
                     dist_s = Normal(mean_s, std_s.clamp(min=1e-3))
                     loss_kl = kl_divergence(dist_t, dist_s).mean()
@@ -119,7 +121,7 @@ class Distiller:
                 loss_sp = F.softplus(logp_neg + self.margin).mean()  # margin≈2-4
 
                 # ---- σ 正则，防止放大 σ 绕过约束 ----
-                loss_var = (self.sigma_target - std_s).clamp(min=0).pow(2).mean()
+                loss_var = (std_s - self.sigma_target).clamp(min=0).pow(2).mean()
 
                 loss = self.neg_coef * loss_sp + self.var_coef * loss_var
 

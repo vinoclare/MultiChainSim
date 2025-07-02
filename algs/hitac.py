@@ -21,7 +21,7 @@ class HiTAC(nn.Module):
             entropy_coef: float = 0.001,
             max_grad_norm: float = 0.5,
             device: str = "cuda",
-            total_steps: int = 1000000,
+            total_steps: int = 5000000,
             lr: float = 3e-4,
             ucb_lambda: float = 0.2,
             sticky_prob: float = 0.1,

@@ -47,7 +47,8 @@ class HiTACMuSEAgent:
                 device=device,
                 sup_coef=distill_cfg["sup_coef"],
                 neg_coef=distill_cfg["neg_coef"],
-                margin=distill_cfg["margin"]
+                margin=distill_cfg["margin"],
+                std_t=distill_cfg["std_t"]
             )
             for lid in range(self.num_layers)
         ]

@@ -38,11 +38,10 @@
     "n_heads": 4,
     "transformer_layers": 2,
     "kpi_window_size": 50,
-    "update_epochs": 10,
+    "update_epochs": 3,
 
     "clip_param": 0.2,
     "entropy_coef": 0.05,
-    "gamma": 1.0,
     "max_grad_norm": 0.5,
     "ucb_lambda": 0.2,
     "sticky_prob": 0.1,
@@ -58,11 +57,12 @@
     "neg_policy": true,
     "warmup_ep": 50,
     "batch_size": 512,
-    "min_reward_ratio": 0.95,
+    "min_reward_ratio": 0.9,
+    "std_t": 0.2,
     "bc_steps": 50,
     "sup_coef": 1.0,
     "neg_coef": 0.5,
-    "margin": 3.0
+    "margin": 2.0
   },
 
   "scheduler": {

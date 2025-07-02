@@ -17,7 +17,7 @@ from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
-parser.add_argument("--dire", type=str, default="worker/4",
+parser.add_argument("--dire", type=str, default="step/50",
                     help="子配置目录，相对 ../configs/ 的路径，例如 task/expA")
 args, _ = parser.parse_known_args()
 dire = args.dire
