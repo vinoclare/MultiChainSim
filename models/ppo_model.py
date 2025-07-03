@@ -71,6 +71,7 @@ class PPOIndustrialModel(nn.Module):
         # 每个 (worker, task) 对应 3 路特征拼接： worker, task, global
         self.actor_head = nn.Linear(3 * D, 1)
         self.log_std = nn.Parameter(torch.zeros(1, n_worker, num_pad_tasks))
+        # self.log_std.fill_(-2)
 
         # —— Critic —— #
         # 聚合 task_pool, worker_pool, global → value

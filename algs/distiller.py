@@ -36,8 +36,6 @@ class Distiller:
             global_context_dim=global_context_dim,
             hidden_dim=hidden_dim
         ).to(self.device)
-        with torch.no_grad():
-            self.model.log_std.fill_(-2)
 
         self.target_model = copy.deepcopy(self.model).eval()
         self.polyak_tau = 0.95
