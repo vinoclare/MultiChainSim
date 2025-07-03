@@ -36,6 +36,8 @@ class Distiller:
             global_context_dim=global_context_dim,
             hidden_dim=hidden_dim
         ).to(self.device)
+        with torch.no_grad():
+            self.model.log_std.fill_(-2)
 
         self.target_model = copy.deepcopy(self.model).eval()
         self.polyak_tau = 0.95
@@ -44,8 +46,8 @@ class Distiller:
         self.sup_coef = sup_coef
         self.neg_coef = neg_coef
         self.margin = margin
-        self.var_coef = 0.05
-        self.sigma_target = 0.4
+        self.var_coef = 0.005
+        self.sigma_target = 0.8
         self.std_t = std_t
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
@@ -110,7 +112,7 @@ class Distiller:
                     loss_pos = F.mse_loss(mean_s, target_actions)
                     loss = self.sup_coef * loss_pos
                 else:  # "kl"
-                    # teacher 视为 N(mean_t, σ=0.1) 的固定高斯
+                    # teacher 视为 N(mean_t, σ=std_t) 的固定高斯
                     teacher_std = torch.full_like(mean_s, self.std_t)
                     dist_t = Normal(target_actions, teacher_std)
                     dist_s = Normal(mean_s, std_s.clamp(min=1e-3))

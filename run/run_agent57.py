@@ -311,7 +311,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 best_pid = 0
                 best_mean = -float('inf')
 
-                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=5
+                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
                 all_empty = True
                 for i in range(K):
                     if len(schedulers[layer_id].recent_real_returns[i]) > 0:
@@ -319,7 +319,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         break
 
                 if all_empty:
-                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 5
+                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
                     greedy_pid = 0
                 else:
                     # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
