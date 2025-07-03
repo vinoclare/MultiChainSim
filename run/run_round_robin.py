@@ -13,7 +13,7 @@ def round_robin_baseline(env, num_episodes=10):
     ep_rewards, ep_costs, ep_utils, ep_done = [], [], [], []
 
     for _ in range(num_episodes):
-        obs = env.reset()
+        env.reset()
         done, total_reward = False, 0.0
 
         while not done:
@@ -23,7 +23,7 @@ def round_robin_baseline(env, num_episodes=10):
                 act = [[0] * n_task for _ in range(n_worker)]
 
                 for t_idx, task in enumerate(tq):
-                    remain, ptr, tried = task.unassigned_amount, rr_pointer[l], 0
+                    remain, ptr, tried = task.unassigned_amount, 1, 0
                     while remain > 0 and tried < n_worker:
                         w_idx = ptr % n_worker
                         w = layer.workers[w_idx]
@@ -85,9 +85,9 @@ def batch_run(config_root="./configs", result_root="./RR"):
             continue
 
         # 读取四个 JSON 路径
-        env_cfg   = dir_path / "env_config.json"
+        env_cfg = dir_path / "env_config.json"
         worker_cfg = dir_path / "worker_config.json"
-        eval_sch  = dir_path / "eval_schedule.json"
+        eval_sch = dir_path / "eval_schedule.json"
 
         try:
             env = MultiplexEnv(env_cfg,
@@ -103,10 +103,10 @@ def batch_run(config_root="./configs", result_root="./RR"):
         # 结果目录 = RR / 相对路径
         rel_dir = dir_path.relative_to(config_root)
         out_dir = result_root / rel_dir
-        save_metric_csv(out_dir / "eval_avg_reward.csv",  metrics["avg_reward"])
-        save_metric_csv(out_dir / "eval_avg_cost.csv",    metrics["avg_cost"])
+        save_metric_csv(out_dir / "eval_avg_reward.csv", metrics["avg_reward"])
+        save_metric_csv(out_dir / "eval_avg_cost.csv", metrics["avg_cost"])
         save_metric_csv(out_dir / "eval_avg_utility.csv", metrics["avg_utility"])
-        save_metric_csv(out_dir / "eval_reward_std.csv",  metrics["reward_std"])
+        save_metric_csv(out_dir / "eval_reward_std.csv", metrics["reward_std"])
         # 如需 tasks_done 也可保存
         print(f"[{rel_dir}] OK → {out_dir}")
 

@@ -103,17 +103,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     return_u_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
     return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
 
-    eval_log_buffer = {
-        "reward": [deque(maxlen=log_interval) for _ in range(n_layers)],
-        "cost": [deque(maxlen=log_interval) for _ in range(n_layers)],
-        "util": [deque(maxlen=log_interval) for _ in range(n_layers)],
-        "assign": [deque(maxlen=log_interval) for _ in range(n_layers)],
-        "wait": [deque(maxlen=log_interval) for _ in range(n_layers)],
-        "global_reward": deque(maxlen=log_interval),
-        "global_cost": deque(maxlen=log_interval),
-        "global_util": deque(maxlen=log_interval),
-    }
-
     # 5. 主循环：按 Episode 轮训
     for episode in range(agent57_config["num_episodes"]):
         # 每个 episode 开始时，重置环境并清空所有层的 buffer
@@ -382,14 +371,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         gctx_t = torch.tensor(gctx, dtype=torch.float32).unsqueeze(0).to(device)
                         valid_mask_t = torch.tensor(valid_mask, dtype=torch.float32).unsqueeze(0).to(device)
 
-                        # mean as action
-                        # with torch.no_grad():
-                        #     mean, _, _, _ = agents[layer_id].model(
-                        #         task_obs_t, worker_loads_t, worker_profiles_t,
-                        #         gctx_t, valid_mask_t, pid
-                        #     )
-                        # actions[layer_id] = mean.squeeze(5).cpu().numpy()
-
                         # sample action
                         with torch.no_grad():
                             v_u, v_c, action_t, logp_t, _ = agents[layer_id].sample(
@@ -426,11 +407,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             total_reward_all = sum([np.mean(eval_reward_sums[lid]) for lid in range(n_layers)])
             total_cost_all = sum([np.mean(eval_cost_sums[lid]) for lid in range(n_layers)])
             total_util_all = sum([np.mean(eval_util_sums[lid]) for lid in range(n_layers)])
-            episode_total_rewards = [
-                sum([eval_reward_sums[lid][i] for lid in range(num_layers)])
-                for i in range(len(eval_reward_sums[0]))
-            ]
-            global_reward_std = np.std(episode_total_rewards)
+
             for layer_id in range(n_layers):
                 avg_r = float(np.mean(eval_reward_sums[layer_id]))
                 avg_c = float(np.mean(eval_cost_sums[layer_id]))
@@ -438,32 +415,15 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 avg_a = float(np.mean(eval_assign_sums[layer_id]))
                 avg_w = float(np.mean(eval_wait_sums[layer_id]))
 
-                eval_log_buffer["reward"][layer_id].append(avg_r)
-                eval_log_buffer["cost"][layer_id].append(avg_c)
-                eval_log_buffer["util"][layer_id].append(avg_u)
-                eval_log_buffer["assign"][layer_id].append(avg_a)
-                eval_log_buffer["wait"][layer_id].append(avg_w)
+                # writer.add_scalar(f"eval/layer{layer_id}_avg_reward", avg_r, current_steps)
+                # writer.add_scalar(f"eval/layer{layer_id}_avg_cost", avg_c, current_steps)
+                # writer.add_scalar(f"eval/layer{layer_id}_avg_utility", avg_u, current_steps)
+                # writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus", avg_a, current_steps)
+                # writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty", avg_w, current_steps)
 
-            eval_log_buffer["global_reward"].append(total_reward_all)
-            eval_log_buffer["global_cost"].append(total_cost_all)
-            eval_log_buffer["global_util"].append(total_util_all)
-
-            # for layer_id in range(n_layers):
-            #     writer.add_scalar(f"eval/layer{layer_id}_avg_reward", np.mean(eval_log_buffer["reward"][layer_id]),
-            #                       current_steps)
-            #     writer.add_scalar(f"eval/layer{layer_id}_avg_cost", np.mean(eval_log_buffer["cost"][layer_id]),
-            #                       current_steps)
-            #     writer.add_scalar(f"eval/layer{layer_id}_avg_utility", np.mean(eval_log_buffer["util"][layer_id]),
-            #                       current_steps)
-            #     writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus",
-            #                       np.mean(eval_log_buffer["assign"][layer_id]), current_steps)
-            #     writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty",
-            #                       np.mean(eval_log_buffer["wait"][layer_id]), current_steps)
-
-            writer.add_scalar("global/eval_avg_reward", np.mean(eval_log_buffer["global_reward"]), current_steps)
-            writer.add_scalar("global/eval_avg_cost", np.mean(eval_log_buffer["global_cost"]), current_steps)
-            writer.add_scalar("global/eval_avg_utility", np.mean(eval_log_buffer["global_util"]), current_steps)
-            writer.add_scalar("global/eval_reward_std", global_reward_std, current_steps)
+            writer.add_scalar("global/eval_avg_reward", total_reward_all, current_steps)
+            writer.add_scalar("global/eval_avg_cost", total_cost_all, current_steps)
+            writer.add_scalar("global/eval_avg_utility", total_util_all, current_steps)
 
     writer.close()
 

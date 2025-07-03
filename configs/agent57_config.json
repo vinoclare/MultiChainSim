@@ -1,9 +1,7 @@
 {
   "num_episodes": 50000,
-  "eval_interval": 100,
-  "eval_episodes": 10,
-  "log_interval": 1,
-  "update_epochs": 8,
+  "eval_interval": 1000,
+  "eval_episodes": 20,
   "lam": 0.95,
   "batch_size": 512,
   "hidden_dim": 64,
