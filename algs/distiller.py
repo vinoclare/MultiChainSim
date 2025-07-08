@@ -80,7 +80,7 @@ class Distiller:
             return random.sample(buf, len(buf))  # 不足则全取
         return random.sample(buf, batch_size)
 
-    def bc_update(self, cur_pid: int, batch_size: int = 512, steps: int = 50):
+    def bc_update(self, cur_pid: int, batch_size: int = 64, steps: int = 5):
         """对主策略进行若干步蒸馏更新"""
         if len(self.buffers[cur_pid]) < batch_size:
             return 0.0  # 数据不足
@@ -418,11 +418,89 @@ class Distiller3:
 
         return total_loss / steps
 
+    def online_correction_update(
+            self,
+            task_obs_batch,
+            worker_loads_batch,
+            worker_profiles_batch,
+            global_context_batch,
+            valid_mask_batch,
+            actions_batch,
+            values_u_old,
+            values_c_old,
+            returns_u,
+            returns_c,
+            log_probs_old,
+            global_steps,
+            total_training_steps,
+            clip_param=0.3,
+            value_loss_coef=0.5,
+            entropy_coef_init=0.01,
+            max_grad_norm=0.5
+    ):
+        task_obs = task_obs_batch.to(self.device)
+        worker_loads = worker_loads_batch.to(self.device)
+        worker_profiles = worker_profiles_batch.to(self.device)
+        global_context = global_context_batch.to(self.device)
+        valid_mask = valid_mask_batch.to(self.device)
+        actions = actions_batch.to(self.device)
+        values_u_old = values_u_old.to(self.device)
+        values_c_old = values_c_old.to(self.device)
+        returns_u = returns_u.to(self.device)
+        returns_c = returns_c.to(self.device)
+        log_probs_old = log_probs_old.to(self.device)
+
+        mean, std, v_u_new, v_c_new = self.model(
+            task_obs, worker_loads, worker_profiles, global_context, valid_mask, policy_id=0
+        )
+        dist = Normal(mean, std)
+        log_probs = dist.log_prob(actions).sum(dim=[1, 2])
+        entropy = dist.entropy().sum(dim=[1, 2]).mean()
+
+        # Advantage
+        adv_u = returns_u - values_u_old
+        adv_c = returns_c - values_c_old
+        adv_u = (adv_u - adv_u.mean()) / (adv_u.std() + 1e-8)
+        adv_c = (adv_c - adv_c.mean()) / (adv_c.std() + 1e-8)
+        adv = adv_u + adv_c
+
+        # Ratio
+        ratio = torch.exp(log_probs - log_probs_old)
+        surr1 = ratio * adv
+        surr2 = torch.clamp(ratio, 1 - clip_param, 1 + clip_param) * adv
+        policy_loss = -torch.min(surr1, surr2).mean()
+
+        # Value loss
+        value_loss_u = 0.5 * (v_u_new - returns_u).pow(2).mean()
+        value_loss_c = 0.5 * (v_c_new - returns_c).pow(2).mean()
+        value_loss = value_loss_u + value_loss_c
+
+        # entropy_coef decay
+        progress = global_steps / total_training_steps
+        entropy_coef = max(1e-3, entropy_coef_init * (1 - progress))
+
+        # 总 loss
+        loss = value_loss * value_loss_coef + policy_loss - entropy_coef * entropy
+
+        # 优化
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+        self.optimizer.step()
+
+        # Polyak target 更新
+        with torch.no_grad():
+            for p_targ, p_main in zip(self.target_model.parameters(), self.model.parameters()):
+                p_targ.data.mul_(self.polyak_tau).add_(p_main.data, alpha=1 - self.polyak_tau)
+
+        return policy_loss.item(), value_loss.item(), entropy.item()
+
     @torch.no_grad()
     def predict(self, obs_dict):
         inputs = {k: v.to(self.device) for k, v in obs_dict.items()}
         inputs["policy_id"] = 0
-        mean, std, _, _ = self.model(**inputs)
+        mean, std, v_u, v_c = self.model(**inputs)
         dist = Normal(mean, std)
         action = dist.sample().clamp(0, 1)
-        return action
+        log_prob = dist.log_prob(action).sum(dim=[1, 2])
+        return v_u, v_c, action, log_prob

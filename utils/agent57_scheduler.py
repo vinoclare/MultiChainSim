@@ -15,7 +15,8 @@ class SoftUCB:
         self,
         K: int,
         c: float = 1.0,
-        min_switch_interval: int = 1
+        min_switch_interval: int = 1,
+        temperature: float = 3.0,
     ):
         """
         Args:
@@ -32,6 +33,7 @@ class SoftUCB:
         self.recent_real_returns = [deque(maxlen=self.window_size) for _ in range(K)]
 
         self.total_pulls = 0  # update_fake 被调用的总次数
+        self.temperature = temperature
 
         # 两阶段开关
         self.init_phase = True              # True 表示正在初始轮询阶段
@@ -80,16 +82,21 @@ class SoftUCB:
             # UCB 采样：计算每条策略的 UCB 分数
             ucb_scores = []
             for i in range(self.K):
-                if len(self.recent_returns[i]) == 0:
+                if len(self.recent_real_returns[i]) == 0:
                     score = float('inf')
                 else:
-                    mean_i = sum(self.recent_returns[i]) / len(self.recent_returns[i])
-                    n_i = len(self.recent_returns[i])
+                    n_i = len(self.recent_real_returns[i])
+                    mean_i = sum(self.recent_real_returns[i]) / n_i
                     score = mean_i + self.c * math.sqrt(math.log(max(1, self.total_pulls)) / n_i)
                 ucb_scores.append(score)
 
             # 对 UCB 分数做 Softmax，得到概率分布
-            probs = torch.softmax(torch.tensor(ucb_scores, dtype=torch.float32), dim=0)
+            min_score = min(ucb_scores)
+            max_score = max(ucb_scores)
+            eps = 1e-8
+            ucb_scores_norm = [(s - min_score) / (max_score - min_score + eps) for s in ucb_scores]
+            ucb_scores_temp = [score / self.temperature for score in ucb_scores_norm]
+            probs = torch.softmax(torch.tensor(ucb_scores_temp, dtype=torch.float32), dim=0)
             pid = torch.multinomial(probs, 1).item()
 
             # 切换到新的 pid

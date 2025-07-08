@@ -15,7 +15,7 @@
     "betas":  [0.8, 0, 1, 0, -1],
     "hidden_dim": 64,
     "batch_size": 512,
-    "update_epochs": 4,
+    "update_epochs": 1,
     "gamma": 0.99,
     "lam": 0.95,
     "clip_param": 0.3,
@@ -37,7 +37,7 @@
     "n_heads": 4,
     "transformer_layers": 2,
     "kpi_window_size": 50,
-    "update_epochs": 3,
+    "update_epochs": 1,
 
     "clip_param": 0.3,
     "entropy_coef": 0.05,
@@ -57,25 +57,19 @@
     "loss_type": "kl",
     "neg_policy": true,
     "warmup_ep": 20,
-    "batch_size": 512,
-    "min_reward_ratio": 0.9,
+    "batch_size": 128,
+    "min_reward_ratio": 0.95,
     "std_t": 0.5,
-    "bc_steps": 25,
-    "sup_coef": 1.0,
-    "neg_coef": 0.05,
+    "bc_steps": 10,
+    "sup_coef": 0.001,
+    "neg_coef": 5e-4,
     "margin": 2.0
   },
 
   "scheduler": {
     "switch_interval": 50,
-    "hitac_update_interval": 1,
+    "hitac_update_interval": 5,
     "distill_interval": 50,
     "neg_interval": 50
-  },
-
-   "ucb": {
-    "type": "soft_ucb",
-    "c": 10.0,
-    "min_switch_interval": 20
   }
 }

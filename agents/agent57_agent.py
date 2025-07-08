@@ -146,9 +146,6 @@ class Agent57Agent:
         adv_c = (adv_c - adv_c.mean()) / (adv_c.std() + 1e-8)
         adv = adv_u + adv_c
 
-        # —— 标准化 Advantage （PPO 推荐） —— #
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-
         # —— 计算 ratio 与策略损失 —— #
         ratio = torch.exp(log_probs - log_probs_old)
         surr1 = ratio * adv

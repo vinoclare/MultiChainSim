@@ -76,7 +76,7 @@ class HiTAC(nn.Module):
         self.logits_norm = nn.LayerNorm(num_subpolicies)
 
         self.value_loss_coef = 0.5
-        self.reward_coef = 0.2
+        self.reward_coef = 0.1
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         self.ucb_lambda = ucb_lambda
