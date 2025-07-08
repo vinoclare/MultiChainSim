@@ -140,7 +140,11 @@ class Agent57Agent:
         entropy = dist.entropy().sum(dim=[1, 2]).mean()
 
         # —— 计算 Advantage —— #
-        adv = returns_u - values_u_old
+        adv_u = returns_u - values_u_old
+        adv_c = returns_c - values_c_old
+        adv_u = (adv_u - adv_u.mean()) / (adv_u.std() + 1e-8)
+        adv_c = (adv_c - adv_c.mean()) / (adv_c.std() + 1e-8)
+        adv = adv_u + adv_c
 
         # —— 标准化 Advantage （PPO 推荐） —— #
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)

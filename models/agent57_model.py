@@ -57,7 +57,8 @@ class Agent57IndustrialModel(nn.Module):
         self.actor_heads = nn.ModuleList([nn.Linear(3 * D, 1) for _ in range(K)])
         # log_std 参数：K × (n_worker × num_pad_tasks)
         self.log_stds = nn.Parameter(torch.zeros(K, n_worker, num_pad_tasks))
-        # self.log_stds.fill_(-2)  # 初始化为 -2
+        with torch.no_grad():
+            self.log_stds.fill_(-0.5)
 
         # —— Value Heads —— #
         # V_U: 效用价值；V_C: 成本价值

@@ -9,6 +9,8 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import concurrent.futures as cf
 
+from algs.muse2 import MuSE
+from algs.distiller import Distiller
 from utils.agent57_scheduler import SoftUCB
 from utils.buffer import RolloutBuffer, compute_gae
 from utils.utils import RunningMeanStd  # 归一化工具
@@ -55,6 +57,47 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     betas = multi_cfg["betas"]
     gammas = multi_cfg["gammas"]
 
+    # HiTAC-Muse 超参数迁移
+    distill_cfg = agent57_config["distill"]
+    device = agent57_config["training"]["device"] if torch.cuda.is_available() else "cpu"
+    num_layers = env_config["num_layers"]
+    num_workers = env_config["workers_per_layer"]
+    num_pad_tasks = env_config["num_pad_tasks"]
+    task_types = env_config["task_types"]
+    n_task_types = len(task_types)
+    profile_dim = 2 * n_task_types
+    global_context_dim = 1
+    policies_info_dim = agent57_config["hitac"]["policies_info_dim"]
+
+    num_episodes = agent57_config["training"]["num_episodes"]
+    eval_interval = agent57_config["training"]["eval_interval"]
+    log_interval = agent57_config["training"]["log_interval"]
+    eval_episodes = agent57_config["training"]["eval_episodes"]
+    distill_interval = agent57_config["scheduler"]["distill_interval"]
+    switch_interval = agent57_config["scheduler"]["switch_interval"]
+    hitac_update_interval = agent57_config["scheduler"]["hitac_update_interval"]
+    reset_schedule_interval = agent57_config["training"]["reset_schedule_interval"]
+    neg_interval = agent57_config["scheduler"]["neg_interval"]
+
+    steps_per_episode = env_config["max_steps"]
+    K = agent57_config["muse"]["K"]
+    neg_policy = agent57_config["distill"]["neg_policy"]
+    num_pos_subpolicies = K - 2 if agent57_config["distill"]["neg_policy"] else K
+    warmup_ep = agent57_config["distill"]["warmup_ep"]
+    min_reward_ratio = agent57_config["distill"]["min_reward_ratio"]
+    update_epochs = agent57_config["muse"]["update_epochs"]
+    gamma = agent57_config["muse"]["gamma"]
+    lam = agent57_config["muse"]["lam"]
+    batch_size = agent57_config["muse"]["batch_size"]
+    return_norm = agent57_config["muse"]["return_normalization"]
+    local_kpi_dim = agent57_config["hitac"]["local_kpi_dim"] + num_pos_subpolicies
+    global_kpi_dim = agent57_config["hitac"]["global_kpi_dim"]
+    policies_info_dim = agent57_config["hitac"]["policies_info_dim"]
+    traj_save_threshold = (num_episodes - 10 * eval_interval) * steps_per_episode
+
+    K = 3
+    skip_hitac_train = False
+
     # 3. 为每一层初始化：Agent、Scheduler、RMS、Buffer
     agents = []
     schedulers = []
@@ -70,24 +113,20 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     ]
 
     for lid in range(n_layers):
-        # a) 初始化 Agent
-        agent = Agent57Agent(
-            task_input_dim=task_dim,
-            worker_load_input_dim=worker_load_dim,
-            worker_profile_input_dim=worker_profile_dim,
-            n_worker=n_worker[lid],
-            num_pad_tasks=num_pad_tasks,
-            global_context_dim=1,
-            hidden_dim=agent57_config["hidden_dim"],
-            betas=betas,
-            gammas=gammas,
-            clip_param=agent57_config["clip_param"],
-            value_loss_coef=agent57_config["value_loss_coef"],
-            entropy_coef=agent57_config["entropy_coef"],
-            initial_lr=agent57_config["initial_lr"],
-            max_grad_norm=agent57_config["max_grad_norm"],
-            lam=agent57_config["lam"],
-            device=device
+        # a) 初始化 Muse
+        agent = MuSE(
+            cfg=agent57_config["muse"],
+            distill_cfg=agent57_config["distill"],
+            obs_shapes={
+                "task": task_dim,
+                "worker_load": worker_load_dim,
+                "worker_profile": worker_profile_dim,
+                "n_worker": n_worker[lid],
+                "num_pad_tasks": num_pad_tasks,
+                "global_context_dim": 1
+            },
+            device=device,
+            total_training_steps=agent57_config["num_episodes"] * max_steps
         )
         agents.append(agent)
 
@@ -104,6 +143,42 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
         # d) 初始化空 Buffer
         buffers.append(RolloutBuffer())
+
+    # === 每层 obs 结构描述（供 MuSE init）===
+    obs_shapes = []
+    for lid in range(num_layers):
+        obs_shapes.append({
+            "task": 4 + n_task_types,
+            "worker_load": 1 + n_task_types,
+            "worker_profile": 2 * n_task_types,
+            "n_worker": num_workers[lid],
+            "num_pad_tasks": num_pad_tasks,
+            "global_context_dim": global_context_dim
+        })
+
+    act_spaces = [
+        (obs_shapes[lid]["n_worker"], obs_shapes[lid]["num_pad_tasks"])
+        for lid in range(num_layers)
+    ]
+
+    # 初始化 Distiller
+    distillers = [
+        Distiller(
+            obs_spaces=obs_shapes[lid],
+            global_context_dim=global_context_dim,
+            hidden_dim=distill_cfg["hidden_dim"],
+            act_dim=act_spaces[lid],
+            K=num_pos_subpolicies,
+            loss_type=distill_cfg["loss_type"],
+            neg_policy=distill_cfg["neg_policy"],
+            device=device,
+            sup_coef=distill_cfg["sup_coef"],
+            neg_coef=distill_cfg["neg_coef"],
+            margin=distill_cfg["margin"],
+            std_t=distill_cfg["std_t"]
+        )
+        for lid in range(num_layers)
+    ]
 
     # 4. TensorBoard Writer
     writer = SummaryWriter(log_dir)
@@ -162,7 +237,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 gctx_t = torch.tensor(gctx, dtype=torch.float32).unsqueeze(0).to(device)
                 valid_mask_t = torch.tensor(valid_mask, dtype=torch.float32).unsqueeze(0).to(device)
 
-                v_u, v_c, action_t, logp_t, _ = agents[layer_id].sample(
+                v_u, v_c, action_t, logp_t, _, _ = agents[layer_id].sample(
                     task_obs_t, worker_loads_t, worker_profiles_t, gctx_t, valid_mask_t, pid
                 )
                 action = action_t.squeeze(0).cpu().numpy()  # (W, T)
@@ -270,60 +345,43 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             returns_u_t = torch.tensor(ret_u, dtype=torch.float32).to(device)
             returns_c_t = torch.tensor(ret_c, dtype=torch.float32).to(device)
 
-            policy_loss, value_loss, entropy = agents[layer_id].learn(
-                task_obs_batch=batch["task_obs"],
-                worker_loads_batch=batch["worker_loads"],
-                worker_profiles_batch=batch["worker_profiles"],
-                global_context_batch=batch["global_context"],
-                valid_mask_batch=batch["valid_mask"],
-                actions_batch=batch["actions"],
+            agents[layer_id].learn(
+                pid=torch.tensor([pid], device=device),
+                task_obs=batch["task_obs"],
+                worker_loads=batch["worker_loads"],
+                worker_profile=batch["worker_profiles"],
+                global_context=batch["global_context"],
+                valid_mask=batch["valid_mask"],
+                actions=batch["actions"],
                 values_u_old=batch["values_u"],
                 values_c_old=batch["values_c"],
                 returns_u=returns_u_t,
                 returns_c=returns_c_t,
                 log_probs_old=batch["logps"],
-                policy_id=pid,
-                global_steps=current_steps,
-                total_training_steps=agent57_config["num_episodes"] * max_steps
+                step=current_steps
             )
+
+        # === 更新 EMA baseline ===
+        reward_sum = sum(episode_rewards)
+        if episode == 0:
+            ema_return = reward_sum
+        else:
+            ema_return = 0.1 * reward_sum + 0.9 * ema_return
+
+        # === 存入蒸馏 buffer ===
+        if reward_sum > (ema_return * min_reward_ratio):
+            for lid in range(num_layers):
+                batch = buffers[lid].to_tensors(device=device)
+                distillers[lid].collect({"task_obs": batch["task_obs"],
+                                         "worker_loads": batch["worker_loads"],
+                                         "worker_profiles": batch["worker_profiles"],
+                                         "global_context": batch["global_context"],
+                                         "valid_mask": batch["valid_mask"]},
+                                        batch["actions"],
+                                        [pids[lid] for _ in range(batch["actions"].shape[0])])
 
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
-            # 5.5.1 先为各层选取 Greedy 子策略 PID
-            greedy_pids = []
-            for layer_id in range(n_layers):
-                best_pid = 0
-                best_mean = -float('inf')
-
-                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
-                all_empty = True
-                for i in range(K):
-                    if len(schedulers[layer_id].recent_real_returns[i]) > 0:
-                        all_empty = False
-                        break
-
-                if all_empty:
-                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
-                    greedy_pid = 0
-                else:
-                    # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
-                    for i in range(K):
-                        dq = schedulers[layer_id].recent_real_returns[i]
-                        if len(dq) == 0:
-                            continue  # 这条策略还没数据，跳过
-                        mean_i = sum(dq) / len(dq)
-                        if mean_i > best_mean:
-                            best_mean = mean_i
-                            best_pid = i
-                    greedy_pid = best_pid
-                greedy_pids.append(greedy_pid)
-                select_counts[layer_id]["test"][greedy_pid] += 1
-
-            print("Select times (Eval):")
-            print(f"Current Pids: {greedy_pids}")
-            for layer_id in range(n_layers):
-                print(f"  Layer {layer_id}: {select_counts[layer_id]['test']}")
-
             # 5.5.2 准备统计容器
             eval_reward_sums = {lid: [] for lid in range(n_layers)}
             eval_cost_sums = {lid: [] for lid in range(n_layers)}
@@ -346,9 +404,9 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 done = False
                 while not done:
                     actions = {}
-                    # 5.5.3.1 对所有层并行采集一次动作
+                    # 5.5.3.1 对所有层并行采集一次动作（主策略生成）
                     for layer_id in range(n_layers):
-                        pid = greedy_pids[layer_id]
+                        distiller = distillers[layer_id]
                         single = obs[layer_id]
                         task_obs = np.array(single["task_queue"], dtype=np.float32)
                         worker_loads = np.array(single["worker_loads"], dtype=np.float32)
@@ -362,14 +420,20 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         gctx_t = torch.tensor(gctx, dtype=torch.float32).unsqueeze(0).to(device)
                         valid_mask_t = torch.tensor(valid_mask, dtype=torch.float32).unsqueeze(0).to(device)
 
-                        # sample action
-                        with torch.no_grad():
-                            v_u, v_c, action_t, logp_t, _ = agents[layer_id].sample(
-                                task_obs_t, worker_loads_t, worker_profiles_t, gctx_t, valid_mask_t, pid
-                            )
+                        # 构造主策略输入字典
+                        obs_dict = {
+                            "task_obs": task_obs_t,
+                            "worker_loads": worker_loads_t,
+                            "worker_profiles": worker_profiles_t,
+                            "global_context": gctx_t,
+                            "valid_mask": valid_mask_t
+                        }
+
+                        # 使用 Distiller 主策略预测动作
+                        action_t = distiller.predict(obs_dict)
                         actions[layer_id] = action_t.squeeze(0).cpu().numpy()
 
-                        # 5.5.3.2 将所有层的动作一次性喂给 eval_env.step
+                    # 5.5.3.2 将所有层的动作一次性喂给 eval_env.step
                     obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
 
                     # 5.5.3.3 从 reward_detail 中拆分累加各层指标
@@ -403,6 +467,45 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             writer.add_scalar("global/eval_avg_cost", total_cost_all, current_steps)
             writer.add_scalar("global/eval_avg_utility", total_util_all, current_steps)
 
+        # === 蒸馏更新 ===
+        if episode % distill_interval == 0 and episode > (warmup_ep * K):
+            distill_pids = []
+            for layer_id in range(n_layers):
+                best_pid = 0
+                best_mean = -float('inf')
+
+                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
+                all_empty = True
+                for i in range(K):
+                    if len(schedulers[layer_id].recent_real_returns[i]) > 0:
+                        all_empty = False
+                        break
+
+                if all_empty:
+                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
+                    greedy_pid = 0
+                else:
+                    # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
+                    for i in range(K):
+                        dq = schedulers[layer_id].recent_real_returns[i]
+                        if len(dq) == 0:
+                            continue  # 这条策略还没数据，跳过
+                        mean_i = sum(dq) / len(dq)
+                        if mean_i > best_mean:
+                            best_mean = mean_i
+                            best_pid = i
+                    greedy_pid = best_pid
+                distill_pids.append(greedy_pid)
+                select_counts[layer_id]["test"][greedy_pid] += 1
+
+            print("Select times (Eval):")
+            print(f"Current Pids: {distill_pids}")
+            for layer_id in range(n_layers):
+                print(f"  Layer {layer_id}: {select_counts[layer_id]['test']}")
+            for lid in range(num_layers):
+                loss = distillers[lid].bc_update(distill_pids[lid], distill_cfg["batch_size"], distill_cfg["bc_steps"])
+                if not skip_hitac_train:  # 非负策略蒸馏时，记录蒸馏 loss
+                    writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
     writer.close()
 
 
@@ -448,8 +551,5 @@ if __name__ == "__main__":
     os.makedirs(log_dir, exist_ok=True)
 
     print("\n=== Agent57 单次实验开始 ===\n")
-    try:
-        run_one(args.dire, args.cfg, log_dir)
-        print("\n🎉 Agent57 单次实验已完成\n")
-    except Exception as e:
-        print(f"\n❌ 实验出错: {e}\n")
+    run_one(args.dire, args.cfg, log_dir)
+    print("\n🎉 Agent57 单次实验已完成\n")

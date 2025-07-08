@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 from models.muse_model import MuseModel
+from models.agent57_model import Agent57IndustrialModel
 
 
 class MuSE(nn.Module):
@@ -21,7 +22,7 @@ class MuSE(nn.Module):
         self.total_training_steps = total_training_steps
 
         # === 单个多头模型 ===
-        self.model = MuseModel(
+        self.model = Agent57IndustrialModel(
             task_input_dim=obs_shapes["task"],
             worker_load_input_dim=obs_shapes["worker_load"],
             worker_profile_input_dim=obs_shapes["worker_profile"],
@@ -32,9 +33,6 @@ class MuSE(nn.Module):
             K=self.K,
             neg_policy=self.neg_policy
         ).to(self.device)
-
-        # with torch.no_grad():
-        #     self.model.log_stds.fill_(-0.5)
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg["initial_lr"])
 
@@ -71,13 +69,14 @@ class MuSE(nn.Module):
             global_context,
             valid_mask,
             actions,
-            returns,         # Tuple: (ret_u, ret_c)
+            values_u_old,
+            values_c_old,
+            returns_u,
+            returns_c,
             log_probs_old,
-            advantages,
             step
     ):
         k = pid[0].item()
-
         return self._ppo_update_single_head(
             head_id=k,
             task_obs=task_obs,
@@ -86,9 +85,11 @@ class MuSE(nn.Module):
             global_context=global_context,
             valid_mask=valid_mask,
             actions=actions,
-            returns=returns,
+            values_u_old=values_u_old,
+            values_c_old=values_c_old,
+            returns_u=returns_u,
+            returns_c=returns_c,
             log_probs_old=log_probs_old,
-            advantages=advantages,
             step=step
         )
 
@@ -101,14 +102,14 @@ class MuSE(nn.Module):
             global_context,
             valid_mask,
             actions,
-            returns,
+            values_u_old,
+            values_c_old,
+            returns_u,
+            returns_c,
             log_probs_old,
-            advantages,
             step
     ):
-        ret_u, ret_c = returns
-
-        mean, std, v_u, v_c = self.model(
+        mean, std, v_u_new, v_c_new = self.model(
             task_obs, worker_loads, worker_profile,
             global_context, valid_mask,
             policy_id=head_id
@@ -119,58 +120,34 @@ class MuSE(nn.Module):
         entropy = dist.entropy().sum(dim=[1, 2])
         ratio = torch.exp(logp - log_probs_old)
 
-        adv = advantages.clone()
+        # —— Advantage ——
+        adv_u = returns_u - values_u_old
+        adv_c = returns_c - values_c_old
+
+        if self.adv_norm:
+            adv_u = (adv_u - adv_u.mean()) / (adv_u.std() + 1e-8)
+            adv_c = (adv_c - adv_c.mean()) / (adv_c.std() + 1e-8)
+
+        adv = adv_u + adv_c
 
         # Policy loss
         surr1 = ratio * adv
-        surr2 = torch.clamp(ratio, 1.0 - 0.2, 1.0 + 0.2) * adv
+        surr2 = torch.clamp(ratio, 1.0 - 0.3, 1.0 + 0.3) * adv
         pi_loss = -torch.min(surr1, surr2).mean()
 
-        # Value loss（双头）
-        value_loss_u = 0.5 * (ret_u - v_u).pow(2).mean()
-        value_loss_c = 0.5 * (ret_c - v_c).pow(2).mean()
+        # Value loss
+        value_loss_u = 0.5 * (v_u_new - returns_u).pow(2).mean()
+        value_loss_c = 0.5 * (v_c_new - returns_c).pow(2).mean()
         value_loss = value_loss_u + value_loss_c
 
-        entropy_loss = -entropy.mean()
+        # 不再使用 diversity loss
+        div_loss = 0.0
 
-        # diversity loss
-        if self.neg_policy and head_id > (self.K - 3):
-            is_pos_policy = False
-        elif self.neg_policy:
-            is_pos_policy = True
-            num_pos = self.K - 2
-        else:
-            is_pos_policy = True
-            num_pos = self.K
-
-        if is_pos_policy and self.lambda_div > 0:
-            mean_j = mean.detach()  # detach 不传梯度给自己
-            std_j = std.detach()
-
-            kl_terms = []
-            for k in range(num_pos):
-                if k == head_id:
-                    continue
-                with torch.no_grad():
-                    mean_k, std_k, *_ = self.model(
-                        task_obs, worker_loads, worker_profile,
-                        global_context, valid_mask,
-                        policy_id=k
-                    )
-                # KL(π_j || π_k)，高斯 closed-form
-                kl = (std_k.log() - std_j.log() +
-                      (std_j.pow(2) + (mean_j - mean_k).pow(2)) / (2 * std_k.pow(2)) - 0.5)
-                kl_sum = kl.sum(dim=[1, 2])  # 对动作维度求和
-                kl_terms.append(kl_sum)
-                div_loss = self.lambda_div * torch.stack(kl_terms).mean()
-        else:
-            div_loss = 0.0
-
-        # entropy_coef decay
+        # entropy coef decay
         progress = step / self.total_training_steps
         entropy_coef = max(1e-3, self.entropy_coef * (1 - progress))
 
-        loss = pi_loss + self.value_loss_coef * value_loss + entropy_coef * entropy_loss + div_loss
+        loss = value_loss * self.value_loss_coef + pi_loss - entropy_coef * entropy.mean()
 
         self.optimizer.zero_grad()
         loss.backward()

@@ -162,3 +162,69 @@ class PPOIndustrialModel(nn.Module):
         # self.global_step += 1
 
         return mean, std, value
+
+    def forward_direct(
+            self,
+            task_obs: torch.Tensor,
+            worker_loads: torch.Tensor,
+            worker_profiles: torch.Tensor,
+            global_context: torch.Tensor,
+            valid_mask: torch.Tensor = None
+    ):
+        """
+        Inputs:
+          task_obs:       (B, num_pad_tasks, task_input_dim)
+          worker_loads:   (B, n_worker, worker_load_input_dim)
+          worker_profiles:(B, n_worker, worker_profile_input_dim)
+          global_context: (B, global_context_dim)
+          valid_mask:     (B, num_pad_tasks)
+        Outputs:
+          actions: (B, n_worker, num_pad_tasks)
+          value:   (B,)
+        """
+
+        B = task_obs.size(0)
+
+        # ——— 编码 task ——— #
+        t_feat = self.task_encoder(task_obs)  # (B, T, D)
+        t_feat = self.fc_task(t_feat)  # (B, T, D)
+
+        # ——— 编码 worker_load & profile ——— #
+        wl_feat = self.worker_load_encoder(worker_loads)  # (B, W, D)
+        wp_feat = self.worker_profile_encoder(worker_profiles)  # (B, W, D)
+        w_cat = torch.cat([wl_feat, wp_feat], dim=-1)  # (B, W, 2D)
+        w_feat = self.fc_worker(w_cat)  # (B, W, D)
+
+        # ——— 编码 global_context ——— #
+        g_feat = self.global_fc(global_context)  # (B, D)
+
+        # ——— 构造 Actor 融合特征 ——— #
+        w_exp = w_feat.unsqueeze(2).expand(-1, -1, self.num_pad_tasks, -1)
+        t_exp = t_feat.unsqueeze(1).expand(-1, self.n_worker, -1, -1)
+        g_exp = g_feat.unsqueeze(1).unsqueeze(2).expand(-1, self.n_worker, self.num_pad_tasks, -1)
+
+        fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
+        fusion = self.fusion_norm(fusion)
+
+        raw_action = self.actor_head(fusion).squeeze(-1)  # (B, W, T)
+        actions = torch.sigmoid(raw_action)
+
+        # 应用 valid mask（可选）
+        if valid_mask is not None:
+            mask = valid_mask.unsqueeze(1).expand_as(actions)  # (B, W, T)
+            actions = actions * mask
+            mask_pool = valid_mask.unsqueeze(-1)  # (B, T, 1)
+            masked_t_feat = t_feat * mask_pool  # (B, T, D)
+            sum_feat = masked_t_feat.sum(dim=1)  # (B, D)
+            count = mask_pool.sum(dim=1).clamp(min=1)  # (B, 1)
+            t_pool = sum_feat / count  # (B, D)
+        else:
+            t_pool = t_feat.mean(dim=1)
+
+        # ——— Critic 估值 ——— #
+        w_pool = w_feat.mean(dim=1)  # (B, D)
+        cv_in = torch.cat([t_pool, w_pool, g_feat], dim=-1)  # (B, 3D)
+        cv_in = self.critic_norm(cv_in)
+        value = self.shared_critic(cv_in).squeeze(-1)  # (B,)
+
+        return actions, value

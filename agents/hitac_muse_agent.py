@@ -4,7 +4,7 @@ from torch.distributions import Categorical
 
 from algs.muse import MuSE
 from algs.hitac import HiTAC
-from algs.distiller import Distiller
+from algs.distiller import Distiller, Distiller2, Distiller3
 
 
 class HiTACMuSEAgent:
@@ -35,23 +35,42 @@ class HiTACMuSEAgent:
         ]
 
         # === 各层 Distiller（主策略） ===
-        self.distillers = [
-            Distiller(
-                obs_spaces=obs_spaces[lid],
-                global_context_dim=global_context_dim,
-                hidden_dim=distill_cfg["hidden_dim"],
-                act_dim=act_spaces[lid],
-                K=self.K,
-                loss_type=distill_cfg["loss_type"],
-                neg_policy=distill_cfg["neg_policy"],
-                device=device,
-                sup_coef=distill_cfg["sup_coef"],
-                neg_coef=distill_cfg["neg_coef"],
-                margin=distill_cfg["margin"],
-                std_t=distill_cfg["std_t"]
-            )
-            for lid in range(self.num_layers)
-        ]
+        if distill_cfg["type"] == "deterministic":
+            self.distillers = [
+                Distiller2(
+                    obs_spaces=obs_spaces[lid],
+                    global_context_dim=global_context_dim,
+                    hidden_dim=distill_cfg["hidden_dim"],
+                    act_dim=act_spaces[lid],
+                    K=self.K,
+                    loss_type=distill_cfg["loss_type"],
+                    neg_policy=distill_cfg["neg_policy"],
+                    device=device,
+                    sup_coef=distill_cfg["sup_coef"],
+                    neg_coef=distill_cfg["neg_coef"],
+                    margin=distill_cfg["margin"],
+                    std_t=distill_cfg["std_t"]
+                )
+                for lid in range(self.num_layers)
+            ]
+        else:
+            self.distillers = [
+                Distiller3(
+                    obs_spaces=obs_spaces[lid],
+                    global_context_dim=global_context_dim,
+                    hidden_dim=distill_cfg["hidden_dim"],
+                    act_dim=act_spaces[lid],
+                    K=self.K,
+                    loss_type=distill_cfg["loss_type"],
+                    neg_policy=distill_cfg["neg_policy"],
+                    device=device,
+                    sup_coef=distill_cfg["sup_coef"],
+                    neg_coef=distill_cfg["neg_coef"],
+                    margin=distill_cfg["margin"],
+                    std_t=distill_cfg["std_t"]
+                )
+                for lid in range(self.num_layers)
+            ]
 
         # === HiTAC ===
         self.hitac = HiTAC(
@@ -72,7 +91,8 @@ class HiTACMuSEAgent:
             ucb_lambda=hitac_cfg["ucb_lambda"],
             sticky_prob=hitac_cfg["sticky_prob"],
             update_epochs=hitac_cfg["update_epochs"],
-            temperature=hitac_cfg["temperature"],
+            train_temp=hitac_cfg["train_temp"],
+            distill_temp=hitac_cfg["distill_temp"],
             epsilon=hitac_cfg["epsilon"],
             greedy_prob=hitac_cfg["greedy_prob"],
             writer=writer

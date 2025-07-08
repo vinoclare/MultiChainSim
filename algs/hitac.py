@@ -26,7 +26,8 @@ class HiTAC(nn.Module):
             ucb_lambda: float = 0.2,
             sticky_prob: float = 0.1,
             update_epochs: int = 10,
-            temperature: float = 0.5,
+            train_temp: float = 0.5,
+            distill_temp: float = 0.3,
             epsilon: float = 0.1,
             greedy_prob: float = 0.5,
             writer: SummaryWriter = None
@@ -40,7 +41,8 @@ class HiTAC(nn.Module):
         self.max_grad_norm = max_grad_norm
         self.total_steps = total_steps
         self.update_epochs = update_epochs
-        self.temperature = temperature
+        self.train_temp = train_temp
+        self.distill_temp = distill_temp
         self.epsilon = epsilon
         self.greedy_prob = greedy_prob
         self.writer = writer
@@ -74,7 +76,7 @@ class HiTAC(nn.Module):
         self.logits_norm = nn.LayerNorm(num_subpolicies)
 
         self.value_loss_coef = 0.5
-        self.reward_coef = 0.02
+        self.reward_coef = 0.2
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
 
         self.ucb_lambda = ucb_lambda
@@ -135,10 +137,10 @@ class HiTAC(nn.Module):
         avg_rewards = policies_info[0, :, :, 0]
         freq = self.freq_counter[0] + 1.0
         ucb_bonus = torch.sqrt(torch.log(torch.tensor(step + 1.0, device=self.device)) / freq)  # (L, K)
-        reward_coef = max(5e-3, self.reward_coef * (1 - self.progress))
+        reward_coef = max(5e-3, self.reward_coef * np.exp(-10 * self.progress))
         logits = logits + self.ucb_lambda * ucb_bonus + reward_coef * avg_rewards
 
-        probs = F.softmax(logits / self.temperature, dim=-1)
+        probs = F.softmax(logits / self.train_temp, dim=-1)
         dist = Categorical(probs)
         pids = dist.sample()  # (L)
 
@@ -164,10 +166,9 @@ class HiTAC(nn.Module):
 
         # === 计算 UCB 奖励 ===
         avg_rewards = policies_info[0, :, :, 0]
-        reward_coef = max(5e-3, self.reward_coef * (1 - self.progress))
-        logits = logits + reward_coef * avg_rewards
+        logits = logits + self.reward_coef * avg_rewards
 
-        probs = F.softmax(logits / self.temperature, dim=-1)
+        probs = F.softmax(logits / self.distill_temp, dim=-1)
 
         if torch.rand(1).item() < self.greedy_prob:
             pids = torch.argmax(probs, dim=-1)

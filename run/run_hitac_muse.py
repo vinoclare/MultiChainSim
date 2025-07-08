@@ -452,25 +452,24 @@ for episode in range(num_episodes):
         value_u = buf["value_u"]
         value_c = buf["value_c"]
 
-        returns_u, advs_u = compute_gae_single_head(reward_u, dones, value_u, 0.0, gamma, lam)
-        returns_c, advs_c = compute_gae_single_head(reward_c, dones, value_c, 0.0, gamma, lam)
+        returns_u, _ = compute_gae_single_head(reward_u, dones, value_u, 0.0, gamma, lam)
+        returns_c, _ = compute_gae_single_head(reward_c, dones, value_c, 0.0, gamma, lam)
 
+        # === Step 2: return 归一化 ===
+        ret_u_np = np.array(returns_u)
+        ret_c_np = np.array(returns_c)
+        return_u_rms[lid].update(ret_u_np)
+        return_c_rms[lid].update(ret_c_np)
+        returns_u = return_u_rms[lid].normalize(ret_u_np)
+        returns_c = return_c_rms[lid].normalize(ret_c_np)
+
+        advs_u = returns_u - np.array(value_u)
+        advs_c = returns_c - np.array(value_c)
+        advs_u = (advs_u - advs_u.mean()) / (advs_u.std() + 1e-8)
+        advs_c = (advs_c - advs_c.mean()) / (advs_c.std() + 1e-8)
         advantages = [au + ac for au, ac in zip(advs_u, advs_c)]
 
-        # === Step 2: 可选 return 归一化 ===
-        if return_norm:
-            ret_u_np = np.array(returns_u)
-            ret_c_np = np.array(returns_c)
-            return_u_rms[lid].update(ret_u_np)
-            return_c_rms[lid].update(ret_c_np)
-            returns_u = return_u_rms[lid].normalize(ret_u_np)
-            returns_c = return_c_rms[lid].normalize(ret_c_np)
-
-            advs_u = returns_u - np.array(value_u)
-            advs_c = returns_c - np.array(value_c)
-            advantages = [au + ac for au, ac in zip(advs_u, advs_c)]
-
-            # === Step 3: 构建 batch ===
+        # === Step 3: 构建 batch ===
         batch_data = list(zip(
             buf["pid"], buf["task_obs"], buf["worker_loads"], buf["worker_profile"],
             buf["global_context"], buf["valid_mask"], buf["actions"],

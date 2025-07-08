@@ -6,14 +6,13 @@
     "log_interval": 1000,
     "device": "cpu",
     "num_workers": 20,
-    "reset_schedule_interval": 500
+    "reset_schedule_interval": 5000000
   },
 
   "muse": {
     "K": 5,
-    "alphas": [0.2, 0.5, 0.8, -1, 0],
-    "betas":  [0.8, 0.5, 0.2, 0, -1],
-
+    "alphas": [0.2, 1, 0, -1, 0],
+    "betas":  [0.8, 0, 1, 0, -1],
     "hidden_dim": 64,
     "batch_size": 512,
     "update_epochs": 4,
@@ -46,16 +45,18 @@
     "ucb_lambda": 0.2,
     "sticky_prob": 0.1,
     "lr": 3e-4,
-    "temperature": 0.3,
+    "train_temp": 0.5,
+    "distill_temp": 0.3,
     "epsilon": 0.01,
     "greedy_prob": 0.5
   },
 
   "distill": {
+    "type": "random",
     "hidden_dim": 64,
     "loss_type": "kl",
     "neg_policy": true,
-    "warmup_ep": 50,
+    "warmup_ep": 20,
     "batch_size": 512,
     "min_reward_ratio": 0.9,
     "std_t": 0.5,
@@ -70,5 +71,11 @@
     "hitac_update_interval": 1,
     "distill_interval": 50,
     "neg_interval": 50
+  },
+
+   "ucb": {
+    "type": "soft_ucb",
+    "c": 10.0,
+    "min_switch_interval": 20
   }
 }
