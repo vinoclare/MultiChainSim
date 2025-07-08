@@ -1,5 +1,5 @@
 {
-  "num_episodes": 50000,
+  "num_episodes": 20000,
   "eval_interval": 100,
   "eval_episodes": 10,
   "lam": 0.95,
