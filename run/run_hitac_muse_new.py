@@ -361,6 +361,11 @@ for episode in range(num_episodes):
 
     if (episode + 1) % reset_schedule_interval == 0:
         obs = env.reset(with_new_schedule=True)
+        return_u_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
+        return_c_rms = {lid: RunningMeanStd() for lid in range(num_layers)}
+
+        return_u_rms_main = {lid: RunningMeanStd() for lid in range(num_layers)}
+        return_c_rms_main = {lid: RunningMeanStd() for lid in range(num_layers)}
     else:
         obs = env.reset(with_new_schedule=False)
 

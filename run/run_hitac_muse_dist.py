@@ -10,8 +10,8 @@ import os
 import subprocess
 
 CFG_ROOT = "../configs"  # 所有实验配置的根目录
-CATEGORIES = ["layer", "worker"]  # 与之前保持一致
-REPEAT_EACH_EXP = 1  # 同一实验重复次数
+CATEGORIES = ["layer", "worker", "task", "step"]  # 与之前保持一致
+REPEAT_EACH_EXP = 2  # 同一实验重复次数
 MAX_WORKERS = 12  # 并行进程数
 
 
@@ -43,7 +43,7 @@ def run_once(exp_dir, run_idx):
 
     # 调用子进程
     subprocess.run(
-        ["python", "run_hitac_muse.py", "--dire", dire],
+        ["python", "run_hitac_muse_new.py", "--dire", dire],
         env=env,
         check=True
     )

@@ -13,9 +13,10 @@ args = parser.parse_args()
 KEEP_TAGS = {
     'global/eval_avg_cost':    'eval_avg_cost',
     'global/eval_avg_reward':  'eval_avg_reward',
-    'global/eval_avg_utility': 'eval_avg_utility',
-    'global/eval_reward_std':  'eval_reward_std',
+    'global/eval_avg_utility': 'eval_avg_utility'
 }
+
+MAX_STEP = 1_001_000  # 新增：最多只保留到 1.001M 步
 
 src_root = pathlib.Path(args.src).resolve()
 dst_root = pathlib.Path(args.dst).resolve()
@@ -71,10 +72,14 @@ for task_type in ['layer', 'worker', 'step', 'task']:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 for tag in tags_to_save:
                     events = ea.Scalars(tag)
-                    df = pd.DataFrame([(e.step, e.value) for e in events], columns=['step', 'value'])
+                    # 新增：只保留 step <= MAX_STEP 的数据
+                    filtered = [(e.step, e.value) for e in events if e.step <= MAX_STEP]
+                    if not filtered:
+                        continue
+                    df = pd.DataFrame(filtered, columns=['step', 'value'])
                     out_path = out_dir / f"{KEEP_TAGS[tag]}.csv"
                     df.to_csv(out_path, index=False)
-                print(f'[OK] 保存 {rel_path} 中 {len(tags_to_save)} 个指标')
+                print(f'[OK] 保存 {rel_path} 中 {len(tags_to_save)} 个指标（已限制到 {MAX_STEP:,} 步）')
                 count += 1
 
 print(f'\n✅ 全部完成，共处理 {count} 个 run 文件夹')
