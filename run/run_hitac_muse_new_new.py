@@ -104,6 +104,7 @@ writer = SummaryWriter(log_dir=log_dir)
 
 # ===== 创建 HiTACMuSEAgent =====
 agent = HiTACMuSEAgent(
+    env_cfg=env_config,
     muse_cfg=algo_config["muse"],
     hitac_cfg=algo_config["hitac"],
     distill_cfg=algo_config["distill"],
@@ -231,7 +232,14 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
                     "global_context": global_context,
                     "valid_mask": valid_mask,
                 }
-                _, _, action, _ = agent.main_policy_predict(lid, obs_dict)
+                v_u, v_c, action, logp, _, _ = agent.muses[lid].sample(
+                    obs_dict["task_obs"],
+                    obs_dict["worker_loads"],
+                    obs_dict["worker_profiles"],
+                    obs_dict["global_context"],
+                    obs_dict["valid_mask"],
+                    K
+                )
                 actions[lid] = action.squeeze(0).detach().cpu().numpy()
 
                 # === 保存obs和action到该layer的buffer ===
@@ -462,14 +470,12 @@ for episode in range(num_episodes):
         returns_c, _ = compute_gae_single_head(reward_c, dones, value_c, 0.0, gamma, lam)
 
         # === Step 2: return 归一化 ===
-        returns_u = np.array(returns_u)
-        returns_c = np.array(returns_c)
-
-        if not skip_hitac_train:
-            return_u_rms[lid].update(returns_u)
-            return_c_rms[lid].update(returns_c)
-            returns_u = return_u_rms[lid].normalize(returns_u)
-            returns_c = return_c_rms[lid].normalize(returns_c)
+        ret_u_np = np.array(returns_u)
+        ret_c_np = np.array(returns_c)
+        return_u_rms[lid].update(ret_u_np)
+        return_c_rms[lid].update(ret_c_np)
+        returns_u = return_u_rms[lid].normalize(ret_u_np)
+        returns_c = return_c_rms[lid].normalize(ret_c_np)
 
         advs_u = returns_u - np.array(value_u)
         advs_c = returns_c - np.array(value_c)
@@ -653,30 +659,19 @@ for episode in range(num_episodes):
     # BC Update
     if episode % distill_interval == 0 and episode > (warmup_ep * K):
         for lid in range(num_layers):
-            loss = agent.distill_update(lid, distill_pid[lid].item())
+            loss = agent.muses[lid].bc_update(cur_pid=distill_pid[lid].item())
             if not skip_hitac_train:  # 非负策略蒸馏时，记录蒸馏 loss
                 writer.add_scalar(f"distill/layer_{lid}_loss", loss, episode)
 
     # Online Correction
     obs_rollout = env.reset(with_new_schedule=False)
     done = False
-    distill_buffer = {}
-    for lid in range(num_layers):
-        distill_buffer[lid] = {
-            "task_obs": [],
-            "worker_loads": [],
-            "worker_profile": [],
-            "global_context": [],
-            "valid_mask": [],
-            "actions": [],
-            "rewards": [],
-            "rewards_u": [],
-            "rewards_c": [],
-            "values_u": [],
-            "values_c": [],
-            "log_probs": [],
-            "dones": [],
-        }
+    distill_buffer = {lid: {
+        "task_obs": [], "worker_loads": [], "worker_profile": [],
+        "global_context": [], "valid_mask": [], "actions": [],
+        "rewards": [], "rewards_u": [], "rewards_c": [],
+        "values_u": [], "values_c": [], "log_probs": [], "dones": []
+    } for lid in range(num_layers)}
 
     while not done:
         actions = {}
@@ -698,7 +693,10 @@ for episode in range(num_episodes):
             }
 
             obs_dicts[lid] = obs_dict
-            v_u, v_c, action_t, logp_t = agent.distillers[lid].predict(obs_dict)
+            v_u, v_c, action_t, logp_t, _, _ = agent.muses[lid].sample(
+                obs_dict["task_obs"], obs_dict["worker_loads"], obs_dict["worker_profiles"],
+                obs_dict["global_context"], obs_dict["valid_mask"], K
+            )
             actions[lid] = action_t.squeeze(0).cpu().numpy()
 
             distill_buffer[lid]["task_obs"].append(obs_dict["task_obs"].squeeze(0))
@@ -762,19 +760,24 @@ for episode in range(num_episodes):
         values_c_old = torch.tensor(value_c_list, dtype=torch.float32, device=device)
         log_probs_old = torch.tensor(buffer["log_probs"], dtype=torch.float32, device=device)
 
-        for _ in range(4):
-            policy_loss, value_loss, entropy = agent.distillers[lid].online_correction_update(
-                task_obs_batch=torch.stack(buffer["task_obs"]),
-                worker_loads_batch=torch.stack(buffer["worker_loads"]),
-                worker_profiles_batch=torch.stack(buffer["worker_profile"]),
-                global_context_batch=torch.stack(buffer["global_context"]),
-                valid_mask_batch=torch.stack(buffer["valid_mask"]),
-                actions_batch=torch.stack(buffer["actions"]),
-                values_u_old=values_u_old,
-                values_c_old=values_c_old,
-                returns_u=returns_u_t,
-                returns_c=returns_c_t,
+        adv_u = returns_u - np.array(value_u_list)
+        adv_c = returns_c - np.array(value_c_list)
+
+        adv_u = (adv_u - adv_u.mean()) / (adv_u.std() + 1e-8)
+        adv_c = (adv_c - adv_c.mean()) / (adv_c.std() + 1e-8)
+        advantages = torch.tensor(adv_u + adv_c, dtype=torch.float32, device=device)
+
+        for _ in range(update_epochs):
+            policy_loss, value_loss, entropy = agent.muses[lid].learn(
+                pid=torch.tensor([agent.muses[lid].K], device=device),
+                task_obs=torch.stack(buffer["task_obs"]),
+                worker_loads=torch.stack(buffer["worker_loads"]),
+                worker_profile=torch.stack(buffer["worker_profile"]),
+                global_context=torch.stack(buffer["global_context"]),
+                valid_mask=torch.stack(buffer["valid_mask"]),
+                actions=torch.stack(buffer["actions"]),
+                returns=(returns_u_t, returns_c_t),
                 log_probs_old=log_probs_old,
-                global_steps=global_step,
-                total_training_steps=num_episodes * steps_per_episode
+                advantages=advantages,
+                step=global_step
             )

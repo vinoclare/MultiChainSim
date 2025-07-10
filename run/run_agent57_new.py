@@ -289,39 +289,35 @@ def run_agent57_multi_layer(env: MultiplexEnv,
 
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
+            # 5.5.1 先为各层选取 Greedy 子策略 PID
             greedy_pids = []
             for layer_id in range(n_layers):
-                means = []
+                best_pid = 0
+                best_mean = -float('inf')
+
+                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
+                all_empty = True
                 for i in range(K):
-                    dq = schedulers[layer_id].recent_real_returns[i]
-                    if len(dq) == 0:
-                        means.append(None)
-                    else:
-                        mean_i = sum(dq) / len(dq)
-                        means.append(mean_i)
+                    if len(schedulers[layer_id].recent_real_returns[i]) > 0:
+                        all_empty = False
+                        break
 
-                if all(m is None for m in means):
-                    pid = 0
+                if all_empty:
+                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
+                    greedy_pid = 0
                 else:
-                    valid_means = [m for m in means if m is not None]
-                    min_m = min(valid_means)
-                    max_m = max(valid_means)
-                    eps = 1e-8
-
-                    normed = []
-                    for m in means:
-                        if m is None:
-                            normed.append(0.0)  # 没有数据的策略，给最低分
-                        else:
-                            normed_score = (m - min_m) / (max_m - min_m + eps)
-                            normed.append(normed_score)
-
-                    scores_tensor = torch.tensor(normed, dtype=torch.float32)
-                    probs = torch.softmax(scores_tensor, dim=0)
-                    pid = torch.multinomial(probs, 1).item()
-
-                greedy_pids.append(pid)
-                select_counts[layer_id]["test"][pid] += 1
+                    # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
+                    for i in range(K):
+                        dq = schedulers[layer_id].recent_real_returns[i]
+                        if len(dq) == 0:
+                            continue  # 这条策略还没数据，跳过
+                        mean_i = sum(dq) / len(dq)
+                        if mean_i > best_mean:
+                            best_mean = mean_i
+                            best_pid = i
+                    greedy_pid = best_pid
+                greedy_pids.append(greedy_pid)
+                select_counts[layer_id]["test"][greedy_pid] += 1
 
             print("Select times (Eval):")
             print(f"Current Pids: {greedy_pids}")

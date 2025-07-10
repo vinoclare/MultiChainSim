@@ -2,7 +2,7 @@
 import torch
 from torch.distributions import Categorical
 
-from algs.muse import MuSE
+from algs.muse import MuSE, MuSE2
 from algs.hitac import HiTAC
 from algs.distiller import Distiller, Distiller2, Distiller3
 

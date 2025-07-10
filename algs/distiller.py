@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
 from collections import deque
@@ -292,7 +293,7 @@ class Distiller3:
             loss_type="mse",
             neg_policy=False,
             device="cuda",
-            buffer_size=10000,
+            buffer_size=2000,
             sup_coef=1.0,
             neg_coef=1.0,
             margin=3.0,
@@ -310,9 +311,6 @@ class Distiller3:
             K=1,
             neg_policy=False
         ).to(self.device)
-
-        self.target_model = copy.deepcopy(self.model).eval()
-        self.polyak_tau = 0.95
 
         self.act_dim = act_dim
         self.sup_coef = sup_coef
@@ -407,15 +405,10 @@ class Distiller3:
             # ---- 反向更新 ----
             self.optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
             self.optimizer.step()
 
             total_loss += loss.item()
-
-            with torch.no_grad():
-                for p_targ, p_main in zip(self.target_model.parameters(), self.model.parameters()):
-                    p_targ.data.mul_(self.polyak_tau).add_(p_main.data, alpha=1 - self.polyak_tau)
-
         return total_loss / steps
 
     def online_correction_update(
@@ -477,7 +470,13 @@ class Distiller3:
 
         # entropy_coef decay
         progress = global_steps / total_training_steps
-        entropy_coef = max(1e-3, entropy_coef_init * (1 - progress))
+
+        # 线性衰减
+        # entropy_coef = max(1e-3, entropy_coef_init * (1 - progress))
+
+        # 指数衰减
+        decay_rate = 5.0
+        entropy_coef = max(1e-3, entropy_coef_init * np.exp(-decay_rate * progress))
 
         # 总 loss
         loss = value_loss * value_loss_coef + policy_loss - entropy_coef * entropy
@@ -487,12 +486,6 @@ class Distiller3:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
         self.optimizer.step()
-
-        # Polyak target 更新
-        with torch.no_grad():
-            for p_targ, p_main in zip(self.target_model.parameters(), self.model.parameters()):
-                p_targ.data.mul_(self.polyak_tau).add_(p_main.data, alpha=1 - self.polyak_tau)
-
         return policy_loss.item(), value_loss.item(), entropy.item()
 
     @torch.no_grad()
