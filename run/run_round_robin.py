@@ -75,16 +75,16 @@ def save_metric_csv(path: Path, value: float):
         w.writerow([0, f"{value:.6f}"])
 
 
-def batch_run(config_root="./configs", result_root="./RR"):
+def batch_run(config_root="./configs", result_root="./logs/exp2"):
     config_root = Path(config_root).resolve()
     result_root = Path(result_root).resolve()
 
-    # 深度优先搜索所有叶子配置目录
+    # 遍历所有 leaf 配置目录
     for dir_path in config_root.rglob("*"):
         if not dir_path.is_dir() or not is_config_leaf(dir_path):
             continue
 
-        # 读取四个 JSON 路径
+        # 读取配置文件
         env_cfg = dir_path / "env_config.json"
         worker_cfg = dir_path / "worker_config.json"
         eval_sch = dir_path / "eval_schedule.json"
@@ -100,16 +100,19 @@ def batch_run(config_root="./configs", result_root="./RR"):
             print(f"[{dir_path.relative_to(config_root)}] 运行失败：{e}")
             continue
 
-        # 结果目录 = RR / 相对路径
+        # 相对路径，例如 layer/2
         rel_dir = dir_path.relative_to(config_root)
-        out_dir = result_root / rel_dir
-        save_metric_csv(out_dir / "eval_avg_reward.csv", metrics["avg_reward"])
-        save_metric_csv(out_dir / "eval_avg_cost.csv", metrics["avg_cost"])
-        save_metric_csv(out_dir / "eval_avg_utility.csv", metrics["avg_utility"])
-        save_metric_csv(out_dir / "eval_reward_std.csv", metrics["reward_std"])
-        # 如需 tasks_done 也可保存
-        print(f"[{rel_dir}] OK → {out_dir}")
+
+        # rr 结果目录，与 ppo 等算法并列
+        algo_dir = result_root / rel_dir / "rr"
+        algo_dir.mkdir(parents=True, exist_ok=True)
+
+        save_metric_csv(algo_dir / "eval_avg_reward.csv", metrics["avg_reward"])
+        save_metric_csv(algo_dir / "eval_avg_cost.csv", metrics["avg_cost"])
+        save_metric_csv(algo_dir / "eval_avg_utility.csv", metrics["avg_utility"])
+
+        print(f"[{rel_dir}] ✅ RR 结果已保存 → {algo_dir}")
 
 
 if __name__ == "__main__":
-    batch_run("./configs", "./RR")
+    batch_run()

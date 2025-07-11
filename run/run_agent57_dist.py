@@ -407,6 +407,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             total_reward_all = sum([np.mean(eval_reward_sums[lid]) for lid in range(n_layers)])
             total_cost_all = sum([np.mean(eval_cost_sums[lid]) for lid in range(n_layers)])
             total_util_all = sum([np.mean(eval_util_sums[lid]) for lid in range(n_layers)])
+            total_wp_all = sum([np.mean(eval_wait_sums[lid]) for lid in range(n_layers)])
 
             for layer_id in range(n_layers):
                 avg_r = float(np.mean(eval_reward_sums[layer_id]))
@@ -424,6 +425,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             writer.add_scalar("global/eval_avg_reward", total_reward_all, current_steps)
             writer.add_scalar("global/eval_avg_cost", total_cost_all, current_steps)
             writer.add_scalar("global/eval_avg_utility", total_util_all, current_steps)
+            writer.add_scalar("global/eval_avg_wp", total_wp_all, current_steps)
 
     writer.close()
 

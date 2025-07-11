@@ -19,24 +19,41 @@ parser.add_argument('--baseline', default='rr', help='Round-Robin 目录名')
 args = parser.parse_args()
 
 FACTORS = ['layer', 'task', 'worker', 'step']
-METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility', 'waiting_time']
+# METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility', 'waiting_time']
+# Y_LABELS = {
+#     'eval_avg_cost': 'Cost Gain (%)',
+#     'eval_avg_reward': 'Reward Gain (%)',
+#     'eval_avg_utility': 'Utility Gain (%)',
+#     'waiting_time': 'Waiting Time (step)'
+# }
+# TITLE = {
+#     'eval_avg_cost': 'Cost',
+#     'eval_avg_reward': 'Reward',
+#     'eval_avg_utility': 'Utility',
+#     'waiting_time': 'Waiting Time'
+# }
+# SHORT = {
+#     'eval_avg_cost': 'cost',
+#     'eval_avg_reward': 'reward',
+#     'eval_avg_utility': 'utility',
+#     'waiting_time': 'waiting_time'
+# }
+
+METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility']
 Y_LABELS = {
     'eval_avg_cost': 'Cost Gain (%)',
     'eval_avg_reward': 'Reward Gain (%)',
-    'eval_avg_utility': 'Utility Gain (%)',
-    'waiting_time': 'Waiting Time (step)'
+    'eval_avg_utility': 'Utility Gain (%)'
 }
 TITLE = {
     'eval_avg_cost': 'Cost',
     'eval_avg_reward': 'Reward',
-    'eval_avg_utility': 'Utility',
-    'waiting_time': 'Waiting Time'
+    'eval_avg_utility': 'Utility'
 }
 SHORT = {
     'eval_avg_cost': 'cost',
     'eval_avg_reward': 'reward',
-    'eval_avg_utility': 'utility',
-    'waiting_time': 'waiting_time'
+    'eval_avg_utility': 'utility'
 }
 
 plt.rcParams.update({
@@ -55,9 +72,20 @@ def build_color_dict(algo_dirs):
 
 
 # -------- 加载所有 run 的最终值列表 --------
-def load_run_final_values(algo_dir, metric):
+def load_run_final_values(algo_dir, metric, is_baseline=False):
     """返回每个 run 的最后一个值"""
     values = []
+
+    if is_baseline:
+        # baseline 目录直接包含 CSV，不遍历 run 子目录
+        csv_path = algo_dir / f'{metric}.csv'
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            if len(df) > 0:
+                values.append(df['value'].iloc[-1])
+        return values
+
+    # 普通算法：遍历 run 子目录
     for run_dir in algo_dir.iterdir():
         if not run_dir.is_dir():
             continue
@@ -105,7 +133,7 @@ for fac in FACTORS:
                 ys_mean, ys_std = [], []
                 for v in values:
                     algo_path = fac_root / v / algo
-                    run_values = load_run_final_values(algo_path, metric)
+                    run_values = load_run_final_values(algo_path, metric, is_baseline=True)
                     if len(run_values) == 0:
                         ys_mean.append(None)
                         ys_std.append(None)
@@ -127,7 +155,7 @@ for fac in FACTORS:
             baseline_vals = {}
             for v in values:
                 base_path = fac_root / v / args.baseline
-                run_vals = load_run_final_values(base_path, metric)
+                run_vals = load_run_final_values(base_path, metric, is_baseline=True)
                 if len(run_vals) == 0:
                     continue
                 baseline_vals[v] = sum(run_vals) / len(run_vals)

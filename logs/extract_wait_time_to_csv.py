@@ -20,6 +20,7 @@ args = parser.parse_args()
 
 # 等待时间的 tag 正则匹配
 WAIT_RE = re.compile(r'^eval/layer_?(\d+)_avg_wait_penalty$')
+MAX_STEP = 1_010_000  # 截取最大步数
 
 src_root = pathlib.Path(args.src).resolve()
 dst_root = pathlib.Path(args.dst).resolve()
@@ -72,11 +73,15 @@ for task_type in ['layer', 'worker', 'step', 'task']:
                 if not wait_tags:
                     continue
 
-                # 聚合：step → 累加值
+                # 聚合：step → 累加值（只保留 <= MAX_STEP）
                 step_sum = defaultdict(float)
                 for tag in wait_tags:
                     for ev in ea.Scalars(tag):
-                        step_sum[ev.step] += ev.value
+                        if ev.step <= MAX_STEP:
+                            step_sum[ev.step] += ev.value
+
+                if not step_sum:
+                    continue
 
                 # 保存 CSV
                 dst_dir = dst_root / rel
@@ -84,6 +89,6 @@ for task_type in ['layer', 'worker', 'step', 'task']:
                 df = pd.DataFrame(sorted(step_sum.items()), columns=['step', 'value'])
                 df.to_csv(dst_dir / 'waiting_time.csv', index=False)
                 processed += 1
-                print(f'[OK] {rel} -> waiting_time.csv ({len(df)} rows)')
+                print(f'[OK] {rel} -> waiting_time.csv ({len(df)} rows, ≤ {MAX_STEP:,} 步)')
 
 print(f'\n✅ 全部完成，共处理 {processed} 个 run 文件夹')
