@@ -23,7 +23,7 @@ def round_robin_baseline(env, num_episodes=10):
                 act = [[0] * n_task for _ in range(n_worker)]
 
                 for t_idx, task in enumerate(tq):
-                    remain, ptr, tried = task.unassigned_amount, 1, 0
+                    remain, ptr, tried = task.unassigned_amount, 0, 0
                     while remain > 0 and tried < n_worker:
                         w_idx = ptr % n_worker
                         w = layer.workers[w_idx]
@@ -43,6 +43,7 @@ def round_robin_baseline(env, num_episodes=10):
             obs, reward, done, info = env.step(action_dict)
             total_reward += reward if np.isscalar(reward) else reward[0]
 
+        print(f"Episode reward: {total_reward}")
         kpi = info["kpi"]
         ep_rewards.append(total_reward)
         ep_costs.append(kpi["total_cost"])
@@ -75,7 +76,7 @@ def save_metric_csv(path: Path, value: float):
         w.writerow([0, f"{value:.6f}"])
 
 
-def batch_run(config_root="./configs", result_root="./logs/exp2"):
+def batch_run(config_root="./configs/task", result_root="./logs/exp2"):
     config_root = Path(config_root).resolve()
     result_root = Path(result_root).resolve()
 

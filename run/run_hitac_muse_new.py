@@ -276,12 +276,12 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
     total_util_all = sum([np.mean(util_sums[lid]) for lid in range(num_layers)])
     total_wp_all = sum([np.mean(wait_penalty_sums[lid]) for lid in range(num_layers)])
 
-    for lid in range(num_layers):
-        writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bonus_sums[lid]), global_step)
-        writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sums[lid]), global_step)
+    # for lid in range(num_layers):
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_reward", np.mean(reward_sums[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_cost", np.mean(cost_sums[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_utility", np.mean(util_sums[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_assign_bonus", np.mean(assign_bonus_sums[lid]), global_step)
+    #     writer.add_scalar(f"eval/layer_{lid}_avg_wait_penalty", np.mean(wait_penalty_sums[lid]), global_step)
 
     writer.add_scalar("global/eval_avg_reward", total_reward_all, global_step)
     writer.add_scalar("global/eval_avg_cost", total_cost_all, global_step)

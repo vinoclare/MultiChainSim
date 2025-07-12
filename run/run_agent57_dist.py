@@ -41,7 +41,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     num_pad_tasks = env_config["num_pad_tasks"]
     max_steps = env_config["max_steps"]
     num_layers = len(env_config["workers_per_layer"])
-    log_interval = agent57_config["log_interval"]
 
     # 任务维度、负载维度、属性维度（与单层一致）
     n_task_types = len(env_config["task_types"])
@@ -475,9 +474,9 @@ def run_one(exp_dir, agent57_cfg, log_dir):
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
-    REPEAT_EACH_EXP = 3
-    MAX_WORKERS = 9
-    categories = ["task", "layer", "worker", "step"]
+    REPEAT_EACH_EXP = 8
+    MAX_WORKERS = 8
+    categories = ["task"]
     # categories = ["task"]
 
     print("\n=== Agent57 批量实验开始 ===\n")
@@ -485,7 +484,7 @@ if __name__ == "__main__":
     tasks = []
     for cat, exp_name, exp_dir in list_exp_dirs(CFG_ROOT, categories):
         for k in range(REPEAT_EACH_EXP):
-            log_dir = f"../logs/agent57/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
+            log_dir = f"../logs/agent57/{cat}/{exp_name}/{k}"
             tasks.append((exp_dir, AGENT57_CFG, log_dir, f"{cat}/{exp_name} (run {k})"))
 
     with cf.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
