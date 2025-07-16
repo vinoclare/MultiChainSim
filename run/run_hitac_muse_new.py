@@ -615,7 +615,7 @@ for episode in range(num_episodes):
             buffers[lid] = {k: [] for k in buffers[lid]}
 
     # === HiTAC PPO 更新 ===
-    if episode % hitac_update_interval == 0 and episode >= (warmup_ep * K) and not skip_hitac_train:
+    if episode % hitac_update_interval == 0 and episode >= (warmup_ep * K + switch_interval) and not skip_hitac_train:
         # ---- 构造 kpi 张量 ----
         local_kpis_tensor = torch.zeros((1, num_layers, local_kpi_dim), dtype=torch.float32, device=device)
         for lid in range(num_layers):

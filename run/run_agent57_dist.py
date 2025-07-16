@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import time
@@ -41,7 +42,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     num_pad_tasks = env_config["num_pad_tasks"]
     max_steps = env_config["max_steps"]
     num_layers = len(env_config["workers_per_layer"])
-    log_interval = agent57_config["log_interval"]
 
     # 任务维度、负载维度、属性维度（与单层一致）
     n_task_types = len(env_config["task_types"])
@@ -61,6 +61,13 @@ def run_agent57_multi_layer(env: MultiplexEnv,
     cost_rms_list = []
     util_rms_list = []
     buffers = []
+    select_counts = [
+        {
+            "train": [0 for _ in range(K)],
+            "test": [0 for _ in range(K)]
+        }
+        for _ in range(n_layers)
+    ]
 
     for lid in range(n_layers):
         # a) 初始化 Agent
@@ -117,6 +124,14 @@ def run_agent57_multi_layer(env: MultiplexEnv,
         for layer_id in range(n_layers):
             pid = schedulers[layer_id].choose()
             pids.append(pid)
+            select_counts[layer_id]["train"][pid] += 1
+
+        if episode % 100 == 0:
+            print(f"Step: {episode * max_steps}")
+            print(f"Current Pids: {pids}")
+            print("Select times:")
+            for layer_id in range(n_layers):
+                print(f"  Layer {layer_id}: {select_counts[layer_id]['train']}")
 
         done = False
         step_count = 0
@@ -217,24 +232,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                     done
                 )
 
-        # ===== 统计各种任务状态的数量 =====
-        num_total_tasks = 0
-        num_waiting_tasks = 0
-        num_done_tasks = 0
-        num_failed_tasks = 0
-        for step_task_list in env.task_schedule.values():
-            for task in step_task_list:
-                num_total_tasks += 1
-                status = task.status
-                if status == "waiting":
-                    num_waiting_tasks += 1
-                elif status == "done":
-                    num_done_tasks += 1
-                elif status == "failed":
-                    num_failed_tasks += 1
-        print(f"[Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-              f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
-
         # 5.4 本 Episode 结束：依次对每层进行更新
         current_steps = episode * max_steps
         for layer_id in range(n_layers):
@@ -290,18 +287,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 total_training_steps=agent57_config["num_episodes"] * max_steps
             )
 
-            # 5.4.3 记录每层训练日志
-            # if episode % 100 == 0:
-            #     writer.add_scalar(f"train/layer{layer_id}_episode_return", episode_returns[layer_id], current_steps)
-            #     writer.add_scalar(f"train/layer{layer_id}_episode_reward", episode_rewards[layer_id], current_steps)
-            #     writer.add_scalar(f"train/layer{layer_id}_policy_loss", policy_loss, current_steps)
-            #     writer.add_scalar(f"train/layer{layer_id}_value_loss", value_loss, current_steps)
-            #     writer.add_scalar(f"train/layer{layer_id}_entropy", entropy, current_steps)
-            #     writer.add_scalar(f"train/layer{layer_id}_avg_return_pid_{pid}", episode_returns[layer_id],
-            #                       current_steps)
-            #     writer.add_scalar(f"train/layer{layer_id}_avg_reward_pid_{pid}", episode_rewards[layer_id],
-            #                       current_steps)
-
         # 5.5 评估逻辑（每 eval_interval 个 Episode 执行一次）
         if episode % agent57_config["eval_interval"] == 0:
             # 5.5.1 先为各层选取 Greedy 子策略 PID
@@ -310,7 +295,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                 best_pid = 0
                 best_mean = -float('inf')
 
-                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=5
+                # 首先检查：如果所有策略的 deque 都还没有数据，就直接选 pid=0
                 all_empty = True
                 for i in range(K):
                     if len(schedulers[layer_id].recent_real_returns[i]) > 0:
@@ -318,7 +303,7 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                         break
 
                 if all_empty:
-                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 5
+                    # 这一层还没有任何一次“真回报”上传，就让 greedy_pid = 0
                     greedy_pid = 0
                 else:
                     # 否则，遍历每条子策略 i，计算它最近 window_size 次真回报的均值
@@ -332,6 +317,12 @@ def run_agent57_multi_layer(env: MultiplexEnv,
                             best_pid = i
                     greedy_pid = best_pid
                 greedy_pids.append(greedy_pid)
+                select_counts[layer_id]["test"][greedy_pid] += 1
+
+            print("Select times (Eval):")
+            print(f"Current Pids: {greedy_pids}")
+            for layer_id in range(n_layers):
+                print(f"  Layer {layer_id}: {select_counts[layer_id]['test']}")
 
             # 5.5.2 准备统计容器
             eval_reward_sums = {lid: [] for lid in range(n_layers)}
@@ -409,19 +400,6 @@ def run_agent57_multi_layer(env: MultiplexEnv,
             total_util_all = sum([np.mean(eval_util_sums[lid]) for lid in range(n_layers)])
             total_wp_all = sum([np.mean(eval_wait_sums[lid]) for lid in range(n_layers)])
 
-            for layer_id in range(n_layers):
-                avg_r = float(np.mean(eval_reward_sums[layer_id]))
-                avg_c = float(np.mean(eval_cost_sums[layer_id]))
-                avg_u = float(np.mean(eval_util_sums[layer_id]))
-                avg_a = float(np.mean(eval_assign_sums[layer_id]))
-                avg_w = float(np.mean(eval_wait_sums[layer_id]))
-
-                # writer.add_scalar(f"eval/layer{layer_id}_avg_reward", avg_r, current_steps)
-                # writer.add_scalar(f"eval/layer{layer_id}_avg_cost", avg_c, current_steps)
-                # writer.add_scalar(f"eval/layer{layer_id}_avg_utility", avg_u, current_steps)
-                # writer.add_scalar(f"eval/layer{layer_id}_avg_assign_bonus", avg_a, current_steps)
-                # writer.add_scalar(f"eval/layer{layer_id}_avg_wait_penalty", avg_w, current_steps)
-
             writer.add_scalar("global/eval_avg_reward", total_reward_all, current_steps)
             writer.add_scalar("global/eval_avg_cost", total_cost_all, current_steps)
             writer.add_scalar("global/eval_avg_utility", total_util_all, current_steps)
@@ -475,9 +453,9 @@ def run_one(exp_dir, agent57_cfg, log_dir):
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
-    REPEAT_EACH_EXP = 3
-    MAX_WORKERS = 9
-    categories = ["task", "layer", "worker", "step"]
+    REPEAT_EACH_EXP = 8
+    MAX_WORKERS = 12
+    categories = ["step"]
     # categories = ["task"]
 
     print("\n=== Agent57 批量实验开始 ===\n")
@@ -485,7 +463,7 @@ if __name__ == "__main__":
     tasks = []
     for cat, exp_name, exp_dir in list_exp_dirs(CFG_ROOT, categories):
         for k in range(REPEAT_EACH_EXP):
-            log_dir = f"../logs/agent57/{cat}/{exp_name}/" + time.strftime("%Y%m%d-%H%M%S")
+            log_dir = f"../logs/agent57/{cat}/{exp_name}/{k}"
             tasks.append((exp_dir, AGENT57_CFG, log_dir, f"{cat}/{exp_name} (run {k})"))
 
     with cf.ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:

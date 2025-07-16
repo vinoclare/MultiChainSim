@@ -320,7 +320,7 @@ def run_once(exp_dir, log_dir):
 
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
-    CATS = ["task", "layer", "worker", "step"]       # 四大类实验
+    CATS = ["step"]
     # CATS = ["worker", "step"]
     REPEAT = 4                                       # 每份配置重复次数
 
@@ -361,4 +361,3 @@ if __name__ == "__main__":
             print(f"✔️  已完成 {i}/{len(tasks)}")
 
     print("🎉 全部 RASCL 实验已结束\n")
-
