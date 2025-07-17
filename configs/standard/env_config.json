@@ -7,7 +7,7 @@
   "task_arrival_rate": 2.5,
   "task_timeout_range": [20, 40],
   "num_layers": 3,
-  "workers_per_layer": [3, 3, 3],
+  "workers_per_layer": [8, 8, 8],
   "worker_cost_range": [0.1, 10.0],
   "worker_utility_range": [0.1, 10.0],
   "worker_exec_efficiency_range": [2.0, 2.0],
@@ -20,6 +20,5 @@
   "num_pad_tasks": 10,
   "assign_reward_coef": 0.5,
   "wait_penalty_coef": 0.01,
-  "worker_type_probs": [0.2, 0.3, 0.3, 0.2],
-  "reset_schedule_interval": 100
+  "worker_type_probs": [0.2, 0.3, 0.3, 0.2]
 }

@@ -47,7 +47,7 @@ eval_env.chain = IndustrialChain(eval_env.worker_config)
 
 num_layers = env_config["num_layers"]
 max_steps = env_config["max_steps"]
-reset_schedule_interval = env_config["reset_schedule_interval"]
+reset_schedule_interval = ppo_config["reset_schedule_interval"]
 
 # ===== Hyperparameters =====
 num_episodes = ppo_config["num_episodes"]
@@ -409,4 +409,4 @@ for episode in range(num_episodes):
 
         buffers[layer_id] = {k: [] for k in buffers[layer_id]}
 
-    print(f"[Episode {episode}] Rewards per layer: {episode_rewards}")
+    # print(f"[Episode {episode}] Rewards per layer: {episode_rewards}")

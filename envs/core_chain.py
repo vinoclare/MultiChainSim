@@ -114,9 +114,9 @@ class Worker:
             # current_amount: 当前剩余量
             # unit_per_step: 每步可执行量
 
+            # 执行失败，强行结束
             p = self.failure_prob_map.get(task.task_type, 0.001)
             if random.random() < p:
-                # 执行失败，强行结束
                 task.status = "failed"
                 task.failed = True
                 task.remaining_amount = 0
