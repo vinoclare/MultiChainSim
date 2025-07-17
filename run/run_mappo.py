@@ -115,7 +115,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
                 task_obs = obs[lid]['task_queue']
                 worker_loads = obs[lid]['worker_loads']
                 profile = obs[lid]['worker_profile']
-                act = agent_dict[lid].predict(task_obs, worker_loads, profile)
+                _, act, _, _ = agent_dict[lid].sample(task_obs, worker_loads, profile)
                 actions[lid] = act
             obs, (_, reward_detail), done, _ = eval_env.step(actions)
             for lid, layer_stats in reward_detail['layer_rewards'].items():

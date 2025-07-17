@@ -17,7 +17,7 @@
   "mode": "load",
   "alpha": 0.4,
   "beta": 0.6,
-  "num_pad_tasks": 10,
+  "num_pad_tasks": 30,
   "assign_reward_coef": 0.5,
   "wait_penalty_coef": 0.01,
   "worker_type_probs": [0.2, 0.3, 0.3, 0.2]

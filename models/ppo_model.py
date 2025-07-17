@@ -84,7 +84,6 @@ class PPOIndustrialModel(nn.Module):
         task_obs: torch.Tensor,
         worker_loads: torch.Tensor,
         worker_profiles: torch.Tensor,
-        true_last_action: torch.Tensor,
         valid_mask: torch.Tensor = None
     ):
         # ——— 编码 task ——— #
@@ -127,5 +126,4 @@ class PPOIndustrialModel(nn.Module):
         cv_in = torch.cat([t_pool, w_pool], dim=-1)  # (B, 2D+D)
         cv_in = self.critic_norm(cv_in)
         value = self.shared_critic(cv_in).squeeze(-1)        # (B,)
-
         return mean, std, value

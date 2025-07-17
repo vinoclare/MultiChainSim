@@ -34,7 +34,7 @@ eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
 worker_config_path = f"../configs/{dire}/worker_config.json"
 
 # mode = env_config["mode"]
-mode = "save"
+mode = "load"
 if mode == "save":
     env = MultiplexEnv(env_config_path, schedule_save_path=train_schedule_path, worker_config_save_path=worker_config_path)
     eval_env = MultiplexEnv(env_config_path, schedule_save_path=eval_schedule_path)
