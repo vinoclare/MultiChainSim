@@ -15,7 +15,7 @@ from utils.utils import RunningMeanStd
 
 from models.ppo_model import PPOIndustrialModel
 from algs.ppo import PPO
-from agents.agent import IndustrialAgent
+from agents.ppo_agent import IndustrialAgent
 
 
 def run_once(exp_dir, log_dir):

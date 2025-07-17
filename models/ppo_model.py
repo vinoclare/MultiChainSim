@@ -40,7 +40,7 @@ class PPOIndustrialModel(nn.Module):
         self.num_pad_tasks = num_pad_tasks
         D = hidden_dim
 
-        # —— 三路编码器 —— #
+        # —— 编码器 —— #
         self.task_encoder = task_encoder or RowWiseEncoder(task_input_dim, D, D)
         self.worker_load_encoder = worker_load_encoder or RowWiseEncoder(worker_load_input_dim, D, D)
         self.worker_profile_encoder = worker_profile_encoder or RowWiseEncoder(worker_profile_input_dim, D, D)
@@ -84,20 +84,9 @@ class PPOIndustrialModel(nn.Module):
         task_obs: torch.Tensor,
         worker_loads: torch.Tensor,
         worker_profiles: torch.Tensor,
+        true_last_action: torch.Tensor,
         valid_mask: torch.Tensor = None
     ):
-        """
-        Inputs:
-          task_obs:       (B, num_pad_tasks, task_input_dim)
-          worker_loads:   (B, n_worker, worker_load_input_dim)
-          worker_profiles:(B, n_worker, worker_profile_input_dim)
-          valid_mask:     (B, num_pad_tasks) 5/1 标志
-        Outputs:
-          mean: (B, n_worker, num_pad_tasks)
-          std:  (B, n_worker, num_pad_tasks)
-          value:(B,)
-        """
-
         # ——— 编码 task ——— #
         t_feat = self.task_encoder(task_obs)    # (B, T, D)
         t_feat = self.fc_task(t_feat)           # (B, T, D)

@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Tuple
+import numpy as np
 import random
 
 
@@ -196,15 +197,29 @@ class Layer:
         self.total_assigned_amount = 0.0
         self.episode_step_count = 0
 
+        self.last_actions = None
+
     def add_task(self, task: Task):
         self.task_queue.append(task)
         self.total_arrived_tasks += 1
 
-    def dispatch_tasks(self, actions: List[List[float]], current_time: int) -> Tuple[List[Task], float]:
+    def dispatch_tasks(
+            self,
+            actions: List[List[float]],
+            current_time: int
+    ) -> Tuple[List[Task], float]:
         """
-        全局排序分配任务：不再按 worker 顺序，而是将所有 (worker, task, ratio) flatten 后统一排序。
+        全局排序分配任务：不再按 worker 顺序，而是将所有 (worker, task, ratio)
+        flatten 后统一排序。
 
+        现在同时记录 true_last_action ──
+            granted_ratio[w, t] ∈ [0, 1] 表示本 step 中 worker-w
+            对 pad-task-t 实际获得的 ‘剩余任务量比例’。
         """
+        n_worker = len(actions)
+        num_pad_tasks = len(actions[0]) if n_worker else 0
+        granted_ratio = np.zeros((n_worker, num_pad_tasks), dtype=np.float32)
+
         assigned_tasks = set()
         task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
         total_assign_amount = 0.0
@@ -230,18 +245,14 @@ class Layer:
                 continue
 
             task_type = task.task_type
-            # worker 的剩余容量
             cap_left = worker.capacity_map.get(task_type, 0) - worker.current_load_map.get(task_type, 0)
             total_left = worker.max_total_load - worker.total_current_load
 
             if cap_left <= 0 or total_left <= 0:
                 continue
 
-            # 候选分配量 = 比例 × 任务初始未分配量
             ratio = min(max(ratio, 0.0), 1.0)
             proposed_amount = ratio * task_start_unassigned[task_idx]
-
-            # 实际可执行分配量
             assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
 
             if assign_amount <= 0:
@@ -253,11 +264,18 @@ class Layer:
                 total_assign_amount += assign_amount
                 self.total_assigned_amount += assign_amount
 
+                base = task_start_unassigned[task_idx]
+                if base > 0:
+                    granted_ratio[worker_id, task_idx] += assign_amount / base
+
         # 清除完成、失败或被分配完的任务，只保留 still waiting 的任务
         self.task_queue = [
             t for t in self.task_queue
             if t.status == "waiting" and not t.failed and t.unassigned_amount > 0
         ]
+
+        self.last_actions = granted_ratio
+
         return list(assigned_tasks), total_assign_amount
 
     def step(self, current_time: int) -> List[Tuple[Task, float, float, float]]:

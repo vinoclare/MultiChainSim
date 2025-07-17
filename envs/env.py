@@ -47,11 +47,13 @@ class MultiplexEnv(gym.Env):
                     shape=(len(self.worker_config[layer_id]), 2 * num_task_types),
                     dtype=np.float32
                 ),
+                "true_last_action": spaces.Box(
+                    low=0, high=1,
+                    shape=(len(self.worker_config[layer_id]), self.num_pad_tasks),
+                    dtype=np.float32
+                ),
             }) for layer_id in range(self.num_layers)
         })
-        self.observation_space.spaces["global_context"] = spaces.Box(
-            low=0, high=1, shape=(1,), dtype=np.float32
-        )
 
         self.action_space = spaces.Dict({
             layer_id: spaces.Box(low=0, high=1.0, shape=(len(self.worker_config[layer_id]), self.num_pad_tasks), dtype=np.float32)
@@ -66,9 +68,12 @@ class MultiplexEnv(gym.Env):
     def reset(self, with_new_schedule=False, arrival_rate=None):
         self.chain = IndustrialChain(self.worker_config)
         self.current_step = 0
+
+        for layer in self.chain.layers:
+            layer.last_actions = np.zeros(
+                (len(layer.workers), self.num_pad_tasks), dtype=np.float32)
+
         if with_new_schedule or arrival_rate is not None:
-            # self.alpha = np.random.uniform(0.5, 1.5)
-            # self.beta = np.random.uniform(0.5, 1.5)
             self.task_schedule = generate_task_schedule(self.config, arrival_rate=arrival_rate)
         else:
             self.task_schedule = {
@@ -153,10 +158,12 @@ class MultiplexEnv(gym.Env):
                 profiles.append(avg_cost + avg_util)
             worker_profile = np.array(profiles, dtype=np.float32)
 
+            true_last_actions = layer.last_actions.copy()
             obs[layer_id] = {
                 "task_queue":   task_features,
                 "worker_loads": worker_loads,
-                "worker_profile": worker_profile
+                "worker_profile": worker_profile,
+                "true_last_actions": true_last_actions
             }
         return obs
 

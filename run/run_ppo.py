@@ -6,7 +6,7 @@ from envs import IndustrialChain
 from envs.env import MultiplexEnv
 from models.ppo_model import PPOIndustrialModel
 from algs.ppo import PPO
-from agents.agent import IndustrialAgent
+from agents.ppo_agent import IndustrialAgent
 import json
 import time
 import random
