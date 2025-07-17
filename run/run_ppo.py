@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import os
 import argparse
 
 from envs import IndustrialChain
@@ -80,7 +79,6 @@ for layer_id in range(num_layers):
     worker_input_dim = obs_space['worker_loads'].shape[1]
     n_task_types = len(env_config["task_types"])
     profile_dim = 2 * n_task_types
-    global_context_dim = 1
 
     model = PPOIndustrialModel(
         task_input_dim=task_input_dim,
@@ -88,7 +86,6 @@ for layer_id in range(num_layers):
         worker_profile_input_dim=profile_dim,
         n_worker=n_worker,
         num_pad_tasks=env.num_pad_tasks,
-        global_context_dim=global_context_dim,
         hidden_dim=hidden_dim
     )
 
@@ -110,7 +107,6 @@ for layer_id in range(num_layers):
         'task_obs': [],
         'worker_loads': [],
         'worker_profile': [],
-        'global_context': [],
         'valid_mask': [],
         'actions': [],
         'logprobs': [],
@@ -125,8 +121,7 @@ def process_obs(raw_obs, layer_id):
     task_obs = layer_obs['task_queue']
     worker_loads = layer_obs['worker_loads']
     worker_profile = layer_obs.get('worker_profile')
-    global_context = raw_obs.get('global_context')
-    return task_obs, worker_loads, worker_profile, global_context
+    return task_obs, worker_loads, worker_profile
 
 
 def compute_gae(rewards, dones, values, gamma, lam):
@@ -160,8 +155,8 @@ def evaluate_policy(agents, eval_env, eval_episodes, writer, global_step):
         while not done:
             actions = {}
             for lid in agents:
-                task_obs, worker_loads, worker_profile, global_context = process_obs(obs, lid)
-                value, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, worker_profile, global_context)
+                task_obs, worker_loads, worker_profile = process_obs(obs, lid)
+                value, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, worker_profile)
                 actions[lid] = action
                 # print(f"Layer {lid} action sum: {action.sum():.4f}, max: {action.max():.4f}")
 
@@ -262,9 +257,9 @@ for episode in range(num_episodes):
         actions = {}
 
         for layer_id in range(num_layers):
-            task_obs, worker_loads, worker_profile, global_context = process_obs(obs, layer_id)
+            task_obs, worker_loads, worker_profile = process_obs(obs, layer_id)
             value, action, logprob, _ = agents[layer_id].sample(
-                                task_obs, worker_loads, worker_profile, global_context)
+                                task_obs, worker_loads, worker_profile)
 
             actions[layer_id] = action
             valid_mask = task_obs[:, 3].astype(np.float32)
@@ -272,7 +267,6 @@ for episode in range(num_episodes):
             buffers[layer_id]['task_obs'].append(task_obs)
             buffers[layer_id]['worker_loads'].append(worker_loads)
             buffers[layer_id]['worker_profile'].append(worker_profile)
-            buffers[layer_id]['global_context'].append(global_context)
             buffers[layer_id]['valid_mask'].append(valid_mask)
             buffers[layer_id]['actions'].append(action)
             buffers[layer_id]['logprobs'].append(logprob)
@@ -377,7 +371,6 @@ for episode in range(num_episodes):
             buffers[layer_id]['task_obs'],
             buffers[layer_id]['worker_loads'],
             buffers[layer_id]['worker_profile'],
-            buffers[layer_id]['global_context'],
             buffers[layer_id]['valid_mask'],
             buffers[layer_id]['actions'],
             buffers[layer_id]['values'],
@@ -390,14 +383,13 @@ for episode in range(num_episodes):
             random.shuffle(dataset)
             for i in range(0, len(dataset), batch_size):
                 minibatch = dataset[i:i+batch_size]
-                task_batch, worker_batch, profile_batch, gctx_batch, mask_batch, \
+                task_batch, worker_batch, profile_batch, mask_batch, \
                     act_batch, val_batch, ret_batch, logp_batch, adv_batch = zip(*minibatch)
 
                 agents[layer_id].learn(
                     torch.tensor(np.array(task_batch), dtype=torch.float32),
                     torch.tensor(np.array(worker_batch), dtype=torch.float32),
                     torch.tensor(np.array(profile_batch), dtype=torch.float32),
-                    torch.tensor(np.array(gctx_batch), dtype=torch.float32),
                     torch.tensor(np.array(mask_batch), dtype=torch.float32),
                     torch.tensor(np.array(act_batch), dtype=torch.float32),
                     torch.tensor(np.array(val_batch), dtype=torch.float32),

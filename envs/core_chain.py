@@ -151,11 +151,12 @@ class Worker:
                 self.task_history.append((task, total_amount))
                 self.current_load_map[task.task_type] -= total_amount
                 self.total_current_load -= total_amount
-                finished.append((task, performed_amount, step_cost, step_utility))
+                full_cost = self.get_cost(task, total_amount)
+                full_utility = self.get_utility(task, total_amount)
+                finished.append((task, performed_amount, full_cost, full_utility))
             else:
                 # 继续排队
                 new_queue.append((task, total_amount, current_amount, unit_per_step))
-                finished.append((task, performed_amount, step_cost, step_utility))  # <== 即时回报也记录下来
 
         self.processing_tasks = new_queue
         return finished
@@ -383,7 +384,7 @@ class IndustrialChain:
                 self.finished_tasks.append(task)
                 continue
 
-            # 这里只处理完成任务（remaining_amount <= 5）
+            # 这里只处理完成任务（remaining_amount <= 0）
             if task.remaining_amount <= 0:
                 task.status = "done"
                 task.finish_time = self.time + 1

@@ -158,18 +158,11 @@ class MultiplexEnv(gym.Env):
                 "worker_loads": worker_loads,
                 "worker_profile": worker_profile
             }
-
-        # —— 全局上下文 global_context (1,) ——
-        load_ratio = self.chain.get_system_load_ratio()
-        obs["global_context"] = np.array([load_ratio], dtype=np.float32)
-
         return obs
 
     def _get_reward(self, assign_stats=None):
         if assign_stats is None:
             assign_stats = {}
-        assign_coef = self.config.get("assign_reward_coef", 0.1)
-        wait_penalty_coef = self.config.get("wait_penalty_coef", 0.01)
 
         step_kpis = self.chain.collect_step_kpis()
 
@@ -185,16 +178,16 @@ class MultiplexEnv(gym.Env):
             step_util = kpi.get("step_utility", 0.0)  # 当前步内所有 task 的 partial utility 累计
 
             # 分配奖励（按分配量）
-            assign_bonus = assign_coef * assign_stats.get(layer_id, 0.0)
+            assign_bonus = assign_stats.get(layer_id, 0.0)
 
             # 等待惩罚（遍历当前 task_queue）
-            wait_penalty = 0.0
+            wait_penalty = 0
             for task in self.chain.layers[layer_id].task_queue:
                 wait_time = self.current_step - task.arrival_time
-                wait_penalty += wait_penalty_coef * wait_time
+                wait_penalty += wait_time
 
             # 最终 reward（即时）
-            reward = self.beta * step_util - self.alpha * step_cost + assign_bonus - wait_penalty
+            reward = self.beta * step_util - self.alpha * step_cost
 
             layer_rewards[layer_id] = {
                 "cost": step_cost,

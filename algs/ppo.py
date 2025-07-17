@@ -45,13 +45,12 @@ class PPO:
         self._policy_loss_buffer = []
         self._entropy_buffer = []
 
-    def sample(self, task_obs, worker_loads, worker_profile, global_context, valid_mask):
+    def sample(self, task_obs, worker_loads, worker_profile, valid_mask):
         task_obs = task_obs.to(self.device)
         worker_loads = worker_loads.to(self.device)
         worker_profile = worker_profile.to(self.device)
-        global_context = global_context.to(self.device)
 
-        mean, std, value = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
+        mean, std, value = self.model(task_obs, worker_loads, worker_profile, valid_mask)
         dist = Normal(mean, std)
         action = dist.sample()
         action = torch.clamp(action, 0, 1)
@@ -60,14 +59,13 @@ class PPO:
 
         return value, action, action_log_probs, entropy
 
-    def predict(self, task_obs, worker_loads, worker_profile, global_context, valid_mask):
+    def predict(self, task_obs, worker_loads, worker_profile, valid_mask):
         task_obs = task_obs.to(self.device)
         worker_loads = worker_loads.to(self.device)
         worker_profile = worker_profile.to(self.device)
-        global_context = global_context.to(self.device)
 
-        mean, _, _ = self.model(task_obs, worker_loads, worker_profile, global_context, valid_mask)
-        return mean  # deterministic policy
+        mean, _, _ = self.model(task_obs, worker_loads, worker_profile, valid_mask)
+        return mean
 
     def value(self, task_obs, worker_loads):
         task_obs = task_obs.to(self.device)
@@ -79,7 +77,6 @@ class PPO:
               task_obs,
               worker_loads,
               worker_profile,
-              global_context,
               valid_mask,
               actions,
               values_old,
@@ -91,7 +88,6 @@ class PPO:
         task_obs = task_obs.to(self.device)
         worker_loads = worker_loads.to(self.device)
         worker_profile = worker_profile.to(self.device)
-        global_context = global_context.to(self.device)
         valid_mask = valid_mask.to(self.device)
         actions = actions.to(self.device)
         values_old = values_old.to(self.device)
@@ -100,7 +96,7 @@ class PPO:
         advantages = advantages.to(self.device)
 
         mean, std, values = self.model(
-            task_obs, worker_loads, worker_profile, global_context, valid_mask)
+            task_obs, worker_loads, worker_profile, valid_mask)
         dist = Normal(mean, std)
         log_probs = dist.log_prob(actions).sum(dim=[1, 2])
         entropy = dist.entropy().sum(dim=[1, 2]).mean()
