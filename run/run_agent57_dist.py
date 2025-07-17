@@ -474,8 +474,8 @@ def run_one(exp_dir, agent57_cfg, log_dir):
 if __name__ == "__main__":
     CFG_ROOT = "../configs"
     AGENT57_CFG = os.path.join(CFG_ROOT, "agent57_config.json")
-    REPEAT_EACH_EXP = 8
-    MAX_WORKERS = 8
+    REPEAT_EACH_EXP = 4
+    MAX_WORKERS = 12
     categories = ["task"]
     # categories = ["task"]
 

@@ -23,7 +23,7 @@ def round_robin_baseline(env, num_episodes=10):
                 act = [[0] * n_task for _ in range(n_worker)]
 
                 for t_idx, task in enumerate(tq):
-                    remain, ptr, tried = task.unassigned_amount, 0, 0
+                    remain, ptr, tried = task.unassigned_amount, 2, 0
                     while remain > 0 and tried < n_worker:
                         w_idx = ptr % n_worker
                         w = layer.workers[w_idx]

@@ -147,6 +147,7 @@ class MuSE(nn.Module):
             is_pos_policy = True
             num_pos = self.K
 
+        div_loss = 0.0
         if is_pos_policy and self.lambda_div > 0:
             mean_j = mean.detach()  # detach 不传梯度给自己
             std_j = std.detach()
@@ -167,8 +168,6 @@ class MuSE(nn.Module):
                 kl_sum = kl.sum(dim=[1, 2])  # 对动作维度求和
                 kl_terms.append(kl_sum)
                 div_loss = self.lambda_div * torch.stack(kl_terms).mean()
-        else:
-            div_loss = 0.0
 
         # entropy_coef decay
         progress = step / self.total_training_steps

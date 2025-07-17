@@ -71,13 +71,18 @@ def build_color_dict(algo_dirs):
     return {a: cmap(i % 10) for i, a in enumerate(algos)}
 
 
-# -------- 加载所有 run 的最终值列表 --------
 def load_run_final_values(algo_dir, metric, is_baseline=False):
-    """返回每个 run 的最后一个值"""
+    """
+    返回每个 run 的最好值
+    - 非 baseline：
+        - cost 和 waiting_time 用最小值
+        - reward 和 utility 用最大值
+    - baseline：
+        - 始终只取最后一行的值
+    """
     values = []
 
     if is_baseline:
-        # baseline 目录直接包含 CSV，不遍历 run 子目录
         csv_path = algo_dir / f'{metric}.csv'
         if csv_path.exists():
             df = pd.read_csv(csv_path)
@@ -85,7 +90,7 @@ def load_run_final_values(algo_dir, metric, is_baseline=False):
                 values.append(df['value'].iloc[-1])
         return values
 
-    # 普通算法：遍历 run 子目录
+    # 非 baseline，遍历子目录
     for run_dir in algo_dir.iterdir():
         if not run_dir.is_dir():
             continue
@@ -95,7 +100,12 @@ def load_run_final_values(algo_dir, metric, is_baseline=False):
         df = pd.read_csv(csv_path)
         if len(df) == 0:
             continue
-        final_value = df['value'].iloc[-1]
+
+        if metric in ['eval_avg_cost', 'waiting_time']:
+            final_value = df['value'].min()
+        else:
+            final_value = df['value'].max()
+
         values.append(final_value)
     return values
 

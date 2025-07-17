@@ -34,7 +34,7 @@ def latest_event_file(tb_dir):
 count = 0
 
 # 遍历四大任务类别
-for task_type in ['layer', 'worker', 'step', 'task']:
+for task_type in ['layer', 'worker', 'task', 'step']:
     type_path = src_root / task_type
     if not type_path.exists():
         continue
