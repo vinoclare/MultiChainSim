@@ -19,41 +19,24 @@ parser.add_argument('--baseline', default='rr', help='Round-Robin 目录名')
 args = parser.parse_args()
 
 FACTORS = ['layer', 'task', 'worker', 'step']
-# METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility', 'waiting_time']
-# Y_LABELS = {
-#     'eval_avg_cost': 'Cost Gain (%)',
-#     'eval_avg_reward': 'Reward Gain (%)',
-#     'eval_avg_utility': 'Utility Gain (%)',
-#     'waiting_time': 'Waiting Time (step)'
-# }
-# TITLE = {
-#     'eval_avg_cost': 'Cost',
-#     'eval_avg_reward': 'Reward',
-#     'eval_avg_utility': 'Utility',
-#     'waiting_time': 'Waiting Time'
-# }
-# SHORT = {
-#     'eval_avg_cost': 'cost',
-#     'eval_avg_reward': 'reward',
-#     'eval_avg_utility': 'utility',
-#     'waiting_time': 'waiting_time'
-# }
-
-METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility']
+METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility', 'waiting_time']
 Y_LABELS = {
     'eval_avg_cost': 'Cost Gain (%)',
     'eval_avg_reward': 'Reward Gain (%)',
-    'eval_avg_utility': 'Utility Gain (%)'
+    'eval_avg_utility': 'Utility Gain (%)',
+    'waiting_time': 'Waiting Time (step)'
 }
 TITLE = {
     'eval_avg_cost': 'Cost',
     'eval_avg_reward': 'Reward',
-    'eval_avg_utility': 'Utility'
+    'eval_avg_utility': 'Utility',
+    'waiting_time': 'Waiting Time'
 }
 SHORT = {
     'eval_avg_cost': 'cost',
     'eval_avg_reward': 'reward',
-    'eval_avg_utility': 'utility'
+    'eval_avg_utility': 'utility',
+    'waiting_time': 'waiting_time'
 }
 
 plt.rcParams.update({

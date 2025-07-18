@@ -5,15 +5,20 @@ import pandas as pd
 from tensorboard.backend.event_processing import event_accumulator
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--src', default='exp', help='原始 TensorBoard 日志目录')
+parser.add_argument('--src', default='exp-wp', help='原始 TensorBoard 日志目录')
 parser.add_argument('--dst', default='exp2', help='CSV 输出目录')
 args = parser.parse_args()
 
 # 保留的 scalar tag
+# KEEP_TAGS = {
+#     'global/eval_avg_cost':    'eval_avg_cost',
+#     'global/eval_avg_reward':  'eval_avg_reward',
+#     'global/eval_avg_utility': 'eval_avg_utility',
+#     'global/eval_avg_wp': 'waiting_time'
+# }
+
 KEEP_TAGS = {
-    'global/eval_avg_cost':    'eval_avg_cost',
-    'global/eval_avg_reward':  'eval_avg_reward',
-    'global/eval_avg_utility': 'eval_avg_utility'
+    'global/eval_avg_wp': 'eval_avg_wp'
 }
 
 MAX_STEP = 1_001_000  # 新增：最多只保留到 1.001M 步

@@ -6,11 +6,11 @@ from envs import MultiplexEnv
 
 
 def round_robin_baseline(env, num_episodes=10):
-    """返回五个标量：avg_reward, avg_cost, avg_utility, reward_std, tasks_done"""
+    """返回六个标量：avg_reward, avg_cost, avg_utility, reward_std, tasks_done, avg_wait_penalty"""
     num_layers = len(env.chain.layers)
     rr_pointer = [0] * num_layers
 
-    ep_rewards, ep_costs, ep_utils, ep_done = [], [], [], []
+    ep_rewards, ep_costs, ep_utils, ep_done, ep_wait_penalty = [], [], [], [], []
 
     for _ in range(num_episodes):
         env.reset()
@@ -43,12 +43,14 @@ def round_robin_baseline(env, num_episodes=10):
             obs, reward, done, info = env.step(action_dict)
             total_reward += reward if np.isscalar(reward) else reward[0]
 
-        print(f"Episode reward: {total_reward}")
         kpi = info["kpi"]
         ep_rewards.append(total_reward)
         ep_costs.append(kpi["total_cost"])
         ep_utils.append(kpi["total_utility"])
         ep_done.append(kpi["tasks_done"])
+        ep_wait_penalty.append(kpi.get("total_wait_penalty", 0.0))  # ⚠️ 确保环境中有该字段
+
+        print(f"Episode reward: {total_reward:.2f} | wait penalty: {ep_wait_penalty[-1]:.2f}")
 
     return dict(
         avg_reward=np.mean(ep_rewards),
@@ -56,6 +58,7 @@ def round_robin_baseline(env, num_episodes=10):
         avg_utility=np.mean(ep_utils),
         reward_std=np.std(ep_rewards),
         avg_tasks_done=np.mean(ep_done),
+        avg_wait_penalty=np.mean(ep_wait_penalty),
     )
 
 
@@ -76,7 +79,7 @@ def save_metric_csv(path: Path, value: float):
         w.writerow([0, f"{value:.6f}"])
 
 
-def batch_run(config_root="./configs/task", result_root="./logs/exp2"):
+def batch_run(config_root="./configs", result_root="./logs/exp2"):
     config_root = Path(config_root).resolve()
     result_root = Path(result_root).resolve()
 
@@ -108,9 +111,10 @@ def batch_run(config_root="./configs/task", result_root="./logs/exp2"):
         algo_dir = result_root / rel_dir / "rr"
         algo_dir.mkdir(parents=True, exist_ok=True)
 
-        save_metric_csv(algo_dir / "eval_avg_reward.csv", metrics["avg_reward"])
-        save_metric_csv(algo_dir / "eval_avg_cost.csv", metrics["avg_cost"])
-        save_metric_csv(algo_dir / "eval_avg_utility.csv", metrics["avg_utility"])
+        # save_metric_csv(algo_dir / "eval_avg_reward.csv", metrics["avg_reward"])
+        # save_metric_csv(algo_dir / "eval_avg_cost.csv", metrics["avg_cost"])
+        # save_metric_csv(algo_dir / "eval_avg_utility.csv", metrics["avg_utility"])
+        save_metric_csv(algo_dir / "eval_avg_wait_penalty.csv", metrics["avg_wait_penalty"])
 
         print(f"[{rel_dir}] ✅ RR 结果已保存 → {algo_dir}")
 
