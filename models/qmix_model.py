@@ -20,15 +20,19 @@ class AgentQNet(nn.Module):
 class AgentPolicy(nn.Module):
     def __init__(self, obs_dim, action_dim, hidden_dim):
         super().__init__()
-        self.net = nn.Sequential(
+        self.fc = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Sigmoid()  # 分配比例 ∈ (0, 1)
+            nn.ReLU()
         )
+        self.mean_head = nn.Linear(hidden_dim, action_dim)
+        self.log_std_head = nn.Linear(hidden_dim, action_dim)
 
-    def forward(self, obs_i):  # (B, obs_dim)
-        return self.net(obs_i)  # (B, action_dim)
+    def forward(self, obs_i):  # (B * n_agents, obs_dim)
+        x = self.fc(obs_i)
+        mean = torch.sigmoid(self.mean_head(x))
+        log_std = self.log_std_head(x).clamp(-4, 1)
+        std = torch.exp(log_std)
+        return mean, std
 
 
 class MixingNetwork(nn.Module):
@@ -84,26 +88,24 @@ class QMixModel(nn.Module):
 
     def get_actions(self, task_obs, load_obs, profile_obs):
         """
-        输入：
-            task_obs:     (B, num_pad_tasks, task_input_dim)
-            load_obs:     (B, n_agents, load_input_dim)
-            profile_obs:  (B, n_agents, profile_input_dim)
-        输出：
-            actions:      (B, n_agents, action_dim)，即每个 worker 对每个任务的分配比例
+        返回动作分配比例 ∈ [0, 1]（每个 agent 一个分配向量）
         """
         B, n_agents = load_obs.shape[:2]
-        assert n_agents == self.n_agents
-
-        tq_feat = self.task_encoder(task_obs.mean(dim=1))  # (B, D)
-        tq_feat = tq_feat.unsqueeze(1).expand(-1, n_agents, -1)  # (B, n_agents, D)
-        load_feat = self.load_encoder(load_obs)  # (B, n_agents, D)
-        prof_feat = self.profile_encoder(profile_obs)  # (B, n_agents, D)
+        tq_feat = self.task_encoder(task_obs.mean(dim=1))
+        tq_feat = tq_feat.unsqueeze(1).expand(-1, n_agents, -1)
+        load_feat = self.load_encoder(load_obs)
+        prof_feat = self.profile_encoder(profile_obs)
 
         obs_feat = torch.cat([tq_feat, load_feat, prof_feat], dim=-1)  # (B, n_agents, 3D)
         obs_flat = obs_feat.view(B * n_agents, -1)
 
-        actions = self.agent_policy(obs_flat)  # (B * n_agents, action_dim)
-        return actions.view(B, n_agents, -1)  # (B, n_agents, action_dim)
+        mean, std = self.agent_policy(obs_flat)  # (B * n_agents, action_dim)
+
+        normal = torch.distributions.Normal(mean, std)
+        action = normal.rsample()  # reparameterization
+
+        action = torch.clamp(action, 0.0, 1.0)
+        return action.view(B, n_agents, -1)
 
     def forward(self, task_obs, load_obs, profile_obs, actions, state):
         """

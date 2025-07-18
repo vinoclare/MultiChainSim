@@ -21,4 +21,4 @@ class QMixAgent:
         profile_obs = torch.tensor(profile_obs, dtype=torch.float32).unsqueeze(0).to(self.device)
 
         action = self.model.get_actions(task_obs, load_obs, profile_obs)
-        return action
+        return action.squeeze(0).cpu().numpy()

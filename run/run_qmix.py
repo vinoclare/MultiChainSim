@@ -97,7 +97,7 @@ def evaluate_policy(agents_dict, env_eval, writer, global_step):
             for lid in range(len(agents_dict)):
                 tq, ld, pf, st = extract_layer_obs(obs[lid])
                 with torch.no_grad():
-                    act[lid] = agents[lid].select_action(tq, ld, pf).squeeze(0).cpu().numpy()
+                    act[lid] = agents[lid].select_action(tq, ld, pf)
             obs, (_, r_det), done, _ = env_eval.step(act)
             for lid in r_det['layer_rewards']:
                 lr = r_det['layer_rewards'][lid]
@@ -126,7 +126,7 @@ for ep in range(num_episodes):
             tq, ld, pf, st = extract_layer_obs(obs[lid])
             with torch.no_grad():
                 action = agents[lid].select_action(tq, ld, pf)
-            act_dict[lid] = action.squeeze(0).cpu().numpy()
+            act_dict[lid] = action
             layer_cache[lid] = (tq, ld, pf, st)
 
         # --- env step ---
@@ -153,7 +153,7 @@ for ep in range(num_episodes):
                 'done': float(done)
             })
 
-            if len(buffers[lid]) > cfg['batch_size']:
+            if len(buffers[lid]) > cfg['batch_size'] and step % cfg['train_interval'] == 0:
                 for _ in range(cfg['train_per_step']):
                     batch = buffers[lid].sample(cfg['batch_size'])
                     algs[lid].train(batch)
@@ -169,4 +169,5 @@ for ep in range(num_episodes):
 
     # --- evaluate ---
     if ep % eval_interval == 0:
-        evaluate_policy(agents, eval_env, writer, ep)
+        step = ep * steps_per_ep
+        evaluate_policy(agents, eval_env, writer, step)
