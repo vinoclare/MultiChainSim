@@ -12,7 +12,7 @@
   "max_grad_norm": 10.0,
   "buffer_size": 50000,
   "target_update_tau": 0.01,
-  "device": "cuda",
+  "device": "cpu",
   "train_per_step": 1,
   "reset_schedule_interval": 100
 }

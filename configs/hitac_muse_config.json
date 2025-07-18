@@ -1,10 +1,10 @@
 {
   "training": {
-    "num_episodes": 50000,
+    "num_episodes": 10000,
     "eval_interval": 100,
     "eval_episodes": 10,
     "log_interval": 1000,
-    "device": "cuda",
+    "device": "cpu",
     "num_workers": 20,
     "reset_schedule_interval": 500
   },

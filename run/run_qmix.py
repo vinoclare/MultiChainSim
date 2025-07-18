@@ -1,6 +1,7 @@
 import numpy as np
 import json
 import time
+import torch
 import argparse
 from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
@@ -95,7 +96,8 @@ def evaluate_policy(agents_dict, env_eval, writer, global_step):
             act = {}
             for lid in range(len(agents_dict)):
                 tq, ld, pf, st = extract_layer_obs(obs[lid])
-                act[lid] = agents_dict[lid].select_action(tq, ld, pf, st)
+                with torch.no_grad():
+                    act[lid] = agents[lid].select_action(tq, ld, pf).squeeze(0).cpu().numpy()
             obs, (_, r_det), done, _ = env_eval.step(act)
             for lid in r_det['layer_rewards']:
                 lr = r_det['layer_rewards'][lid]
@@ -122,8 +124,9 @@ for ep in range(num_episodes):
         # --- action selection ---
         for lid in range(num_layers):
             tq, ld, pf, st = extract_layer_obs(obs[lid])
-            action = agents[lid].select_action(tq, ld, pf, st)
-            act_dict[lid] = action
+            with torch.no_grad():
+                action = agents[lid].select_action(tq, ld, pf)
+            act_dict[lid] = action.squeeze(0).cpu().numpy()
             layer_cache[lid] = (tq, ld, pf, st)
 
         # --- env step ---
@@ -134,12 +137,14 @@ for ep in range(num_episodes):
             tq, ld, pf, st = layer_cache[lid]
             ntq, nld, npf, nst = extract_layer_obs(next_obs[lid])
             reward = reward_detail['layer_rewards'][lid]['reward']
+            action = act_dict[lid]
             ep_reward_layer[lid] += reward
             buffers[lid].push({
                 'task_obs': tq,
                 'load_obs': ld,
                 'profile_obs': pf,
                 'state': st,
+                'action': action,
                 'reward': reward,
                 'next_task_obs': ntq,
                 'next_load_obs': nld,

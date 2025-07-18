@@ -17,6 +17,20 @@ class AgentQNet(nn.Module):
         return self.net(x)  # (B, 1)
 
 
+class AgentPolicy(nn.Module):
+    def __init__(self, obs_dim, action_dim, hidden_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim),
+            nn.Sigmoid()  # 分配比例 ∈ (0, 1)
+        )
+
+    def forward(self, obs_i):  # (B, obs_dim)
+        return self.net(obs_i)  # (B, action_dim)
+
+
 class MixingNetwork(nn.Module):
     def __init__(self, n_agents, state_dim, hidden_dim):
         super().__init__()
@@ -65,7 +79,31 @@ class QMixModel(nn.Module):
         )
 
         self.agent_q = AgentQNet(obs_dim=3 * hidden_dim, action_dim=action_dim, hidden_dim=q_hidden_dim)
+        self.agent_policy = AgentPolicy(obs_dim=3 * hidden_dim, action_dim=action_dim, hidden_dim=hidden_dim)
         self.mixing_net = MixingNetwork(n_agents, state_dim, mixing_hidden_dim)
+
+    def get_actions(self, task_obs, load_obs, profile_obs):
+        """
+        输入：
+            task_obs:     (B, num_pad_tasks, task_input_dim)
+            load_obs:     (B, n_agents, load_input_dim)
+            profile_obs:  (B, n_agents, profile_input_dim)
+        输出：
+            actions:      (B, n_agents, action_dim)，即每个 worker 对每个任务的分配比例
+        """
+        B, n_agents = load_obs.shape[:2]
+        assert n_agents == self.n_agents
+
+        tq_feat = self.task_encoder(task_obs.mean(dim=1))  # (B, D)
+        tq_feat = tq_feat.unsqueeze(1).expand(-1, n_agents, -1)  # (B, n_agents, D)
+        load_feat = self.load_encoder(load_obs)  # (B, n_agents, D)
+        prof_feat = self.profile_encoder(profile_obs)  # (B, n_agents, D)
+
+        obs_feat = torch.cat([tq_feat, load_feat, prof_feat], dim=-1)  # (B, n_agents, 3D)
+        obs_flat = obs_feat.view(B * n_agents, -1)
+
+        actions = self.agent_policy(obs_flat)  # (B * n_agents, action_dim)
+        return actions.view(B, n_agents, -1)  # (B, n_agents, action_dim)
 
     def forward(self, task_obs, load_obs, profile_obs, actions, state):
         """
