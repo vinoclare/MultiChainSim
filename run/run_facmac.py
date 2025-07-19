@@ -7,10 +7,10 @@ from collections import defaultdict
 from torch.utils.tensorboard import SummaryWriter
 
 from envs.env import MultiplexEnv
-from models.qmix_model import QMixModel
-from algs.qmix import QMix
-from agents.qmix_agent import QMixAgent
-from utils.qmix_buffer import QMixReplayBuffer
+from models.facmac_model import FACMACModel
+from algs.facmac import FACMAC
+from agents.facmac_agent import FACMACAgent
+from utils.facmac_buffer import ReplayBuffer
 
 # ===== Load configs =====
 parser = argparse.ArgumentParser()
@@ -20,13 +20,13 @@ dire = args.dire
 
 # ===== Environment =====
 env_config_path = f'../configs/{dire}/env_config.json'
-qmix_config_path = f'../configs/qmix_config.json'
+facmac_config_path = f'../configs/facmac_config.json'
 train_path = f"../configs/{dire}/train_schedule.json"
 worker_path = f"../configs/{dire}/worker_config.json"
 
 with open(env_config_path) as f:
     env_cfg = json.load(f)
-with open(qmix_config_path) as f:
+with open(facmac_config_path) as f:
     cfg = json.load(f)
 
 env = MultiplexEnv(env_config_path,
@@ -52,35 +52,30 @@ load_dim = obs_space['worker_loads'].shape[1]
 profile_dim = obs_space['worker_profile'].shape[1]
 n_agents = env_cfg["workers_per_layer"][0]
 state_dim = (
-    env.num_pad_tasks * obs_space['task_queue'].shape[1] +
-    n_agents * obs_space['worker_loads'].shape[1] +
-    n_agents * obs_space['worker_profile'].shape[1]
+        env.num_pad_tasks * obs_space['task_queue'].shape[1] +
+        n_agents * obs_space['worker_loads'].shape[1] +
+        n_agents * obs_space['worker_profile'].shape[1]
 )
 
 # ===== Per‑layer structures =====
 models, targets, algs, agents, buffers = {}, {}, {}, {}, {}
 for lid in range(num_layers):
-    model = QMixModel(task_dim, load_dim, profile_dim, num_pad_task, state_dim, n_agents,
-                      hidden_dim=cfg["hidden_dim"],
-                      q_hidden_dim=cfg["q_hidden_dim"],
-                      mixing_hidden_dim=cfg["mixing_hidden_dim"])
-    target = QMixModel(task_dim, load_dim, profile_dim, num_pad_task, state_dim, n_agents,
-                       hidden_dim=cfg["hidden_dim"],
-                       q_hidden_dim=cfg["q_hidden_dim"],
-                       mixing_hidden_dim=cfg["mixing_hidden_dim"])
-    algs[lid] = QMix(model, target, lr=cfg["initial_lr"], gamma=cfg["gamma"],
-                     tau=cfg["target_update_tau"], device=cfg["device"])
-    agents[lid] = QMixAgent(model, device=cfg["device"])
-    buffers[lid] = QMixReplayBuffer(cfg["buffer_size"])
+    model = FACMACModel(task_dim, load_dim, profile_dim, num_pad_task, state_dim, n_agents,
+                        hidden_dim=cfg["hidden_dim"],
+                        q_hidden_dim=cfg["q_hidden_dim"],
+                        mixing_hidden_dim=cfg["mixing_hidden_dim"])
+    algs[lid] = FACMAC(model, lr_actor=cfg["lr_actor"], lr_critic=cfg["lr_critic"], gamma=cfg["gamma"],
+                       tau=cfg["target_update_tau"], device=cfg["device"])
+    agents[lid] = FACMACAgent(algs[lid], device=cfg["device"], expl_noise=cfg["expl_noise"])
+    buffers[lid] = ReplayBuffer(cfg["buffer_size"])
 
-# ===== Logger =====
-writer = SummaryWriter(f"../logs/qmix/{dire}/" + time.strftime("%Y%m%d-%H%M%S"))
+writer = SummaryWriter(f"../logs/facmac/{dire}/" + time.strftime("%Y%m%d-%H%M%S"))
 
 
 def extract_layer_obs(layer_obs):
-    tq = layer_obs['task_queue']        # (n_worker, task_dim)
-    ld = layer_obs['worker_loads']      # (n_worker, load_dim)
-    pf = layer_obs['worker_profile']    # (n_worker, profile_dim)
+    tq = layer_obs['task_queue']  # (n_worker, task_dim)
+    ld = layer_obs['worker_loads']  # (n_worker, load_dim)
+    pf = layer_obs['worker_profile']  # (n_worker, profile_dim)
 
     state = np.concatenate([tq.flatten(), ld.flatten(), pf.flatten()], axis=0).astype(np.float32)
     return tq, ld, pf, state
@@ -96,8 +91,7 @@ def evaluate_policy(agents_dict, env_eval, writer, global_step):
             act = {}
             for lid in range(len(agents_dict)):
                 tq, ld, pf, st = extract_layer_obs(obs[lid])
-                with torch.no_grad():
-                    act[lid] = agents[lid].select_action(tq, ld, pf)
+                act[lid] = agents[lid].select_action(tq, ld, pf, eval=True)
             obs, (_, r_det), done, _ = env_eval.step(act)
             for lid in r_det['layer_rewards']:
                 lr = r_det['layer_rewards'][lid]

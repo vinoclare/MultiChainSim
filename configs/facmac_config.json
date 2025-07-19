@@ -8,12 +8,15 @@
   "hidden_dim": 64,
   "mixing_hidden_dim": 64,
   "q_hidden_dim": 64,
-  "initial_lr": 5e-4,
+  "lr_actor": 1e-4,
+  "lr_critic": 1e-3,
   "max_grad_norm": 10.0,
-  "buffer_size": 50000,
+  "buffer_size": 200000,
   "target_update_tau": 0.01,
   "device": "cpu",
   "train_per_step": 1,
   "train_interval": 10,
-  "reset_schedule_interval": 100
+  "reset_schedule_interval": 100,
+  "expl_noise": 0.2,
+  "noise_clip": 0.5
 }

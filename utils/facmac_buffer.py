@@ -2,7 +2,7 @@ import random
 import numpy as np
 
 
-class QMixReplayBuffer:
+class ReplayBuffer:
     def __init__(self, capacity):
         self.capacity = capacity
         self.buffer = []

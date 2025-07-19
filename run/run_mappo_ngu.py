@@ -12,6 +12,7 @@ from models.mappo_model import MAPPOIndustrialModel
 from algs.mappo import MAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
+from explore.ngu import NGUIntrinsicReward
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
@@ -21,7 +22,7 @@ dire = args.dire
 
 with open(f'../configs/{dire}/env_config.json') as f:
     env_config = json.load(f)
-with open('../configs/ppo_config.json') as f:
+with open('../configs/mappo_ngu_config.json') as f:
     ppo_config = json.load(f)
 
 # ===== Setup environment =====
@@ -64,12 +65,22 @@ n_worker, _ = act_space.shape
 n_task_types = len(env_config["task_types"])
 profile_dim = 2 * n_task_types
 
-log_dir = f'../logs/mappo/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+log_dir = f'../logs/mappo-ngu/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir=log_dir)
 
 agents, algs, return_rms, buffers = {}, {}, {}, {}
+ngu_modules = {}
+intrinsic_coef = ppo_config.get("intrinsic_coef", 0.1)
 
 for lid in range(num_layers):
+    ngu_modules[lid] = NGUIntrinsicReward(
+        task_obs_dim=obs_space['task_queue'].shape[1],
+        worker_load_dim=obs_space['worker_loads'].shape[1],
+        num_pad_tasks=env.num_pad_tasks,
+        n_worker=n_worker,
+        device=device
+    )
+
     model = MAPPOIndustrialModel(
         task_input_dim=obs_space['task_queue'].shape[1],
         worker_load_input_dim=obs_space['worker_loads'].shape[1],
@@ -96,7 +107,7 @@ for lid in range(num_layers):
     return_rms[lid] = RunningMeanStd()
     buffers[lid] = {k: [] for k in [
         'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-        'actions', 'logprobs', 'rewards', 'dones', 'values']
+        'actions', 'logprobs', 'rewards', 'dones', 'values', 'ir']
     }
 
 
@@ -155,6 +166,10 @@ for episode in range(num_episodes):
         obs = env.reset(with_new_schedule=True)
     else:
         obs = env.reset()
+
+    for lid in range(num_layers):
+        ngu_modules[lid].reset_episode()
+
     for step in range(steps_per_episode):
         actions = {}
         for lid in range(num_layers):
@@ -174,10 +189,24 @@ for episode in range(num_episodes):
         obs, (_, reward_detail), done, _ = env.step(actions)
         for lid in range(num_layers):
             r = reward_detail['layer_rewards'][lid]['reward']
-            buffers[lid]['rewards'].append(r)
+            task_obs = buffers[lid]['task_obs'][-1]
+            worker_loads = buffers[lid]['worker_loads'][-1]
+
+            ir = ngu_modules[lid].compute_bonus(task_obs, worker_loads)
+            ngu_modules[lid].update(task_obs, worker_loads)
+
+            total_r = r + intrinsic_coef * ir
+
+            buffers[lid]['rewards'].append(total_r)
             buffers[lid]['dones'].append(done)
+            buffers[lid]['ir'].append(ir)
         if done:
             break
+
+    # # ===== log training stats =====
+    # if episode % log_interval == 0:
+    #     total_ir = sum(buffers[lid]['ir'] for lid in buffers)
+    #     writer.add_scalar("train/ir", total_ir, episode * steps_per_episode)
 
     # ===== Learn each agent independently =====
     for lid in range(num_layers):
@@ -221,7 +250,7 @@ for episode in range(num_episodes):
                     torch.tensor(np.array(ret_batch, dtype=np.float32).reshape(-1,)),
                     torch.tensor(np.array(logp_batch, dtype=np.float32).reshape(-1,)),
                     torch.tensor(np.array(adv_batch, dtype=np.float32).reshape(-1,)),
-                    (episode + 1) * steps_per_episode
+                    episode * steps_per_episode
                 )
 
     for lid in buffers:
