@@ -10,14 +10,17 @@ from envs import IndustrialChain
 from envs.env import MultiplexEnv
 from models.mappo_model import MAPPOIndustrialModel
 from algs.mappo import MAPPO
+from algs.happo import HAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
+parser.add_argument("--alg_name", type=str, default="mappo")
 args, _ = parser.parse_known_args()
 dire = args.dire
+alg_name = args.alg_name.lower()
 
 with open(f'../configs/{dire}/env_config.json') as f:
     env_config = json.load(f)
@@ -64,7 +67,7 @@ n_worker, _ = act_space.shape
 n_task_types = len(env_config["task_types"])
 profile_dim = 2 * n_task_types
 
-log_dir = f'../logs/mappo/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+log_dir = f'../logs/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir=log_dir)
 
 agents, algs, return_rms, buffers = {}, {}, {}, {}
@@ -79,17 +82,30 @@ for lid in range(num_layers):
         hidden_dim=hidden_dim
     )
 
-    alg = MAPPO(
-        model,
-        clip_param=ppo_config["clip_param"],
-        value_loss_coef=ppo_config["value_loss_coef"],
-        entropy_coef=ppo_config["entropy_coef"],
-        initial_lr=ppo_config["initial_lr"],
-        max_grad_norm=ppo_config["max_grad_norm"],
-        writer=writer,
-        global_step_ref=[0],
-        total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
-    )
+    if alg_name == "mappo":
+        alg = MAPPO(
+            model,
+            clip_param=ppo_config["clip_param"],
+            value_loss_coef=ppo_config["value_loss_coef"],
+            entropy_coef=ppo_config["entropy_coef"],
+            initial_lr=ppo_config["initial_lr"],
+            max_grad_norm=ppo_config["max_grad_norm"],
+            writer=writer,
+            global_step_ref=[0],
+            total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
+        )
+    else:  # happo
+        alg = HAPPO(
+            model,
+            clip_param=ppo_config["clip_param"],
+            value_loss_coef=ppo_config["value_loss_coef"],
+            entropy_coef=ppo_config["entropy_coef"],
+            initial_lr=ppo_config["initial_lr"],
+            max_grad_norm=ppo_config["max_grad_norm"],
+            writer=writer,
+            global_step_ref=[0],
+            total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
+        )
 
     agents[lid] = IndustrialAgent(alg, "mappo", device, env.num_pad_tasks)
     algs[lid] = alg
@@ -124,24 +140,6 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
                 total_cost += layer_stats.get("cost", 0)
                 total_utility += layer_stats.get("utility", 0)
                 total_wait_penalty += layer_stats.get("waiting_penalty", 0)
-
-        # ===== 统计各种任务状态的数量 =====
-        num_total_tasks = 0
-        num_waiting_tasks = 0
-        num_done_tasks = 0
-        num_failed_tasks = 0
-        for step_task_list in eval_env.task_schedule.values():
-            for task in step_task_list:
-                num_total_tasks += 1
-                status = task.status
-                if status == "waiting":
-                    num_waiting_tasks += 1
-                elif status == "done":
-                    num_done_tasks += 1
-                elif status == "failed":
-                    num_failed_tasks += 1
-        print(f"[Eval Episode {episode}] Total tasks: {num_total_tasks}, Waiting tasks: {num_waiting_tasks}, "
-              f"Done tasks: {num_done_tasks}, Failed tasks: {num_failed_tasks}")
 
     writer.add_scalar("eval/reward", total_reward / num_episodes, global_step)
     writer.add_scalar("eval/cost", total_cost / num_episodes, global_step)
@@ -181,14 +179,36 @@ for episode in range(num_episodes):
 
     # ===== Learn each agent independently =====
     for lid in range(num_layers):
-        advs, rets = [], []
-        vals = buffers[lid]['values'] + [0]
-        gae = 0
-        for t in reversed(range(len(buffers[lid]['rewards']))):
-            delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
-            gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
-            advs.insert(0, gae)
-        rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
+        if alg_name.lower() == "mappo":
+            advs, rets = [], []
+            vals = buffers[lid]['values'] + [0]
+            gae = 0
+            for t in reversed(range(len(buffers[lid]['rewards']))):
+                delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
+                gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
+                advs.insert(0, gae)
+            rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
+        else:  # happo
+            advs = []
+            vals = buffers[lid]['values'] + [np.zeros_like(buffers[lid]['values'][0])]  # [T+1][W]
+            gae = np.zeros_like(buffers[lid]['values'][0])  # shape [W]
+
+            for t in reversed(range(len(buffers[lid]['rewards']))):
+                delta = (
+                        buffers[lid]['rewards'][t] +
+                        gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) -
+                        vals[t]
+                )
+                gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
+                advs.insert(0, gae.copy())
+
+            rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]  # [T][W]
+
+            advs = np.stack(advs).astype(np.float32)
+            rets = np.stack(rets).astype(np.float32)
+
+            advs = advs.reshape(-1, advs.shape[-1])  # [B, W]
+            rets = rets.reshape(-1, rets.shape[-1])  # [B, W]
 
         if ppo_config["return_normalization"]:
             return_rms[lid].update(np.array(rets))
@@ -212,16 +232,16 @@ for episode in range(num_episodes):
                 batch = dataset[i:i + batch_size]
                 task_batch, load_batch, prof_batch, mask_batch, act_batch, val_batch, ret_batch, logp_batch, adv_batch = zip(*batch)
                 algs[lid].learn(
-                    torch.tensor(task_batch, dtype=torch.float32),
-                    torch.tensor(load_batch, dtype=torch.float32),
-                    torch.tensor(prof_batch, dtype=torch.float32),
-                    torch.tensor(mask_batch, dtype=torch.float32),
-                    torch.tensor(act_batch, dtype=torch.float32),
-                    torch.tensor(np.array(val_batch, dtype=np.float32).reshape(-1,)),
-                    torch.tensor(np.array(ret_batch, dtype=np.float32).reshape(-1,)),
-                    torch.tensor(np.array(logp_batch, dtype=np.float32).reshape(-1,)),
-                    torch.tensor(np.array(adv_batch, dtype=np.float32).reshape(-1,)),
-                    (episode + 1) * steps_per_episode
+                    torch.tensor(np.array(task_batch, dtype=np.float32)),
+                    torch.tensor(np.array(load_batch, dtype=np.float32)),
+                    torch.tensor(np.array(prof_batch, dtype=np.float32)),
+                    torch.tensor(np.array(mask_batch, dtype=np.float32)),
+                    torch.tensor(np.array(act_batch, dtype=np.float32)),
+                    torch.tensor(np.array(val_batch, dtype=np.float32)),
+                    torch.tensor(np.array(ret_batch, dtype=np.float32)),
+                    torch.tensor(np.array(logp_batch, dtype=np.float32)),
+                    torch.tensor(np.array(adv_batch, dtype=np.float32)),
+                    episode * steps_per_episode
                 )
 
     for lid in buffers:
