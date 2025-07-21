@@ -4,7 +4,8 @@
   "eval_episodes": 10,
   "log_interval": 100,
   "update_epochs": 4,
-  "gamma": 0.99,
+  "gamma": 0.999,
+  "int_gamma": 0.99,
   "lam": 0.95,
   "batch_size": 512,
   "hidden_dim": 64,
@@ -17,5 +18,6 @@
   "num_workers": 20,
   "device": "cpu",
   "reset_schedule_interval": 100,
-  "intrinsic_coef": 0.1
+  "intrinsic_coef": 0.1,
+  "rnd_update_proportion": 0.25
 }
