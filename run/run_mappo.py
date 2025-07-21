@@ -17,7 +17,7 @@ from utils.utils import RunningMeanStd
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--alg_name", type=str, default="mappo")
+parser.add_argument("--alg_name", type=str, default="happo")
 args, _ = parser.parse_known_args()
 dire = args.dire
 alg_name = args.alg_name.lower()
@@ -190,8 +190,8 @@ for episode in range(num_episodes):
             rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
         else:  # happo
             advs = []
-            vals = buffers[lid]['values'] + [np.zeros_like(buffers[lid]['values'][0])]  # [T+1][W]
-            gae = np.zeros_like(buffers[lid]['values'][0])  # shape [W]
+            vals = buffers[lid]['values'] + [0.0]             # [T+1]
+            gae = 0.0
 
             for t in reversed(range(len(buffers[lid]['rewards']))):
                 delta = (
@@ -202,13 +202,14 @@ for episode in range(num_episodes):
                 gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
                 advs.insert(0, gae.copy())
 
-            rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]  # [T][W]
+            rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]  # [T]
 
-            advs = np.stack(advs).astype(np.float32)
-            rets = np.stack(rets).astype(np.float32)
+            advs = np.array(advs, dtype=np.float32)   # [T]
+            rets = np.array(rets, dtype=np.float32)  # [T]
 
-            advs = advs.reshape(-1, advs.shape[-1])  # [B, W]
-            rets = rets.reshape(-1, rets.shape[-1])  # [B, W]
+            advs = np.repeat(advs[:, None], n_worker, axis=1)  # [T, W]
+            advs = advs.reshape(-1, n_worker)                  # [B, W]
+            rets = rets.reshape(-1)                         # [B]
 
         if ppo_config["return_normalization"]:
             return_rms[lid].update(np.array(rets))

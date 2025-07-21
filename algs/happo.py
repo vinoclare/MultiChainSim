@@ -89,9 +89,7 @@ class HAPPO:
         advantages = advantages.to(device)  # [B, W]
 
         if self.norm_adv:
-            adv_mean = advantages.mean()
-            adv_std = advantages.std() + 1e-8
-            advantages = (advantages - adv_mean) / adv_std  # 按 worker 统一归一化
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         num_workers = actions.size(1)
         entropy_coef = max(1e-3,
