@@ -29,6 +29,9 @@ class Task:
         self.trajectory: List[Tuple[int, int]] = []
         self.timeout = timeout
 
+        self.layer_acc_cost: Dict[int, float] = {}
+        self.layer_acc_util: Dict[int, float] = {}
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -367,58 +370,103 @@ class IndustrialChain:
         return assign_stats
 
     def step(self):
-        self.step_kpis = {}
-        all_finished = []
+        self.step_kpis = {i: {"step_cost": 0.0, "step_utility": 0.0}
+                          for i in range(len(self.layers))}
+        tmp_finished: Dict[int, List[Tuple[object, float, float, float]]] = {}
 
-        # 第一步：先让所有 layer 执行 step，收集结果，不做任何任务推进
+        # === 阶段1：逐层执行，收集“完成/失败条目”，对正常完成的条目做“逐层累计” ===
         for layer_id, layer in enumerate(self.layers):
-            finished = layer.step(self.time)
-            step_cost = sum(c for _, _, c, _ in finished)
-            step_util = sum(u for _, _, _, u in finished)
-            self.step_kpis[layer_id] = {
-                "step_cost": step_cost,
-                "step_utility": step_util,
-            }
+            finished = layer.step(self.time)  # List[(task, amount, cost, util)]
+            tmp_finished[layer_id] = finished
+            for (task, _, cost, util) in finished:
+                # 确保任务有累计器
+                if not hasattr(task, "layer_acc_cost"):
+                    task.layer_acc_cost = {}
+                    task.layer_acc_util = {}
+                # 失败/超时条目先不累计，留到阶段2一次性结算
+                if getattr(task, "failed", False) or getattr(task, "status", None) == "failed":
+                    continue
+                # 正常完成条目：把“该层在本步的贡献”先攒到任务的逐层累计器
+                task.layer_acc_cost[layer_id] = task.layer_acc_cost.get(layer_id, 0.0) + float(cost)
+                task.layer_acc_util[layer_id] = task.layer_acc_util.get(layer_id, 0.0) + float(util)
 
-            self.cumulative_kpis["total_cost"] += step_cost
-            self.cumulative_kpis["total_utility"] += step_util
-            self.cumulative_kpis["per_layer"][layer_id]["cost"] += step_cost
-            self.cumulative_kpis["per_layer"][layer_id]["utility"] += step_util
+        # === 阶段2：统一推进与“终结结算” ===
+        for layer_id, finished in tmp_finished.items():
+            for (task, amount, cost, util) in finished:
+                # 已标记为 done 的跳过
+                if getattr(task, "status", None) == "done":
+                    continue
 
-            for item in finished:
-                all_finished.append((layer_id, *item))
+                # 情况A：失败/超时 → 一次性结算“历史累计（各层） + 本层失败项”
+                if getattr(task, "failed", False) or getattr(task, "status", None) == "failed":
+                    # 把历史累计分层回填到本步 KPI & 累计指标
+                    for k, acc_cost in getattr(task, "layer_acc_cost", {}).items():
+                        acc_util = task.layer_acc_util.get(k, 0.0)
+                        self.step_kpis[k]["step_cost"] += acc_cost
+                        self.step_kpis[k]["step_utility"] += acc_util
+                        self.cumulative_kpis["total_cost"] += acc_cost
+                        self.cumulative_kpis["total_utility"] += acc_util
+                        self.cumulative_kpis["per_layer"][k]["cost"] += acc_cost
+                        self.cumulative_kpis["per_layer"][k]["utility"] += acc_util
 
-        # 第二步：统一处理所有 finished 任务，避免推进后被立即执行
-        for layer_id, task, amount, cost, util in all_finished:
-            if task.status == "done":
-                continue
+                    # 再把当步失败项计入失败发生层
+                    self.step_kpis[layer_id]["step_cost"] += float(cost)
+                    self.step_kpis[layer_id]["step_utility"] += float(util)
+                    self.cumulative_kpis["total_cost"] += float(cost)
+                    self.cumulative_kpis["total_utility"] += float(util)
+                    self.cumulative_kpis["per_layer"][layer_id]["cost"] += float(cost)
+                    self.cumulative_kpis["per_layer"][layer_id]["utility"] += float(util)
 
-            self.cumulative_kpis["tasks_done"] += 1
-            self.cumulative_kpis["per_layer"][layer_id]["tasks_done"] += 1
+                    # 失败计数
+                    self.cumulative_kpis["total_failures"] += 1
+                    self.cumulative_kpis["per_layer"][layer_id]["failures"] += 1
 
-            if task.failed:
-                self.cumulative_kpis["total_failures"] += 1
-                self.cumulative_kpis["per_layer"][layer_id]["failures"] += 1
-                self.finished_tasks.append(task)
-                continue
-
-            # 这里只处理完成任务（remaining_amount <= 0）
-            if task.remaining_amount <= 0:
-                task.status = "done"
-                task.finish_time = self.time + 1
-                task.current_layer_index += 1
-
-                if task.current_layer_index < len(task.route):
-                    next_layer = task.route[task.current_layer_index]
-                    task.remaining_amount = task.amount
-                    task.unassigned_amount = task.amount
-                    task.status = "waiting"
-                    task.assigned_worker = []
-                    task.trajectory.append((next_layer, self.time))
-                    self.layers[next_layer].add_task(task)
-                else:
+                    # 清理并归档
+                    task.layer_acc_cost = {}
+                    task.layer_acc_util = {}
                     self.finished_tasks.append(task)
+                    continue
 
+                # 情况B：本层完成 → 可能推进到下一层或在最后一层“最终完成”
+                if getattr(task, "remaining_amount", None) is not None and task.remaining_amount <= 0:
+                    # 标注本层完成
+                    task.status = "done"
+                    task.finish_time = self.time + 1
+
+                    # 推进路由
+                    task.current_layer_index += 1
+                    if task.current_layer_index < len(task.route):
+                        # 还有后续层：推进，不结算
+                        next_layer = task.route[task.current_layer_index]
+                        task.remaining_amount = task.amount
+                        task.unassigned_amount = task.amount
+                        task.status = "waiting"
+                        task.assigned_worker = []
+                        if hasattr(task, "trajectory"):
+                            task.trajectory.append((next_layer, self.time))
+                        self.layers[next_layer].add_task(task)
+                    else:
+                        # 抵达“最后一层并完成” → 一次性把全生命周期累计贡献分层回填
+                        for k, acc_cost in getattr(task, "layer_acc_cost", {}).items():
+                            acc_util = task.layer_acc_util.get(k, 0.0)
+                            self.step_kpis[k]["step_cost"] += acc_cost
+                            self.step_kpis[k]["step_utility"] += acc_util
+                            self.cumulative_kpis["total_cost"] += acc_cost
+                            self.cumulative_kpis["total_utility"] += acc_util
+                            self.cumulative_kpis["per_layer"][k]["cost"] += acc_cost
+                            self.cumulative_kpis["per_layer"][k]["utility"] += acc_util
+
+                        # 完成计数（记在“最后一层”）
+                        self.cumulative_kpis["tasks_done"] += 1
+                        self.cumulative_kpis["per_layer"][layer_id]["tasks_done"] += 1
+
+                        # 清理并归档
+                        task.layer_acc_cost = {}
+                        task.layer_acc_util = {}
+                        self.finished_tasks.append(task)
+                        continue
+
+        # 推进全局时间
         self.time += 1
         self.cumulative_kpis["time"] = self.time
 

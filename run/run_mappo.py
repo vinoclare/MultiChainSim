@@ -17,7 +17,7 @@ from utils.utils import RunningMeanStd
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--alg_name", type=str, default="happo")
+parser.add_argument("--alg_name", type=str, default="mappo")
 args, _ = parser.parse_known_args()
 dire = args.dire
 alg_name = args.alg_name.lower()
@@ -90,6 +90,7 @@ for lid in range(num_layers):
             entropy_coef=ppo_config["entropy_coef"],
             initial_lr=ppo_config["initial_lr"],
             max_grad_norm=ppo_config["max_grad_norm"],
+            device=device,
             writer=writer,
             global_step_ref=[0],
             total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
@@ -102,6 +103,7 @@ for lid in range(num_layers):
             entropy_coef=ppo_config["entropy_coef"],
             initial_lr=ppo_config["initial_lr"],
             max_grad_norm=ppo_config["max_grad_norm"],
+            device=device,
             writer=writer,
             global_step_ref=[0],
             total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
@@ -170,6 +172,7 @@ for episode in range(num_episodes):
             buffers[lid]['values'].append(value)
 
         obs, (_, reward_detail), done, _ = env.step(actions)
+        # env.render(mode="human", box_width=8, box_gap=2)
         for lid in range(num_layers):
             r = reward_detail['layer_rewards'][lid]['reward']
             buffers[lid]['rewards'].append(r)
@@ -196,8 +199,7 @@ for episode in range(num_episodes):
             for t in reversed(range(len(buffers[lid]['rewards']))):
                 delta = (
                         buffers[lid]['rewards'][t] +
-                        gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) -
-                        vals[t]
+                        gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
                 )
                 gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
                 advs.insert(0, gae.copy())
