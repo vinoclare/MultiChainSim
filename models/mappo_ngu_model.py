@@ -35,6 +35,10 @@ class MAPPONGUModel(nn.Module):
         self.num_pad_tasks = num_pad_tasks
         D = hidden_dim
 
+        self.eps_greedy = 0.20  # ε：以 20% 概率走“均匀随机”分量
+        self.uniform_low = 0.0  # 均匀分量的最小值
+        self.uniform_high = 1.0  # 均匀分量的最大值
+
         # ----- Encoders ----- #
         self.task_encoder = RowWiseEncoder(task_input_dim, D, D)
         self.worker_load_encoder = nn.Sequential(
@@ -128,9 +132,29 @@ class MAPPONGUModel(nn.Module):
     def get_value(self, *args, **kwargs):
         return self.get_ext_value(*args, **kwargs)
 
-    def act(self, task_obs, worker_loads, worker_profiles, valid_mask=None):
+    def act(self, task_obs, worker_loads, worker_profiles, is_predict=False, valid_mask=None):
         mean, std = self.forward_actor(task_obs, worker_loads, worker_profiles, valid_mask)
         dist = torch.distributions.Normal(mean, std)
-        action = dist.sample()
-        log_prob = dist.log_prob(action)
+        if is_predict:
+            action = dist.rsample()
+            log_prob = dist.log_prob(action)
+            return action, log_prob, mean, std
+
+        # === ε-greedy（按元素混合）：以概率 ε 用均匀分量，否则用 Normal 分量 ===
+        # 1) 先各自采样
+        eps = float(self.eps_greedy)
+        a_norm = dist.rsample()
+        a_unif = torch.rand_like(mean) * (self.uniform_high - self.uniform_low) + self.uniform_low
+
+        # 2) 按元素 Bernoulli 掩码
+        mask = (torch.rand_like(mean) < eps).float()
+        action = mask * a_unif + (1.0 - mask) * a_norm
+
+        # 3) 用“混合分布”的密度计算 log_prob（与返回的 action 一致）
+        normal_logp = dist.log_prob(action)  # 元素级 log N(a)
+        normal_pdf = normal_logp.exp()  # 元素级 N(a)
+        uniform_pdf = torch.full_like(normal_pdf, 1.0 / (self.uniform_high - self.uniform_low))
+        mix_pdf = (1.0 - eps) * normal_pdf + eps * uniform_pdf  # 元素级混合密度
+        log_prob = torch.log(mix_pdf + 1e-8)  # 元素级 log 概率
+
         return action, log_prob, mean, std

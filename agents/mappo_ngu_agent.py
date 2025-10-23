@@ -29,16 +29,23 @@ class IndustrialAgent:
         valid_flag = task_obs_tensor[0, :, -1]
         return (valid_flag > 0).float().unsqueeze(0)  # (1, T)
 
-    def predict(self, task_obs_np, worker_obs_np, worker_profile_np):
+    def sample(self, task_obs_np, worker_obs_np, worker_profile_np):
         task_obs = self._pad_task_obs(task_obs_np)
         worker_obs = self._pad_worker_obs(worker_obs_np)
         profile = self._pad_worker_profile(worker_profile_np)
         valid_mask = self._get_valid_mask(task_obs)
 
-        mean = self.alg.predict(task_obs, worker_obs, profile, valid_mask)
-        return mean.detach().cpu().numpy()[0]
+        value_ext, value_int, action, log_prob, entropy = self.alg.sample(
+            task_obs, worker_obs, profile, valid_mask)
+        return (
+            value_ext[0].detach().cpu().numpy(),
+            value_int[0].detach().cpu().numpy(),
+            action[0].detach().cpu().numpy(),
+            log_prob[0].detach().cpu().numpy(),
+            entropy[0].detach().cpu().numpy()
+        )
 
-    def sample(self, task_obs_np, worker_obs_np, worker_profile_np):
+    def predict(self, task_obs_np, worker_obs_np, worker_profile_np):
         task_obs = self._pad_task_obs(task_obs_np)
         worker_obs = self._pad_worker_obs(worker_obs_np)
         profile = self._pad_worker_profile(worker_profile_np)

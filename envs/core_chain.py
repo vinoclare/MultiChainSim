@@ -227,6 +227,69 @@ class Layer:
         task_start_unassigned = [t.unassigned_amount for t in self.task_queue]
         total_assign_amount = 0.0
 
+        # ====== 新增：对“每个任务”的动作做一次就地消毒（最小改动）======
+        # 配置参数（可在 Layer 上挂属性；若无则使用默认值）
+        RHO = float(getattr(self, "action_cap_rho", 0.95))  # 单任务单worker占比上限（<1）
+        KEEP_REMAINING = bool(getattr(self, "action_keep_remaining", True))  # 和≤1时不放大
+        MIN_MASS = float(getattr(self, "action_min_mass", 1e-8))  # 视作全零的阈值
+
+        # 我们基于“真实在队列中的任务”进行消毒，pad 超出的列保持 0
+        num_real_tasks = len(self.task_queue)
+        if n_worker and num_real_tasks > 0:
+            # 转为 numpy 方便批量处理
+            acts = np.asarray(actions, dtype=np.float64)  # 形状 [W, Tpad]
+
+            for t_idx in range(num_real_tasks):
+                task = self.task_queue[t_idx]
+                # 仅对仍可分配的任务进行归一化（waiting 且未失败且仍有未分配量）
+                if not (task.status == "waiting" and (
+                not getattr(task, "failed", False)) and task.unassigned_amount > 0):
+                    # 清零该任务列，防止后续误分配
+                    acts[:, t_idx] = 0.0
+                    continue
+
+                # 取该任务对应的各 worker 动作向量（长度 = n_worker）
+                v = acts[:, t_idx].copy()
+
+                # 1) 掩码：仅允许有产能/总量余量的 worker 参与
+                valid = np.zeros(n_worker, dtype=bool)
+                for w_id, worker in enumerate(self.workers):
+                    task_type = task.task_type
+                    cap_left = worker.capacity_map.get(task_type, 0) - worker.current_load_map.get(task_type, 0)
+                    total_left = worker.max_total_load - worker.total_current_load
+                    valid[w_id] = (cap_left > 0) and (total_left > 0)
+
+                # 2) 非负化 + 无效位置零
+                v = np.where(valid, np.maximum(v, 0.0), 0.0)
+
+                # 3) “安全归一化”：和>1 则等比缩到 1；和≤1 则保留（允许留余量）
+                S = float(v.sum())
+                if S < MIN_MASS:
+                    # 全零：在有效位均分，保证不会单点
+                    cnt = int(valid.sum())
+                    if cnt > 0:
+                        v[valid] = 1.0 / cnt
+                        S = 1.0
+                if S > 1.0:
+                    v = v / S  # 缩到和=1
+                    S = 1.0
+                else:
+                    if not KEEP_REMAINING and S > 0.0:
+                        # 可选：用满（把和拉到1）。默认不开启以减少改动。
+                        v = v / S
+                        S = 1.0
+
+                # 4) 单任务占比上限 ρ（严格小于1），不回填被截掉的余量
+                if RHO < 1.0:
+                    v = np.minimum(v, max(0.0, RHO - 1e-9))
+
+                # 写回消毒后的列
+                acts[:, t_idx] = v
+
+            # 用消毒后的动作替换原 actions（后续逻辑不变）
+            actions = acts.tolist()
+        # ====== 消毒结束 =====================================================
+
         # 记录所有可分配项 (worker_id, task_idx, ratio)
         dispatch_list = []
         for worker_id, allocation in enumerate(actions):
@@ -254,7 +317,8 @@ class Layer:
             if cap_left <= 0 or total_left <= 0:
                 continue
 
-            ratio = min(max(ratio, 0.0), 1.0)
+            # 消毒后这里理论上已经满足 ratio < 1 且和 ≤ 1，这里仍做一次保险夹紧
+            ratio = min(max(ratio, 0.0), 0.999999)
             proposed_amount = ratio * task_start_unassigned[task_idx]
             assign_amount = min(proposed_amount, task.unassigned_amount, cap_left, total_left)
 

@@ -44,19 +44,25 @@ class MAPPONGU:
         valid_mask = valid_mask.to(self.device)
 
         action, log_prob, mean, std = self.model.act(
-            task_obs, worker_loads, worker_profile, valid_mask)
+            task_obs, worker_loads, worker_profile, False, valid_mask)
         dist = Normal(mean, std)
         ext_value = self.model.get_ext_value(task_obs, worker_loads, worker_profile, valid_mask)
         int_value = self.model.get_int_value(task_obs, worker_loads, worker_profile, valid_mask)
         return ext_value, int_value, action, log_prob.sum(dim=[1, 2]), dist.entropy().sum(dim=[1, 2])
 
-    def predict(self, task_obs, worker_loads, worker_profile, valid_mask):
+    def sample(self, task_obs, worker_loads, worker_profile, valid_mask):
         task_obs = task_obs.to(self.device)
         worker_loads = worker_loads.to(self.device)
         worker_profile = worker_profile.to(self.device)
         valid_mask = valid_mask.to(self.device)
-        mean, _ = self.model.forward_actor(task_obs, worker_loads, worker_profile, valid_mask)
-        return mean
+
+        action, log_prob, mean, std = self.model.act(
+            task_obs, worker_loads, worker_profile, True, valid_mask)
+        dist = Normal(mean, std)
+        ext_value = self.model.get_ext_value(task_obs, worker_loads, worker_profile, valid_mask)
+        int_value = self.model.get_int_value(task_obs, worker_loads, worker_profile, valid_mask)
+        return ext_value, int_value, action, log_prob.sum(dim=[1, 2]), dist.entropy().sum(dim=[1, 2])
+
 
     def value(self, task_obs, worker_loads, worker_profile, valid_mask):
         task_obs = task_obs.to(self.device)

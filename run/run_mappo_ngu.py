@@ -146,7 +146,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
                 task_obs = obs[lid]['task_queue']
                 worker_loads = obs[lid]['worker_loads']
                 profile = obs[lid]['worker_profile']
-                _, _, act, _, _ = agent_dict[lid].sample(task_obs, worker_loads, profile)
+                _, _, act, _, _ = agent_dict[lid].predict(task_obs, worker_loads, profile)
                 actions[lid] = act
             obs, (_, reward_detail), done, _ = eval_env.step(actions)
             for lid, layer_stats in reward_detail['layer_rewards'].items():
@@ -173,6 +173,7 @@ for episode in range(num_episodes):
         for lid in range(num_layers):
             task_obs, worker_loads, profile = process_obs(obs, lid)
             val_ext, val_int, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, profile)
+            ngu_modules[lid].set_last_action(action)
             actions[lid] = action
             valid_mask = task_obs[:, 3].astype(np.float32)
 
