@@ -67,7 +67,7 @@ n_worker, _ = act_space.shape
 n_task_types = len(env_config["task_types"])
 profile_dim = 2 * n_task_types
 
-log_dir = f'../logs/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+log_dir = f'../logs2/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
 writer = SummaryWriter(log_dir=log_dir)
 
 agents, algs, return_rms, buffers = {}, {}, {}, {}
