@@ -100,14 +100,6 @@ def _episode_worker(policy_states, with_new_schedule, seed):
 
 def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim):
     """每个子进程启动时调用一次：创建本进程持久复用的 env / agents（仅推理）"""
-    import json, numpy as np, torch  # 子进程内导入，避免主进程 import 副作用
-    from envs import IndustrialChain
-    from envs.env import MultiplexEnv
-    from models.mappo_model import MAPPOIndustrialModel
-    from algs.mappo import MAPPO
-    from algs.happo import HAPPO
-    from agents.mappo_agent import IndustrialAgent
-
     global g_env, g_agents, g_algs, g_num_layers, g_obs_space, g_profile_dim, g_n_worker, g_num_pad
 
     with open(env_config_path, "r", encoding="utf-8") as f:
@@ -270,7 +262,7 @@ def main():
     ) if args.num_workers > 1 else None
 
     # ===== Training loop =====
-    for episode in range(num_episodes / args.num_workers):
+    for episode in range(int(num_episodes / args.num_workers)):
         if args.num_workers == 1:
             if episode % reset_schedule_interval == 0:
                 obs = env.reset(with_new_schedule=True)
