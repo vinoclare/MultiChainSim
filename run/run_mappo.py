@@ -135,7 +135,6 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
                         initial_lr=3e-4, max_grad_norm=0.5,
                         writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
         else:
-            from algs.happo import HAPPO
             alg = HAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
                         initial_lr=3e-4, max_grad_norm=0.5,
                         writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
