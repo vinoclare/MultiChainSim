@@ -15,13 +15,12 @@ from algs.happo import HAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
 
-# NEW: ηψ 内在奖励模块
 from explore.eta_psi import EtaPsiModule
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--alg_name", type=str, default="happo")
+parser.add_argument("--alg_name", type=str, default="mappo")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 args, _ = parser.parse_known_args()
 dire = args.dire
@@ -40,9 +39,9 @@ worker_config_path = f"../configs/{dire}/worker_config.json"
 
 # ===== Intrinsic reward toggles (read from ppo_config; defaults provided) =====
 use_intrinsic = bool(ppo_config.get("use_intrinsic", False))
-ir_beta = float(ppo_config.get("ir_beta", 0.1))
+ir_beta = float(ppo_config.get("ir_beta", 5))
 ir_emb_dim = int(ppo_config.get("ir_emb_dim", 64))
-ir_gamma = float(ppo_config.get("ir_gamma", 0.99))
+ir_gamma = float(ppo_config.get("ir_gamma", 0.995))
 ir_lr = float(ppo_config.get("ir_lr", 1e-3))
 ir_grad_clip = float(ppo_config.get("ir_grad_clip", 5.0))
 
@@ -123,7 +122,6 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
         g_algs[lid] = alg
         g_agents[lid] = IndustrialAgent(alg, alg_name, device="cpu", num_pad_tasks=g_num_pad)
 
-    # NEW: 构造 per-layer ηψ 模块（CPU），使用一次 reset 拿 obs_dim
     g_use_intrinsic = bool(use_intrinsic)
     if g_use_intrinsic:
         boot = g_env.reset()  # 只用于确定维度

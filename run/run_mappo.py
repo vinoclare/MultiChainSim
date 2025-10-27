@@ -18,7 +18,7 @@ from utils.utils import RunningMeanStd
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--alg_name", type=str, default="happo")
+parser.add_argument("--alg_name", type=str, default="mappo")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 
 args, _ = parser.parse_known_args()
