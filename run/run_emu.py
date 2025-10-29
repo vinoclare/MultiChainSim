@@ -1,4 +1,3 @@
-# run/run_mappo_emu.py
 import torch
 import numpy as np
 import argparse
@@ -15,9 +14,9 @@ from algs.mappo import MAPPO
 from algs.happo import HAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
-from explore.emu import EMUPlugin  # EMU-CHANGE: 插件导入
 
-# ===== Load configurations =====
+from explore.emu import EMUPlugin
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="mappo")
@@ -31,154 +30,136 @@ with open(f'../configs/{dire}/env_config.json') as f:
 with open('../configs/ppo_config.json') as f:
     ppo_config = json.load(f)
 
-# EMU-CHANGE: 从 ppo_config 读取 EMU 配置（无命令行覆盖，最小改动）
-emu_cfg = ppo_config.get("emu", {}) if isinstance(ppo_config, dict) else {}
-EMU_USE = emu_cfg.get("use", True)
-EMU_ETA = emu_cfg.get("eta", 0.1)
-EMU_EMB = emu_cfg.get("embed_dim", 64)
-EMU_K = emu_cfg.get("knn", 32)
-EMU_TOPP = emu_cfg.get("top_p", 0.2)
-EMU_STEPS = emu_cfg.get("retrain_steps", 8)
-EMU_EVERY = emu_cfg.get("update_every", 1)
-
-# ===== Setup environment =====
-env_config_path = f'../configs/{dire}/env_config.json'
+# ===== Setup environment paths =====
+env_config_path = f"../configs/{dire}/env_config.json"
 schedule_path = f"../configs/{dire}/train_schedule.json"
 eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
 worker_config_path = f"../configs/{dire}/worker_config.json"
 
-mode = "load"
-if mode == "save":
-    env = MultiplexEnv(env_config_path, schedule_save_path=schedule_path, worker_config_save_path=worker_config_path)
-    eval_env = MultiplexEnv(env_config_path, schedule_save_path=eval_schedule_path)
-else:  # mode == "load"
-    env = MultiplexEnv(env_config_path, schedule_load_path=schedule_path, worker_config_load_path=worker_config_path)
-    eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
+# ===== EMU toggles from ppo_config (默认值给定，可在 ppo_config.json 的 "emu" 小节里覆盖) =====
+_emu_cfg = ppo_config.get("emu", {}) if isinstance(ppo_config, dict) else {}
+use_emu = bool(_emu_cfg.get("use", True))
+emu_eta = float(_emu_cfg.get("eta", 0.8))
+emu_embed_dim = int(_emu_cfg.get("embed_dim", 64))
+emu_knn = int(_emu_cfg.get("knn", 8))
+emu_top_p = float(_emu_cfg.get("top_p", 0.5))
+emu_retrain_steps = int(_emu_cfg.get("retrain_steps", 32))
+emu_update_every = int(_emu_cfg.get("update_every", 1))
+emu_scale_coef = float(_emu_cfg.get("scale_coef", 3.0))
 
-# ===== Hyperparameters =====
-num_layers = env_config["num_layers"]
-num_episodes = ppo_config["num_episodes"]
-steps_per_episode = env_config["max_steps"]
-update_epochs = ppo_config["update_epochs"]
-gamma = ppo_config["gamma"]
-lam = ppo_config["lam"]
-batch_size = ppo_config["batch_size"]
-hidden_dim = ppo_config["hidden_dim"]
-device = ppo_config["device"]
-log_interval = ppo_config["log_interval"]
-eval_interval = ppo_config["eval_interval"]
-eval_episodes = ppo_config["eval_episodes"]
-reset_schedule_interval = ppo_config["reset_schedule_interval"]
-
-# ===== Init per-layer models and agents =====
-obs_space = env.observation_space[0]
-act_space = env.action_space[0]
-n_worker, _ = act_space.shape
-n_task_types = len(env_config["task_types"])
-profile_dim = 2 * n_task_types
+# ===== Globals for workers (sampling only; 与 run_eta_psi.py 一致) =====
+g_env = None
+g_agents = None
+g_algs = None
+g_num_layers = None
+g_obs_space = None
+g_profile_dim = None
+g_n_worker = None
+g_num_pad = None
 
 
 def _snapshot_policy_states(algs_dict):
-    """将每层的策略参数打包成 CPU 张量，供并发 worker 使用。"""
+    """把每层当前策略权重做成只含张量的 state_dict，便于跨进程传递。"""
     return {lid: algs_dict[lid].model.state_dict() for lid in algs_dict}
 
 
-def _episode_worker(worker_id, dire, alg_name, policy_states, seed=None, with_new_schedule=False):
-    """单个进程采样一整条 episode，返回与主进程 buffers 相同键的样本字典（按层返回）。"""
-    import json, random, numpy as np, torch
-    from envs import IndustrialChain
-    from envs.env import MultiplexEnv
-    from models.mappo_model import MAPPOIndustrialModel
-    from algs.mappo import MAPPO
-    from algs.happo import HAPPO
-    from agents.mappo_agent import IndustrialAgent
+def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim):
+    """每个子进程启动时调用一次：创建本进程持久复用的 env / agents（仅推理）。"""
+    import json
+    global g_env, g_agents, g_algs, g_num_layers, g_obs_space, g_profile_dim, g_n_worker, g_num_pad
 
-    # 路径按传入的 dire 复用你现有的配置组织
-    env_config_path = f'../configs/{dire}/env_config.json'
-    schedule_path = f"../configs/{dire}/train_schedule.json"
-    worker_cfg_path = f"../configs/{dire}/worker_config.json"
-
-    with open(env_config_path) as f:
+    with open(env_config_path, "r", encoding="utf-8") as f:
         env_cfg = json.load(f)
 
-    # 为可重复性设置种子（不会影响主进程）
-    if seed is None:
-        seed = np.random.randint(0, 2 ** 31 - 1)
-    random.seed(seed);
-    np.random.seed(seed);
-    torch.manual_seed(seed)
+    # 子进程环境仅创建一次，后续 episode 复用
+    g_env = MultiplexEnv(env_config_path,
+                         schedule_load_path=schedule_path,
+                         worker_config_load_path=worker_config_path)
+    g_env.chain = IndustrialChain(g_env.worker_config)
 
-    # 每个 worker 自己建环境与链对象
-    env = MultiplexEnv(env_config_path, schedule_load_path=schedule_path, worker_config_load_path=worker_cfg_path)
-    env.worker_config = env.worker_config
-    env.chain = IndustrialChain(env.worker_config)
-
-    num_layers = env_cfg["num_layers"]
-    obs_space = env.observation_space[0]
-    act_space = env.action_space[0]
-    n_worker, _ = act_space.shape
+    g_num_layers = env_cfg["num_layers"]
+    obs_space = g_env.observation_space[0]
+    act_space = g_env.action_space[0]
+    g_n_worker, _ = act_space.shape
     n_task_types = len(env_cfg["task_types"])
-    profile_dim = 2 * n_task_types
-    hidden_dim = ppo_config["hidden_dim"]
+    g_profile_dim = 2 * n_task_types
+    g_num_pad = g_env.num_pad_tasks
+    g_obs_space = obs_space
 
-    agents, algs = {}, {}
-    for lid in range(num_layers):
+    # 只推理用的 Agent / Alg（CPU）
+    g_agents, g_algs = {}, {}
+    for lid in range(g_num_layers):
         model = MAPPOIndustrialModel(
             task_input_dim=obs_space['task_queue'].shape[1],
             worker_load_input_dim=obs_space['worker_loads'].shape[1],
-            worker_profile_input_dim=profile_dim,
-            n_worker=n_worker,
-            num_pad_tasks=env.num_pad_tasks,
+            worker_profile_input_dim=g_profile_dim,
+            n_worker=g_n_worker,
+            num_pad_tasks=g_num_pad,
             hidden_dim=hidden_dim
         )
-        if alg_name == "mappo":
+        if alg_name.lower() == "mappo":
             alg = MAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
                         initial_lr=3e-4, max_grad_norm=0.5,
-                        writer=None, global_step_ref=[0], total_training_steps=1)
+                        writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
         else:
             alg = HAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
                         initial_lr=3e-4, max_grad_norm=0.5,
-                        writer=None, global_step_ref=[0], total_training_steps=1)
+                        writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
+        g_algs[lid] = alg
+        g_agents[lid] = IndustrialAgent(alg, alg_name, device="cpu", num_pad_tasks=g_num_pad)
 
-        # 加载策略快照
-        alg.model.load_state_dict(policy_states[lid])
-        # 采样放 CPU，避免与主进程 GPU 争用
-        agents[lid] = IndustrialAgent(alg, alg_name, device="cpu", num_pad_tasks=env.num_pad_tasks)
-        algs[lid] = alg
 
-    # 和主进程 buffers 一致的结构
-    local_buffers = {lid: {k: [] for k in [
+def _episode_worker(policy_states, with_new_schedule, seed):
+    """跑一条 episode；返回按层的局部 buffers（只含外在奖励，EMU 在主进程统一做）。"""
+    import random as _random, numpy as _np, torch as _torch
+    global g_env, g_agents, g_algs, g_num_layers
+
+    _random.seed(seed)
+    _np.random.seed(seed)
+    _torch.manual_seed(seed)
+
+    # 加载主进程广播的策略快照（推理）
+    for lid in range(g_num_layers):
+        g_algs[lid].model.load_state_dict(policy_states[lid])
+
+    buffers_local = {lid: {k: [] for k in [
         'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-        'actions', 'logprobs', 'rewards', 'dones', 'values']} for lid in range(num_layers)
+        'actions', 'logprobs', 'rewards', 'dones', 'values']} for lid in range(g_num_layers)
                      }
 
-    obs = env.reset(with_new_schedule=with_new_schedule)
+    obs = g_env.reset(with_new_schedule=with_new_schedule)
     done = False
     while not done:
         actions = {}
-        for lid in range(num_layers):
+        for lid in range(g_num_layers):
             task_obs = obs[lid]['task_queue']
             worker_loads = obs[lid]['worker_loads']
             profile = obs[lid]['worker_profile']
-            value, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, profile)
+            value, action, logprob, _ = g_agents[lid].sample(task_obs, worker_loads, profile)
             actions[lid] = action
             valid_mask = task_obs[:, 3].astype(np.float32)
 
-            local_buffers[lid]['task_obs'].append(task_obs)
-            local_buffers[lid]['worker_loads'].append(worker_loads)
-            local_buffers[lid]['worker_profile'].append(profile)
-            local_buffers[lid]['valid_mask'].append(valid_mask)
-            local_buffers[lid]['actions'].append(action)
-            local_buffers[lid]['logprobs'].append(logprob)
-            local_buffers[lid]['values'].append(value)
+            buffers_local[lid]['task_obs'].append(task_obs)
+            buffers_local[lid]['worker_loads'].append(worker_loads)
+            buffers_local[lid]['worker_profile'].append(profile)
+            buffers_local[lid]['valid_mask'].append(valid_mask)
+            buffers_local[lid]['actions'].append(action)
+            buffers_local[lid]['logprobs'].append(logprob)
+            buffers_local[lid]['values'].append(value)
 
-        obs, (_, reward_detail), done, _ = env.step(actions)
-        for lid in range(num_layers):
-            r = reward_detail['layer_rewards'][lid]['reward']
-            local_buffers[lid]['rewards'].append(r)
-            local_buffers[lid]['dones'].append(done)
+        next_obs, (_, reward_detail), done, _ = g_env.step(actions)
+        for lid in range(g_num_layers):
+            ext_r = float(reward_detail['layer_rewards'][lid]['reward'])
+            buffers_local[lid]['rewards'].append(ext_r)
+            buffers_local[lid]['dones'].append(done)
+        obs = next_obs
 
-    return local_buffers
+    return buffers_local
+
+
+def process_obs(raw_obs, lid):
+    obs = raw_obs[lid]
+    return obs['task_queue'], obs['worker_loads'], obs['worker_profile']
 
 
 def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
@@ -188,11 +169,11 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
         done = False
         while not done:
             actions = {}
-            for lid, agent in agent_dict.items():
+            for lid in obs:
                 task_obs = obs[lid]['task_queue']
                 worker_loads = obs[lid]['worker_loads']
                 profile = obs[lid]['worker_profile']
-                _, act, _, _ = agent.sample(task_obs, worker_loads, profile)
+                _, act, _, _ = agent_dict[lid].sample(task_obs, worker_loads, profile)
                 actions[lid] = act
             obs, (_, reward_detail), done, _ = eval_env.step(actions)
             for lid, layer_stats in reward_detail['layer_rewards'].items():
@@ -207,17 +188,43 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
     writer.add_scalar("eval/waiting_penalty", total_wait_penalty / num_episodes, global_step)
 
 
-def process_obs(obs, lid):
-    """把 env 的观测打平为模型输入（与你原本一致）。"""
-    task_obs = obs[lid]['task_queue']
-    worker_loads = obs[lid]['worker_loads']
-    profile = obs[lid]['worker_profile']
-    return task_obs, worker_loads, profile
-
-
 def main():
-    agents, algs, return_rms, buffers = {}, {}, {}, {}
+    mode = "load"
+    if mode == "save":
+        env = MultiplexEnv(env_config_path, schedule_save_path=schedule_path,
+                           worker_config_save_path=worker_config_path)
+        eval_env = MultiplexEnv(env_config_path, schedule_save_path=eval_schedule_path)
+    else:  # "load"
+        env = MultiplexEnv(env_config_path, schedule_load_path=schedule_path,
+                           worker_config_load_path=worker_config_path)
+        eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
 
+    eval_env.worker_config = env.worker_config
+    eval_env.chain = IndustrialChain(eval_env.worker_config)
+
+    # ===== Hyperparameters =====
+    num_layers = env_config["num_layers"]
+    num_episodes = ppo_config["num_episodes"]
+    steps_per_episode = env_config["max_steps"]
+    update_epochs = ppo_config["update_epochs"]
+    gamma = ppo_config["gamma"]
+    lam = ppo_config["lam"]
+    batch_size = ppo_config["batch_size"]
+    hidden_dim = ppo_config["hidden_dim"]
+    device = ppo_config["device"]
+    log_interval = ppo_config["log_interval"]
+    eval_interval = ppo_config["eval_interval"] / max(1, args.num_workers)
+    eval_episodes = ppo_config["eval_episodes"]
+    reset_schedule_interval = ppo_config["reset_schedule_interval"]
+
+    # ===== Init per-layer models and agents (learning side, main process) =====
+    obs_space = env.observation_space[0]
+    act_space = env.action_space[0]
+    n_worker, _ = act_space.shape
+    n_task_types = len(env_config["task_types"])
+    profile_dim = 2 * n_task_types
+
+    agents, algs, return_rms, buffers = {}, {}, {}, {}
     for lid in range(num_layers):
         model = MAPPOIndustrialModel(
             task_input_dim=obs_space['task_queue'].shape[1],
@@ -240,7 +247,7 @@ def main():
                 global_step_ref=[0],
                 total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
             )
-        else:
+        else:  # happo
             alg = HAPPO(
                 model,
                 clip_param=ppo_config["clip_param"],
@@ -253,25 +260,34 @@ def main():
                 total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
             )
 
-        agents[lid] = IndustrialAgent(alg, "mappo", device, env.num_pad_tasks)
+        agents[lid] = IndustrialAgent(alg, alg_name, device, env.num_pad_tasks)
         algs[lid] = alg
         return_rms[lid] = RunningMeanStd()
         buffers[lid] = {k: [] for k in [
             'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-            'actions', 'logprobs', 'rewards', 'dones', 'values']
-                        }
+            'actions', 'logprobs', 'rewards', 'dones', 'values']}
 
-    # EMU-CHANGE: 插件实例化
-    emu = EMUPlugin(embed_dim=EMU_EMB, knn=EMU_K, top_p=EMU_TOPP, retrain_steps=EMU_STEPS) if EMU_USE else None
+    # ===== EMU plugin (主进程持有、跨 episode 共享记忆) =====
+    emu = EMUPlugin(
+        embed_dim=emu_embed_dim, knn=emu_knn, top_p=emu_top_p, retrain_steps=emu_retrain_steps
+    ) if use_emu else None
+
+    # ===== Process pool for distributed sampling =====
+    pool = mp.Pool(
+        processes=args.num_workers,
+        initializer=_init_worker,
+        initargs=(env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim)
+    ) if args.num_workers > 1 else None
 
     # ===== Training loop =====
-    for episode in range(num_episodes):
+    for episode in range(int(num_episodes / max(1, args.num_workers))):
         if args.num_workers == 1:
-            # ——原有单环境采样路径（与你现有实现一致）——
+            # 单进程路径：与 run_eta_psi.py 相同，只采样外在奖励
             if episode % reset_schedule_interval == 0:
                 obs = env.reset(with_new_schedule=True)
             else:
                 obs = env.reset()
+
             for step in range(steps_per_episode):
                 actions = {}
                 for lid in range(num_layers):
@@ -288,29 +304,31 @@ def main():
                     buffers[lid]['logprobs'].append(logprob)
                     buffers[lid]['values'].append(value)
 
-                obs, (_, reward_detail), done, _ = env.step(actions)
+                obs_next, (_, reward_detail), done, _ = env.step(actions)
                 for lid in range(num_layers):
-                    r = reward_detail['layer_rewards'][lid]['reward']
-                    buffers[lid]['rewards'].append(r)
+                    ext_r = float(reward_detail['layer_rewards'][lid]['reward'])
+                    buffers[lid]['rewards'].append(ext_r)
                     buffers[lid]['dones'].append(done)
+                obs = obs_next
                 if done:
                     break
         else:
-            # ——分布式并发采样：N 个进程各跑一条 episode 然后拼回 buffers——
+            # 分布式并发采样：N 个进程各跑一条 episode，然后拼回 buffers（外在奖励）
             policy_states = _snapshot_policy_states(algs)
             with_new_schedule = (episode % reset_schedule_interval == 0)
 
-            # 为每个 worker 分配独立随机种子
             seeds = np.random.randint(0, 2 ** 31 - 1, size=args.num_workers).tolist()
+            results = pool.starmap(
+                _episode_worker,
+                [(policy_states, with_new_schedule, int(seeds[wid]))
+                 for wid in range(args.num_workers)]
+            )
 
-            with mp.Pool(processes=args.num_workers) as pool:
-                results = pool.starmap(
-                    _episode_worker,
-                    [(wid, dire, alg_name, policy_states, seeds[wid], with_new_schedule)
-                     for wid in range(args.num_workers)]
-                )
-            # 把每个 worker 的轨迹拼回主 buffers（逐层、逐键拼接）
+            # 先清空，再把所有 worker 的按步样本拼接回主进程 buffers（逐层、逐键）
             for lid in range(num_layers):
+                for k in buffers[lid]:
+                    buffers[lid][k].clear()
+
                 def _cat_list(key):
                     return sum([res[lid][key] for res in results], [])
 
@@ -318,25 +336,40 @@ def main():
                             'actions', 'logprobs', 'values', 'rewards', 'dones']:
                     buffers[lid][key].extend(_cat_list(key))
 
-        # EMU-CHANGE: 在计算 GAE/returns 之前做奖励塑形，并更新记忆
-        if EMU_USE and emu is not None and (episode % EMU_EVERY == 0):
-            bonus = emu.compute_bonus_from_buffers(buffers)  # shape [T]
+        # ====== EMU 奖励塑形（唯一改动点 1）：在 GAE/Returns 之前 ======
+        if use_emu and emu is not None and (episode % max(1, emu_update_every) == 0):
+            bonus = emu.compute_bonus_from_buffers(buffers)  # [T]
             T = len(next(iter(buffers.values()))['rewards'])
-            if bonus.shape[0] > T:
-                bonus = bonus[:T]
-            # 对每一层叠加奖励塑形（CTDE：训练期可见全局）
+            if bonus.shape[0] > T: bonus = bonus[:T]
+
+            b = bonus.astype(np.float32)
+            b = (b - b.mean()) / (b.std() + 1e-8)
+            b = np.maximum(0.0, b)
+
+            r_mat = np.stack([np.asarray(buffers[lid]['rewards'], dtype=np.float32)[:T] for lid in range(num_layers)],
+                             axis=0)
+            r_std = float(np.std(r_mat))
+            scaled_bonus = b * (emu_scale_coef * r_std)  # ← 用配置里的 scale_coef
+
             for lid in range(num_layers):
                 for t in range(T):
-                    buffers[lid]['rewards'][t] = float(buffers[lid]['rewards'][t]) + float(EMU_ETA) * float(bonus[t]) / float(num_layers)
-            # 用本回合数据更新记忆（轻量训练）
+                    buffers[lid]['rewards'][t] = float(buffers[lid]['rewards'][t]) + float(emu_eta) * float(
+                        scaled_bonus[t]) / float(num_layers)
+
             emu.update_memory_from_buffers(buffers, gamma=gamma)
+
+            # 方便你排查强度是否合理的日志（可留可去）
             try:
-                writer.add_scalar("emu/bonus_mean", float(np.mean(bonus)) if bonus.size else 0.0,
+                writer.add_scalar("emu/bonus_raw_mean", float(np.mean(bonus)) if bonus.size else 0.0,
                                   episode * steps_per_episode)
+                writer.add_scalar("emu/bonus_scaled_mean", float(np.mean(scaled_bonus)) if bonus.size else 0.0,
+                                  episode * steps_per_episode)
+                writer.add_scalar("emu/reward_std_per_ep", r_std, episode * steps_per_episode)
             except Exception:
                 pass
+        # ============================================================
 
-        # ===== Learn each agent independently =====
+        # ===== Learn each agent independently（下方与 run_eta_psi.py 保持一致）=====
         for lid in range(num_layers):
             if alg_name.lower() == "mappo":
                 advs, rets = [], []
@@ -352,8 +385,7 @@ def main():
                 vals = buffers[lid]['values'] + [0.0]
                 gae = 0.0
                 for t in reversed(range(len(buffers[lid]['rewards']))):
-                    delta = (buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[
-                        t])
+                    delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
                     gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
                     advs.insert(0, gae.copy())
                 rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
@@ -373,44 +405,47 @@ def main():
                 buffers[lid]['worker_profile'],
                 buffers[lid]['valid_mask'],
                 buffers[lid]['actions'],
-                buffers[lid]['values'],  # 注意：values_old 需要传入
-                rets,  # returns
-                buffers[lid]['logprobs'],  # log_probs_old
-                advs  # advantages
+                buffers[lid]['values'],
+                rets,
+                buffers[lid]['logprobs'],
+                advs
             ))
 
             for _ in range(update_epochs):
                 random.shuffle(dataset)
                 for i in range(0, len(dataset), batch_size):
                     batch = dataset[i:i + batch_size]
-                    (task_batch, load_batch, prof_batch, mask_batch,
-                     act_batch, val_batch, ret_batch, logp_batch, adv_batch) = zip(*batch)
-
+                    task_batch, load_batch, prof_batch, mask_batch, act_batch, val_batch, ret_batch, logp_batch, adv_batch = zip(*batch)
                     algs[lid].learn(
                         torch.tensor(np.array(task_batch, dtype=np.float32)),
                         torch.tensor(np.array(load_batch, dtype=np.float32)),
                         torch.tensor(np.array(prof_batch, dtype=np.float32)),
                         torch.tensor(np.array(mask_batch, dtype=np.float32)),
                         torch.tensor(np.array(act_batch, dtype=np.float32)),
-                        torch.tensor(np.array(val_batch, dtype=np.float32)),  # values_old
-                        torch.tensor(np.array(ret_batch, dtype=np.float32)),  # returns
-                        torch.tensor(np.array(logp_batch, dtype=np.float32)),  # log_probs_old
-                        torch.tensor(np.array(adv_batch, dtype=np.float32)),  # advantages
-                        episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)  # current_steps
+                        torch.tensor(np.array(val_batch, dtype=np.float32)),
+                        torch.tensor(np.array(ret_batch, dtype=np.float32)),
+                        torch.tensor(np.array(logp_batch, dtype=np.float32)),
+                        torch.tensor(np.array(adv_batch, dtype=np.float32)),
+                        episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)
                     )
 
-            # 清空本层缓存
+        # 清空 buffers 进入下个周期
+        for lid in buffers:
             for k in buffers[lid]:
                 buffers[lid][k].clear()
 
         if episode % eval_interval == 0:
-            evaluate_policy(agents, eval_env, eval_episodes, writer, episode * steps_per_episode)
+            evaluate_policy(agents, eval_env, eval_episodes,
+                            writer, episode * steps_per_episode * max(1, args.num_workers))
+
+    if pool is not None:
+        pool.close()
+        pool.join()
 
 
 if __name__ == "__main__":
     # Windows/macOS 下多进程需要 spawn；Linux 也可保持一致
     log_dir = f'../logs2/emu/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
-
     mp.set_start_method("spawn", force=True)
     main()

@@ -1,12 +1,3 @@
-# explore/emu.py
-# 简介：
-#   EMUPlugin：一个最小依赖的情节记忆插件（Episodic Memory for MARL）。
-#   功能：
-#     1) 把当前 episode 的跨层观测拼为“训练期全局状态”并做嵌入（dCAE）
-#     2) 维护“可取状态”记忆（按 RTG 的 top-p 写入）
-#     3) 基于记忆做相似检索，返回逐步 episodic 激励，用于奖励塑形
-# 依赖：仅 torch / numpy。与现有 MAPPO/HAPPO/环境完全解耦。
-
 from __future__ import annotations
 import math
 import numpy as np
@@ -56,7 +47,7 @@ class EMUPlugin:
         retrain_steps: int = 8,
         max_memory: int = 50000,
         device: Optional[str] = None,
-        include_keys: Tuple[str, ...] = ("task_obs", "worker_loads", "worker_profile"),
+        include_keys: Tuple[str, ...] = ("task_obs", "worker_loads", "worker_profile", "valid_mask"),
     ):
         self.embed_dim = int(embed_dim)
         self.knn = int(knn)
@@ -103,12 +94,14 @@ class EMUPlugin:
         chunks: List[np.ndarray] = []
 
         for t in range(T):
-            vec_t: List[np.ndarray] = []
+            vec_t = []
             for lid in lids:
                 for k in self.include_keys:
-                    # 单步数据：数组或列表，统一转 numpy 并展平
-                    v = _to_numpy(buffers[lid][k][t]).reshape(-1)
-                    vec_t.append(v.astype(np.float32, copy=False))
+                    v = _to_numpy(buffers[lid][k][t]).reshape(-1).astype(np.float32, copy=False)
+                    vec_t.append(v)
+
+                a = _to_numpy(buffers[lid]['actions'][t]).reshape(-1).astype(np.float32, copy=False)
+                vec_t.append(a)
             chunks.append(np.concatenate(vec_t, axis=0))
 
         states = np.stack(chunks, axis=0)  # [T, D]
