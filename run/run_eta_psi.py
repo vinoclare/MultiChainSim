@@ -20,7 +20,7 @@ from explore.eta_psi import EtaPsiModule
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--alg_name", type=str, default="mappo")
+parser.add_argument("--alg_name", type=str, default="happo")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 args, _ = parser.parse_known_args()
 dire = args.dire
@@ -32,14 +32,14 @@ with open('../configs/ppo_config.json') as f:
     ppo_config = json.load(f)
 
 # ===== Setup environment paths =====
-env_config_path = f'../configs/{dire}/env_config.json'
+env_config_path = f"../configs/{dire}/env_config.json"
 schedule_path = f"../configs/{dire}/train_schedule.json"
 eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
 worker_config_path = f"../configs/{dire}/worker_config.json"
 
 # ===== Intrinsic reward toggles (read from ppo_config; defaults provided) =====
-use_intrinsic = bool(ppo_config.get("use_intrinsic", False))
-ir_beta = float(ppo_config.get("ir_beta", 5))
+use_intrinsic = bool(ppo_config.get("use_intrinsic", True))
+ir_beta = float(ppo_config.get("ir_beta", 1))
 ir_emb_dim = int(ppo_config.get("ir_emb_dim", 64))
 ir_gamma = float(ppo_config.get("ir_gamma", 0.995))
 ir_lr = float(ppo_config.get("ir_lr", 1e-3))
@@ -54,7 +54,6 @@ g_obs_space = None
 g_profile_dim = None
 g_n_worker = None
 g_num_pad = None
-# NEW: per-layer ηψ 模块持久驻留在子进程
 g_eta_psi_mod = None
 g_use_intrinsic = use_intrinsic
 g_ir_beta = ir_beta
@@ -76,8 +75,8 @@ def _flatten_obs_vec(raw_obs, lid):
     return vec
 
 
-def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim,
-                 use_intrinsic, ir_emb_dim, ir_gamma, ir_lr, ir_grad_clip):
+def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim,
+                 use_intrinsic, ir_emb_dim, ir_gamma, ir_lr, ir_grad_clip, ir_beta):
     """每个子进程启动时调用一次：创建本进程持久复用的 env / agents（仅推理）以及 ηψ 模块。"""
     global g_env, g_agents, g_algs, g_num_layers, g_obs_space, g_profile_dim, g_n_worker, g_num_pad
     global g_eta_psi_mod, g_use_intrinsic, g_ir_beta, g_ir_params
@@ -123,6 +122,7 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
         g_agents[lid] = IndustrialAgent(alg, alg_name, device="cpu", num_pad_tasks=g_num_pad)
 
     g_use_intrinsic = bool(use_intrinsic)
+    g_ir_beta = float(ir_beta)
     if g_use_intrinsic:
         boot = g_env.reset()  # 只用于确定维度
         g_eta_psi_mod = {}
@@ -163,6 +163,12 @@ def _episode_worker(policy_states, with_new_schedule, seed):
         'actions', 'logprobs', 'rewards', 'dones', 'values']} for lid in range(g_num_layers)
                      }
 
+    ext_mean = 0.0
+    ext_m2 = 0.0
+    int_mean = 0.0
+    int_m2 = 0.0
+    count = 0
+
     obs = g_env.reset(with_new_schedule=with_new_schedule)
     done = False
     while not done:
@@ -193,8 +199,22 @@ def _episode_worker(policy_states, with_new_schedule, seed):
             ext_r = float(reward_detail['layer_rewards'][lid]['reward'])
             if g_use_intrinsic:
                 sp_vec = _flatten_obs_vec(next_obs, lid)
+                count += 1
+                ext_delta = ext_r - ext_mean
+                ext_mean += ext_delta / count
+                ext_m2 += ext_delta * (ext_r - ext_mean)
+
                 r_int = float(g_eta_psi_mod[lid].update_and_bonus(s_vec[lid], sp_vec))
-                r_total = ext_r + float(g_ir_beta) * r_int
+                int_delta = r_int - int_mean
+                int_mean += int_delta / count
+                int_m2 += int_delta * (r_int - int_mean)
+
+                ext_std = np.sqrt(max(ext_m2 / (count - 1), 1e-8)) if count > 1 else 1.0
+                int_std = np.sqrt(max(int_m2 / (count - 1), 1e-8)) if count > 1 else 1.0
+
+                # 同回合去均值并对齐尺度
+                r_int_adj = (r_int - int_mean) * (ext_std / (int_std + 1e-8))
+                r_total = ext_r + float(g_ir_beta) * r_int_adj
             else:
                 r_total = ext_r
 
@@ -320,9 +340,9 @@ def main():
     pool = mp.Pool(
         processes=args.num_workers,
         initializer=_init_worker,
-        initargs=(dire, env_config_path, schedule_path, worker_config_path,
+        initargs=(env_config_path, schedule_path, worker_config_path,
                   alg_name, hidden_dim,
-                  use_intrinsic, ir_emb_dim, ir_gamma, ir_lr, ir_grad_clip)
+                  use_intrinsic, ir_emb_dim, ir_gamma, ir_lr, ir_grad_clip, ir_beta)
     ) if args.num_workers > 1 else None
 
     # ===== Training loop =====

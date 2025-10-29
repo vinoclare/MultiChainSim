@@ -28,6 +28,7 @@ class EtaPsiModule(nn.Module):
 
         # 折扣前驱累计向量 η
         self.register_buffer("eta_vec", torch.zeros(emb_dim, device=self.device))
+        self.register_buffer("ri_ma", torch.zeros(1, device=self.device))  # 指数滑动均值
 
     @torch.no_grad()
     def reset(self):
@@ -43,18 +44,18 @@ class EtaPsiModule(nn.Module):
         """
         用(s, s')做一次 TD 更新，并返回针对 s 的内在奖励（标量 float）。
         """
-        s  = torch.as_tensor(s_vec_np, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, D]
+        s = torch.as_tensor(s_vec_np, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, D]
         sp = torch.as_tensor(sp_vec_np, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-        e_s  = self._embed(s)   # [1, E]
+        e_s = self._embed(s)  # [1, E]
         e_sp = self._embed(sp)  # [1, E]
 
         # 目标：ψ(s) ≈ e(s) + γ ψ(s')
         with torch.no_grad():
-            psi_sp = self.psi_head(e_sp)        # [1, E]
-            target = e_s + self.gamma * psi_sp  # [1, E]
+            psi_sp = self.psi_head(e_sp)  # [1, E]
 
-        pred = self.psi_head(e_s)               # [1, E]
+        target = (e_s + self.gamma * psi_sp).detach()  # [1, E]
+        pred = self.psi_head(e_s)  # [1, E]
         loss = F.mse_loss(pred, target)
 
         self.opt.zero_grad(set_to_none=True)
@@ -68,7 +69,9 @@ class EtaPsiModule(nn.Module):
 
             counts = self.eta_vec + pred.detach().squeeze(0)  # η + ψ(s)
             # 伪计数 -> 奖励：n^(-1/2)。用均值二范数做标量化更稳定
-            pseudo = torch.mean(counts.pow(2)).sqrt()         # 标量
-            r_int = 1.0 / torch.sqrt(1e-6 + pseudo)
+            norm = counts.pow(2).mean().sqrt()
+            r_raw = -torch.log(1e-6 + norm)
+            self.ri_ma.mul_(0.99).add_(0.01 * r_raw)
+            r_int = r_raw - self.ri_ma.item()
 
         return float(r_int)
