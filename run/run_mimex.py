@@ -15,7 +15,7 @@ from algs.happo import HAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
 
-from explore.eta_psi import EtaPsiModule
+from explore.mimex import MIMExModule  # ← 替换：原来是 explore.eta_psi import EtaPsiModule
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
@@ -44,6 +44,13 @@ ir_emb_dim = int(ppo_config.get("ir_emb_dim", 64))
 ir_gamma = float(ppo_config.get("ir_gamma", 0.995))
 ir_lr = float(ppo_config.get("ir_lr", 1e-3))
 ir_grad_clip = float(ppo_config.get("ir_grad_clip", 5.0))
+
+# For MIMEx, interpret ir_gamma as mask_ratio; prefer ppo_config['mimex']['mask_ratio'] if provided.
+try:
+    _mimex_cfg = ppo_config.get("mimex", {}) if isinstance(ppo_config, dict) else {}
+    ir_gamma = float(_mimex_cfg.get("mask_ratio", 0.15))
+except Exception:
+    ir_gamma = 0.15
 
 # ===== Globals for workers (sampling only) =====
 g_env = None
@@ -77,7 +84,7 @@ def _flatten_obs_vec(raw_obs, lid):
 
 def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim,
                  use_intrinsic, ir_emb_dim, ir_gamma, ir_lr, ir_grad_clip, ir_beta):
-    """每个子进程启动时调用一次：创建本进程持久复用的 env / agents（仅推理）以及 ηψ 模块。"""
+    """每个子进程启动时调用一次：创建本进程持久复用的 env / agents（仅推理）以及 MIMEx 模块。"""
     global g_env, g_agents, g_algs, g_num_layers, g_obs_space, g_profile_dim, g_n_worker, g_num_pad
     global g_eta_psi_mod, g_use_intrinsic, g_ir_beta, g_ir_params
 
@@ -94,13 +101,15 @@ def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, h
     obs_space = g_env.observation_space[0]
     act_space = g_env.action_space[0]
     g_n_worker, _ = act_space.shape
+    g_num_pad = int(obs_space['task_queue'].shape[0])
     n_task_types = len(env_cfg["task_types"])
     g_profile_dim = 2 * n_task_types
     g_num_pad = g_env.num_pad_tasks
     g_obs_space = obs_space
 
-    # 只推理用的 Agent / Alg（CPU）
-    g_agents, g_algs = {}, {}
+    # 构造仅推理用 agent（加载主进程广播的策略权重）
+    device = "cpu"
+    g_algs, g_agents = {}, {}
     for lid in range(g_num_layers):
         model = MAPPOIndustrialModel(
             task_input_dim=obs_space['task_queue'].shape[1],
@@ -110,10 +119,19 @@ def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, h
             num_pad_tasks=g_num_pad,
             hidden_dim=hidden_dim
         )
-        if alg_name.lower() == "mappo":
-            alg = MAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
-                        initial_lr=3e-4, max_grad_norm=0.5,
-                        writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
+        if alg_name == "mappo":
+            alg = MAPPO(
+                model,
+                clip_param=0.2,
+                value_loss_coef=0.5,
+                entropy_coef=0.0,
+                initial_lr=3e-4,
+                max_grad_norm=0.5,
+                writer=None,
+                global_step_ref=[0],
+                total_training_steps=1,
+                device=device
+            )
         else:
             alg = HAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
                         initial_lr=3e-4, max_grad_norm=0.5,
@@ -128,10 +146,10 @@ def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, h
         g_eta_psi_mod = {}
         for lid in range(g_num_layers):
             dim = _flatten_obs_vec(boot, lid).shape[0]
-            g_eta_psi_mod[lid] = EtaPsiModule(
+            g_eta_psi_mod[lid] = MIMExModule(
                 obs_dim=dim,
                 emb_dim=int(ir_emb_dim),
-                gamma=float(ir_gamma),
+                mask_ratio=float(ir_gamma),  # ir_gamma 在本文件中被重用为 mask_ratio
                 lr=float(ir_lr),
                 device="cpu",
                 grad_clip=float(ir_grad_clip)
@@ -141,38 +159,46 @@ def _init_worker(env_config_path, schedule_path, worker_config_path, alg_name, h
 
 
 def _episode_worker(policy_states, with_new_schedule, seed):
-    """跑一条 episode，包含 ηψ 内在奖励；返回按层的局部 buffers。"""
+    """跑一条 episode，包含 MIMEx 内在奖励；返回按层的局部 buffers。"""
     import numpy as _np, torch as _torch, random as _random
     global g_env, g_agents, g_algs, g_num_layers, g_eta_psi_mod, g_use_intrinsic, g_ir_beta
 
-    _random.seed(seed);
-    _np.random.seed(seed);
+    _random.seed(seed)
+    _np.random.seed(seed)
     _torch.manual_seed(seed)
 
     # 加载主进程广播的策略快照（推理）
     for lid in range(g_num_layers):
         g_algs[lid].model.load_state_dict(policy_states[lid])
 
-    # 每个 episode 开头重置 η
+    # 每个 episode 开头重置 MIMEx
     if g_use_intrinsic:
-        for lid in g_eta_psi_mod:
+        for lid in range(g_num_layers):
             g_eta_psi_mod[lid].reset()
 
-    buffers_local = {lid: {k: [] for k in [
-        'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-        'actions', 'logprobs', 'rewards', 'dones', 'values']} for lid in range(g_num_layers)
-                     }
+    # 重新开局
+    if with_new_schedule:
+        obs = g_env.reset(with_new_schedule=True)
+    else:
+        obs = g_env.reset()
 
-    ext_mean = 0.0
-    ext_m2 = 0.0
-    int_mean = 0.0
-    int_m2 = 0.0
+    # 局部 buffers
+    buffers_local = {
+        lid: {k: [] for k in [
+            'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
+            'actions', 'logprobs', 'rewards', 'dones', 'values'
+        ]}
+        for lid in range(g_num_layers)
+    }
+
+    # 局部在线去均值、对齐尺度（内外在）
+    ext_mean = 0.0; ext_m2 = 0.0
+    int_mean = 0.0; int_m2 = 0.0
     count = 0
 
-    obs = g_env.reset(with_new_schedule=with_new_schedule)
     done = False
     while not done:
-        # 先为 IR 记录 s（按层向量化）
+        # 可选：提前摊平向量用于 IR
         if g_use_intrinsic:
             s_vec = {lid: _flatten_obs_vec(obs, lid) for lid in range(g_num_layers)}
 
@@ -214,7 +240,7 @@ def _episode_worker(policy_states, with_new_schedule, seed):
 
                 # 同回合去均值并对齐尺度
                 r_int_adj = (r_int - int_mean) * (ext_std / (int_std + 1e-8))
-                r_total = ext_r + float(g_ir_beta) * r_int_adj
+                r_total = ext_r + float(g_ir_beta) * float(r_int_adj)
             else:
                 r_total = ext_r
 
@@ -274,26 +300,29 @@ def main():
     # ===== Hyperparameters =====
     num_layers = env_config["num_layers"]
     num_episodes = ppo_config["num_episodes"]
+    hidden_dim = ppo_config["hidden_dim"]
+    device = ppo_config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     steps_per_episode = env_config["max_steps"]
     update_epochs = ppo_config["update_epochs"]
-    gamma = ppo_config["gamma"]
-    lam = ppo_config["lam"]
     batch_size = ppo_config["batch_size"]
-    hidden_dim = ppo_config["hidden_dim"]
-    device = ppo_config["device"]
-    log_interval = ppo_config["log_interval"]
+    gamma = ppo_config["gamma"]
+    gae_lambda = ppo_config["lam"]
     eval_interval = ppo_config["eval_interval"] / max(1, args.num_workers)
-    eval_episodes = ppo_config["eval_episodes"]
-    reset_schedule_interval = ppo_config["reset_schedule_interval"]
+    eval_episodes = ppo_config.get("eval_episodes", 5)
+    reset_schedule_interval = env_config.get("reset_schedule_interval", 5)
 
-    # ===== Init per-layer models and agents (learning side, main process) =====
+    # ===== Build agents per layer =====
+    agents = {}
+    algs = {}
+    return_rms = {}
+    buffers = {}
+
     obs_space = env.observation_space[0]
     act_space = env.action_space[0]
     n_worker, _ = act_space.shape
     n_task_types = len(env_config["task_types"])
     profile_dim = 2 * n_task_types
 
-    agents, algs, return_rms, buffers = {}, {}, {}, {}
     for lid in range(num_layers):
         model = MAPPOIndustrialModel(
             task_input_dim=obs_space['task_queue'].shape[1],
@@ -303,7 +332,6 @@ def main():
             num_pad_tasks=env.num_pad_tasks,
             hidden_dim=hidden_dim
         )
-
         if alg_name == "mappo":
             alg = MAPPO(
                 model,
@@ -348,20 +376,20 @@ def main():
     # ===== Training loop =====
     for episode in range(int(num_episodes / max(1, args.num_workers))):
         if args.num_workers == 1:
-            # 单进程路径：也接入 ηψ（保持与分布式一致的逻辑）
+            # 单进程路径：也接入 MIMEx（保持与分布式一致的逻辑）
             if episode % reset_schedule_interval == 0:
                 obs = env.reset(with_new_schedule=True)
             else:
                 obs = env.reset()
 
-            # 单进程下临时构造 ηψ（只在开启 IR 时）
+            # 单进程下临时构造 MIMEx（只在开启 IR 时）
             if use_intrinsic:
                 eta_psi_mod = {}
                 boot = obs
                 for lid in range(num_layers):
                     dim = _flatten_obs_vec(boot, lid).shape[0]
-                    eta_psi_mod[lid] = EtaPsiModule(
-                        obs_dim=dim, emb_dim=ir_emb_dim, gamma=ir_gamma,
+                    eta_psi_mod[lid] = MIMExModule(
+                        obs_dim=dim, emb_dim=ir_emb_dim, mask_ratio=ir_gamma,
                         lr=ir_lr, device=device, grad_clip=ir_grad_clip
                     )
                     eta_psi_mod[lid].reset()
@@ -410,66 +438,51 @@ def main():
                  for wid in range(args.num_workers)]
             )
 
-            # 先清空，再把所有 worker 的按步样本拼接回主进程 buffers（逐层、逐键）
-            for lid in range(num_layers):
-                for k in buffers[lid]:
-                    buffers[lid][k].clear()
+            # 汇总回主进程 buffers
+            for wid in range(args.num_workers):
+                local = results[wid]
+                for lid in range(num_layers):
+                    for k in buffers[lid]:
+                        buffers[lid][k].extend(local[lid][k])
 
-                def _cat_list(key):
-                    return sum([res[lid][key] for res in results], [])
-
-                for key in ['task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-                            'actions', 'logprobs', 'values', 'rewards', 'dones']:
-                    buffers[lid][key].extend(_cat_list(key))
-
-        # ===== Learn each agent independently（学习侧完全沿用原逻辑）=====
+        # ===== 计算 GAE / 优势与目标回报，并按层学习 =====
         for lid in range(num_layers):
-            if alg_name.lower() == "mappo":
-                advs, rets = [], []
-                vals = buffers[lid]['values'] + [0]
-                gae = 0
-                for t in reversed(range(len(buffers[lid]['rewards']))):
-                    delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
-                    gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
-                    advs.insert(0, gae)
-                rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
-            else:  # happo
-                advs = []
-                vals = buffers[lid]['values'] + [0.0]
-                gae = 0.0
-                for t in reversed(range(len(buffers[lid]['rewards']))):
-                    delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
-                    gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
-                    advs.insert(0, gae.copy())
-                rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
-                advs = np.array(advs, dtype=np.float32)
-                rets = np.array(rets, dtype=np.float32)
-                advs = np.repeat(advs[:, None], n_worker, axis=1)
-                advs = advs.reshape(-1, n_worker)
-                rets = rets.reshape(-1)
+            rewards = np.array(buffers[lid]['rewards'], dtype=np.float32)
+            dones = np.array(buffers[lid]['dones'], dtype=np.float32)
+            values = np.array(buffers[lid]['values'], dtype=np.float32)
 
-            if ppo_config["return_normalization"]:
-                return_rms[lid].update(np.array(rets))
-                rets = return_rms[lid].normalize(np.array(rets))
+            # 计算 GAE-Lambda
+            advantages = []
+            gae = 0.0
+            for t in reversed(range(len(rewards))):
+                delta = rewards[t] + gamma * (1.0 - dones[t]) * (values[t + 1] if t + 1 < len(values) else 0.0) - values[t]
+                gae = delta + gamma * gae_lambda * (1.0 - dones[t]) * gae
+                advantages.insert(0, gae)
+            advantages = np.array(advantages, dtype=np.float32)
+            returns = advantages + values[:len(advantages)]
 
+            # 标准化优势
+            adv_mean, adv_std = advantages.mean(), advantages.std() + 1e-8
+            advantages = (advantages - adv_mean) / adv_std
+
+            # 组装训练数据
             dataset = list(zip(
                 buffers[lid]['task_obs'],
                 buffers[lid]['worker_loads'],
                 buffers[lid]['worker_profile'],
                 buffers[lid]['valid_mask'],
                 buffers[lid]['actions'],
-                buffers[lid]['values'],
-                rets,
-                buffers[lid]['logprobs'],
-                advs
+                buffers[lid]['values'][:len(advantages)],
+                returns,
+                buffers[lid]['logprobs'][:len(advantages)],
+                advantages
             ))
 
             for _ in range(update_epochs):
                 random.shuffle(dataset)
                 for i in range(0, len(dataset), batch_size):
                     batch = dataset[i:i + batch_size]
-                    task_batch, load_batch, prof_batch, mask_batch, act_batch, val_batch, ret_batch, logp_batch, adv_batch = zip(
-                        *batch)
+                    task_batch, load_batch, prof_batch, mask_batch, act_batch, val_batch, ret_batch, logp_batch, adv_batch = zip(*batch)
                     algs[lid].learn(
                         torch.tensor(np.array(task_batch, dtype=np.float32)),
                         torch.tensor(np.array(load_batch, dtype=np.float32)),
@@ -482,6 +495,11 @@ def main():
                         torch.tensor(np.array(adv_batch, dtype=np.float32)),
                         episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)
                     )
+
+            # 写入训练曲线（可按需保持一致）
+            # writer.add_scalar(f"train/reward_layer_{lid}", np.sum(rewards), episode)
+            # writer.add_scalar(f"train/adv_mean_layer_{lid}", float(adv_mean), episode)
+            # writer.add_scalar(f"train/adv_std_layer_{lid}", float(adv_std), episode)
 
         # 清空 buffers 进入下个周期
         for lid in buffers:
@@ -499,7 +517,7 @@ def main():
 
 if __name__ == "__main__":
     # Windows/macOS 下多进程需要 spawn；Linux 也可保持一致
-    log_dir = f'../logs2/eta_psi/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs2/mimex/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")  # ← 替换：日志目录使用 mimex
     writer = SummaryWriter(log_dir=log_dir)
     mp.set_start_method("spawn", force=True)
     main()
