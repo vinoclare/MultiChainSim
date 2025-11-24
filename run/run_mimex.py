@@ -15,7 +15,7 @@ from algs.happo import HAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
 
-from explore.mimex import MIMExModule  # ← 替换：原来是 explore.eta_psi import EtaPsiModule
+from explore.mimex import MIMExModule
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
@@ -39,7 +39,7 @@ worker_config_path = f"../configs/{dire}/worker_config.json"
 
 # ===== Intrinsic reward toggles (read from ppo_config; defaults provided) =====
 use_intrinsic = bool(ppo_config.get("use_intrinsic", True))
-ir_beta = float(ppo_config.get("ir_beta", 1))
+ir_beta = float(ppo_config.get("ir_beta", 2))
 ir_emb_dim = int(ppo_config.get("ir_emb_dim", 64))
 ir_gamma = float(ppo_config.get("ir_gamma", 0.995))
 ir_lr = float(ppo_config.get("ir_lr", 1e-3))
