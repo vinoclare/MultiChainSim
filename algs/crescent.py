@@ -69,7 +69,6 @@ class CRESCENT:
             proj_dim=proj_dim,
         ).to(self.device)
 
-        # ====== NEW: target encoder（仅用于聚类 / intrinsic） ======
         self.ema_momentum = ema_momentum
         self.target_encoder = StructureEncoder(
             input_dim=macro_feat_dim,

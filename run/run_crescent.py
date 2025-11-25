@@ -93,7 +93,8 @@ def _episode_worker(policy_states, with_new_schedule, seed):
             buffers_local[lid]['logprobs'].append(logprob)
             buffers_local[lid]['values'].append(value)
 
-        macro_feat, curr_done = build_macro_feature(g_env, prev_layer_tasks_done)
+        macro_state = g_env.export_macro_state()
+        macro_feat, curr_done = build_macro_feature(macro_state, prev_layer_tasks_done)
         prev_layer_tasks_done = curr_done
         for lid in range(g_num_layers):
             buffers_local[lid]['macro_feat'].append(macro_feat)
@@ -132,7 +133,8 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
     g_max_steps = env_cfg["max_steps"]
 
     # 预先算出 macro_feat_dim，供子进程里的 CRESCENT 使用
-    macro_feat_example, _ = build_macro_feature(g_env, prev_layer_tasks_done=None)
+    macro_state = g_env.export_macro_state()
+    macro_feat_example, _ = build_macro_feature(macro_state, prev_layer_tasks_done=None)
     macro_feat_dim = macro_feat_example.shape[0]
 
     g_agents, g_algs = {}, {}
@@ -169,100 +171,74 @@ def process_obs(raw_obs, lid):
     return obs['task_queue'], obs['worker_loads'], obs['worker_profile']
 
 
-def build_macro_feature(env, prev_layer_tasks_done=None):
+def build_macro_feature(macro_state, prev_layer_tasks_done=None):
     """
-    使用 env 的内部结构(IndustrialChain) 构造当前 step 的宏观结构向量 x_t。
+    使用 env.export_macro_state() 导出的 numpy 数据，构造当前 step 的宏观结构向量 x_t。
 
     输入:
-      env: MultiplexEnv 实例，内部包含 env.chain, env.config 等
-      prev_layer_tasks_done: 长度为 num_layers 的列表/ndarray，表示上一 step
-          各层的累计 tasks_done，用于计算本步 wip_l 和 Δ_l。
-          - 如果为 None，则认为上一 step 为 0，此时 Δ_l 全为 0。
+      macro_state: dict, 来自 env.export_macro_state():
+        - load_map: [L, maxW, C]
+        - queue_len: [L, C]
+        - queue_unassigned: [L, C]
+        - queue_wait_mean: [L, C]
+        - tasks_done: [L]
+        - current_step: int
+        - max_steps: int
+      prev_layer_tasks_done: 上一 step 各层累计 tasks_done，用于计算 Δ_l
 
     返回:
-      macro_feat: np.array, shape = [F, ], 当前 step 的宏观结构特征向量
-      curr_layer_tasks_done: np.array, shape = [num_layers, ],
-          当前 step 各层的累计 tasks_done（方便外部更新 prev_layer_tasks_done）
+      macro_feat: [F, ]
+      curr_layer_tasks_done: [L, ]
     """
-    chain = env.chain
-    config = env.config
-    layers = chain.layers
-    num_layers = env.num_layers
-    task_types = config["task_types"]
+    load_map = macro_state["load_map"]              # [L, maxW, C]
+    queue_len = macro_state["queue_len"]            # [L, C]
+    queue_unassigned = macro_state["queue_unassigned"]  # [L, C]
+    queue_wait_mean = macro_state["queue_wait_mean"]    # [L, C]
+    tasks_done = macro_state["tasks_done"]          # [L]
+    current_step = macro_state["current_step"]
+    max_steps = macro_state["max_steps"] if macro_state["max_steps"] > 0 else 1
 
-    current_step = env.current_step
-    max_steps = env.max_steps if env.max_steps > 0 else 1
-
+    num_layers, max_workers, num_task_types = load_map.shape
     feats = []
 
-    # 1) 第一维: 任务–Agent 负载结构 (用负载而不是剩余负载)
-    #    (layer l, task_type c) -> [total_load, max_ratio, variance]
-    for layer in layers:
-        workers = layer.workers
-        for t_name in task_types:
-            loads_c = np.array(
-                [w.current_load_map.get(t_name, 0.0) for w in workers],
-                dtype=np.float32
-            )  # [n_worker]
-
+    # 1) 任务–Agent 负载结构 (layer l, task_type c) -> [total_load, max_ratio, variance]
+    for lid in range(num_layers):
+        for tid in range(num_task_types):
+            loads_c = load_map[lid, :, tid]  # [maxW]
             total_load = float(loads_c.sum())
             if total_load > 1e-8:
-                p = loads_c / total_load  # 归一化为分布
+                p = loads_c / total_load
                 max_ratio = float(p.max())
                 var = float(((p - p.mean()) ** 2).mean())
             else:
                 max_ratio = 0.0
                 var = 0.0
-
             feats.append(total_load)
             feats.append(max_ratio)
             feats.append(var)
 
-    # 2) 第二维: 任务排队结构
-    #    (layer l, task_type c) -> [queue_len, remain_unassigned, wait_mean]
-    for layer in layers:
-        queue = layer.task_queue  # List[Task]
+    # 2) 任务排队结构 (layer l, task_type c) -> [queue_len, remain_unassigned, wait_mean]
+    for lid in range(num_layers):
+        for tid in range(num_task_types):
+            feats.append(float(queue_len[lid, tid]))
+            feats.append(float(queue_unassigned[lid, tid]))
+            feats.append(float(queue_wait_mean[lid, tid]))
 
-        for t_name in task_types:
-            tasks_c = [task for task in queue if task.task_type == t_name]
-
-            queue_len = float(len(tasks_c))
-
-            if queue_len > 0:
-                remain_unassigned = float(sum(t.unassigned_amount for t in tasks_c))
-                waits = [current_step - t.arrival_time for t in tasks_c]
-                wait_mean = float(np.mean(waits)) if len(waits) > 0 else 0.0
-            else:
-                remain_unassigned = 0.0
-                wait_mean = 0.0
-
-            feats.append(queue_len)
-            feats.append(remain_unassigned)
-            feats.append(wait_mean)
-
-    # 3) 第三维: 跨层流量不平衡 Δ_l
-    #    使用 env.chain.cumulative_kpis['per_layer'][l]['tasks_done']
-    #    wip_l(t) = tasks_done_l(t) - tasks_done_l(t-1)
-    #    Δ_l = wip_{l-1} - wip_l, l=1..L-1; Δ_0 = 0
-    kpis = chain.cumulative_kpis
-    per_layer = kpis["per_layer"]
-
-    curr_layer_tasks_done = np.array(
-        [per_layer[lid]["tasks_done"] for lid in range(num_layers)],
-        dtype=np.float32
-    )
+    # 3) 跨层流量不平衡 Δ_l
+    curr_layer_tasks_done = np.asarray(tasks_done, dtype=np.float32)
 
     if prev_layer_tasks_done is None:
-        wip_per_layer = np.zeros(num_layers, dtype=np.float32)
+        wip_per_layer = np.zeros_like(curr_layer_tasks_done)
     else:
-        prev_layer_tasks_done = np.asarray(prev_layer_tasks_done, dtype=np.float32)
-        wip_per_layer = curr_layer_tasks_done - prev_layer_tasks_done
+        prev = np.asarray(prev_layer_tasks_done, dtype=np.float32)
+        wip_per_layer = curr_layer_tasks_done - prev
 
-    flow_delta = np.zeros(num_layers, dtype=np.float32)
+    flow_delta = np.zeros_like(curr_layer_tasks_done)
     for lid in range(1, num_layers):
         flow_delta[lid] = wip_per_layer[lid - 1] - wip_per_layer[lid]
-    for lid in range(num_layers):
-        feats.append(float(flow_delta[lid]))
+    # lid=0 保持 0.0
+    for x in flow_delta:
+        feats.append(float(x))
 
     # 4) 时间相位
     time_frac = float(current_step) / float(max_steps)
@@ -342,7 +318,8 @@ def main():
     profile_dim = 2 * n_task_types
 
     # NEW: 预先用 env 算出宏观特征维度
-    macro_feat_example, _ = build_macro_feature(env, prev_layer_tasks_done=None)
+    macro_state = env.export_macro_state()
+    macro_feat_example, _ = build_macro_feature(macro_state, prev_layer_tasks_done=None)
     macro_feat_dim = macro_feat_example.shape[0]
 
     agents, algs, return_rms, buffers = {}, {}, {}, {}
@@ -419,7 +396,8 @@ def main():
                     buffers[lid]['logprobs'].append(logprob)
                     buffers[lid]['values'].append(value)
 
-                macro_feat, curr_done = build_macro_feature(env, prev_layer_tasks_done)
+                macro_state = env.export_macro_state()
+                macro_feat, curr_done = build_macro_feature(macro_state, prev_layer_tasks_done)
                 prev_layer_tasks_done = curr_done
                 for lid in range(num_layers):
                     buffers[lid]['macro_feat'].append(macro_feat)

@@ -14,17 +14,6 @@ class CrescentClusterer:
           2) 基于「旧计数」计算新颖度 r_int = 1 / sqrt(count + smoothing)
           3) 用 EMA 更新对应的中心
           4) 更新计数
-
-    用法（在 run_crescent.py 里）：
-      1. 在 main() 中初始化：
-         clusterer = CrescentClusterer(repr_dim=repr_dim, ...)
-
-      2. 每条轨迹结束后：
-         z_seq = algs[0].encode_macro_for_cluster(macro_feat_seq)  # [T, repr_dim]
-         r_int_seq = clusterer.update_and_compute_intrinsic(z_seq, global_step)
-
-      3. 把 r_int_seq 加到每层的 reward 上：
-         buffers[lid]['rewards'][t] += r_int_seq[t]
     """
 
     def __init__(
@@ -141,7 +130,7 @@ class CrescentClusterer:
     # ---------------------------
     # 对外主接口
     # ---------------------------
-    def update_and_compute_intrinsic(self, z_seq, global_step=None):
+    def update_and_compute_intrinsic(self, z_seq):
         """
         输入一条轨迹对应的结构表示序列 z_seq，更新聚类状态并返回内在奖励序列。
 

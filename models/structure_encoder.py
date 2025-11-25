@@ -134,6 +134,5 @@ class StructureProjHead(nn.Module):
 
         h = self.mlp(z)
         h = self.norm(h)
-        # 对比损失里一般用 L2-normalize，避免尺度影响相似度
         h = F.normalize(h, dim=-1)
         return h

@@ -258,3 +258,88 @@ class MultiplexEnv(gym.Env):
             print(f"  Layer {layer_id}: "
                   f"Tasks = {stats['tasks_done']}, Failures = {stats['failures']}, "
                   f"Cost = {stats['cost']:.2f}, Utility = {stats['utility']:.2f}")
+
+    def export_macro_state(self):
+        """
+        导出构造宏观结构特征所需的全部原始数据（纯 numpy，不再让
+        外部遍历 Python 对象）。
+
+        返回:
+            {
+                "load_map": [L, maxW, C]           # 每层、每 worker、每任务类型的当前负载
+                "capacity_map": [L, maxW, C]       # capacity
+                "queue_len": [L, C]
+                "queue_unassigned": [L, C]
+                "queue_wait_mean": [L, C]
+                "tasks_done": [L]
+                "current_step": int
+                "max_steps": int
+            }
+        """
+        chain = self.chain
+        config = self.config
+        layers = chain.layers
+        num_layers = self.num_layers
+        task_types = config["task_types"]
+        C = len(task_types)
+
+        # 每层 worker 数可能不同 → 取最大值，pad 到一致 shape
+        max_workers = max(len(layer.workers) for layer in layers)
+
+        load_map = np.zeros((num_layers, max_workers, C), dtype=np.float32)
+        capacity_map = np.zeros((num_layers, max_workers, C), dtype=np.float32)
+
+        queue_len = np.zeros((num_layers, C), dtype=np.float32)
+        queue_unassigned = np.zeros((num_layers, C), dtype=np.float32)
+        queue_wait_mean = np.zeros((num_layers, C), dtype=np.float32)
+
+        # ===== 遍历一次 chain，收集所有原始数据 =====
+        for lid, layer in enumerate(layers):
+            # ---- 1. worker 负载结构 ----
+            for wid, w in enumerate(layer.workers):
+                for tid, tname in enumerate(task_types):
+                    load_map[lid, wid, tid] = w.current_load_map.get(tname, 0.0)
+                    capacity_map[lid, wid, tid] = w.capacity_map.get(tname, 0.0)
+
+            # ---- 2. 队列结构 ----
+            # 避免每个 tname 都重复遍历 queue（C 次）→ 一次性扫 queue
+            buckets = [[] for _ in range(C)]
+            for t in layer.task_queue:
+                # mapping: task.task_type 是 str，需找到 tid
+                try:
+                    tid = task_types.index(t.task_type)
+                except:
+                    continue
+                buckets[tid].append(t)
+
+            for tid in range(C):
+                tasks_c = buckets[tid]
+                qlen = len(tasks_c)
+                queue_len[lid, tid] = qlen
+
+                if qlen > 0:
+                    remain = sum(t.unassigned_amount for t in tasks_c)
+                    waits = [(self.current_step - t.arrival_time) for t in tasks_c]
+                    queue_unassigned[lid, tid] = float(remain)
+                    queue_wait_mean[lid, tid] = float(np.mean(waits))
+                else:
+                    queue_unassigned[lid, tid] = 0.0
+                    queue_wait_mean[lid, tid] = 0.0
+
+        # ---- 3. KPI：跨层 tasks_done ----
+        per_layer = chain.cumulative_kpis["per_layer"]
+        tasks_done = np.array(
+            [per_layer[l]["tasks_done"] for l in range(num_layers)],
+            dtype=np.float32
+        )
+
+        return {
+            "load_map": load_map,
+            "capacity_map": capacity_map,
+            "queue_len": queue_len,
+            "queue_unassigned": queue_unassigned,
+            "queue_wait_mean": queue_wait_mean,
+            "tasks_done": tasks_done,
+            "current_step": self.current_step,
+            "max_steps": self.max_steps
+        }
