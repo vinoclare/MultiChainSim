@@ -11,7 +11,8 @@ class CrescentClusterer:
       - 维护每个原型被访问的次数（pseudo-count）
       - 对每一批结构表示 z_seq:
           1) 计算每个 z 的最近中心 index
-          2) 基于「旧计数」计算新颖度 r_int = 1 / sqrt(count + smoothing)
+          2) 基于「旧计数」计算新颖度 r_int
+             （当前版本：Gaussian KNN 加权 pseudo-count）
           3) 用 EMA 更新对应的中心
           4) 更新计数
     """
@@ -24,15 +25,20 @@ class CrescentClusterer:
         count_smoothing: float = 0.1,
         intrinsic_coef: float = 0.1,
         device: str = "cpu",
+        knn_k: int = 4,
+        kernel_tau: float = 1.0,
     ):
         """
         参数:
-          repr_dim:      结构表示 z 的维度
-          num_clusters:  聚类中心数量 K
-          ema_momentum:  原型更新的 EMA 系数 m，越接近 1 越平滑
+          repr_dim:         结构表示 z 的维度
+          num_clusters:     聚类中心数量 K
+          ema_momentum:     原型更新的 EMA 系数 m，越接近 1 越平滑
           count_smoothing:  计数平滑常数 c0，用于 1/sqrt(n + c0)
           intrinsic_coef:   内在奖励系数，最终返回的 r_int 会乘上它
-          device:        内部张量所在设备
+          device:           内部张量所在设备
+          knn_k:            计算 pseudo-count 时使用的 KNN 个数
+          kernel_tau:       Gaussian kernel 的温度系数 tau：
+                           w_k ∝ exp(-tau * dist2_k)
         """
         self.repr_dim = repr_dim
         self.num_clusters = num_clusters
@@ -40,6 +46,10 @@ class CrescentClusterer:
         self.count_smoothing = count_smoothing
         self.intrinsic_coef = intrinsic_coef
         self.device = torch.device(device)
+
+        # KNN + Gaussian kernel 相关超参
+        self.knn_k = max(1, int(knn_k))
+        self.kernel_tau = float(kernel_tau)
 
         # 聚类中心与计数
         self.centers = None  # [K, D]，延迟初始化
@@ -75,7 +85,8 @@ class CrescentClusterer:
             centers = z_batch[select].clone()
         else:
             # 样本太少，重复采样补足
-            repeat_factor = int(np.ceil(K / max(N, 1)))
+            import math  # 局部导入以避免不必要的全局依赖
+            repeat_factor = int(math.ceil(K / max(N, 1)))
             tiled = z_batch.repeat(repeat_factor, 1)  # [repeat_factor*N, D]
             centers = tiled[:K].clone()
 
@@ -89,7 +100,7 @@ class CrescentClusterer:
           z: [T, D]
         输出:
           idx: [T]，每个样本的最近中心 index
-          dist2: [T, K]，平方距离（可选）
+          dist2: [T, K]，平方距离
         """
         # z: [T, D], centers: [K, D]
         T, D = z.size()
@@ -97,10 +108,9 @@ class CrescentClusterer:
         assert D == D2
 
         # 使用欧氏距离的平方：||z||^2 + ||c||^2 - 2 z·c
-        z2 = (z ** 2).sum(dim=1, keepdim=True)          # [T, 1]
-        c2 = (self.centers ** 2).sum(dim=1).unsqueeze(0)  # [1, K]
-        # [T, K]
-        dist2 = z2 + c2 - 2.0 * (z @ self.centers.t())
+        z2 = (z ** 2).sum(dim=1, keepdim=True)              # [T, 1]
+        c2 = (self.centers ** 2).sum(dim=1).unsqueeze(0)    # [1, K]
+        dist2 = z2 + c2 - 2.0 * (z @ self.centers.t())      # [T, K]
         idx = dist2.argmin(dim=1)  # [T]
         return idx, dist2
 
@@ -119,7 +129,7 @@ class CrescentClusterer:
             n_k = mask_k.sum().item()
             if n_k <= 0:
                 continue
-            z_k = z[mask_k]          # [n_k, D]
+            z_k = z[mask_k]           # [n_k, D]
             z_mean = z_k.mean(dim=0)  # [D]
 
             # EMA 更新
@@ -136,7 +146,6 @@ class CrescentClusterer:
 
         参数:
           z_seq: [T, D] 的 np.ndarray 或 torch.Tensor
-          global_step: 全局步数（目前不使用，但保留接口）
 
         返回:
           r_int_seq: np.ndarray, shape [T]，每个时间步的内在奖励
@@ -155,14 +164,34 @@ class CrescentClusterer:
         old_counts = self.counts.clone()  # [K]
 
         # cluster assignment
-        idx, _ = self._assign_clusters(z)  # idx: [T]
+        idx, dist2 = self._assign_clusters(z)  # idx: [T], dist2: [T, K]
 
-        # 根据旧计数计算新颖度 r_int
-        # r_int(t) = 1 / sqrt(count_old[idx[t]] + c0)
-        count_old = old_counts[idx]  # [T]
-        novelty = 1.0 / torch.sqrt(count_old + self.count_smoothing)  # [T]
+        # ---------- Gaussian KNN 加权 pseudo-count ----------
+        # dist2: [T, K]，对每个时间步 t 取 K 个最近的簇
+        K_eff = min(self.num_clusters, self.knn_k)
+        # 取每一行最小的 K_eff 个距离及其 index
+        dist2_knn, idx_knn = torch.topk(
+            dist2, k=K_eff, dim=1, largest=False
+        )  # [T, K_eff], [T, K_eff]
 
-        # EMA 更新中心 & 累积计数
+        # 对应的旧计数
+        counts_knn = old_counts[idx_knn]  # [T, K_eff]
+
+        # Gaussian kernel 权重：w ∝ exp(-tau * dist2)
+        # 注意这里 dist2 已经是平方距离，所以等价于高斯核
+        weights = torch.exp(-self.kernel_tau * dist2_knn)  # [T, K_eff]
+        # 避免除 0
+        eps = 1e-8
+        weights_sum = weights.sum(dim=1, keepdim=True) + eps
+        weights = weights / weights_sum
+
+        # 加权 pseudo-count：soft_count = Σ w_k * count_k
+        soft_count = (weights * counts_knn).sum(dim=1)  # [T]
+
+        # 新颖度：1 / sqrt(soft_count + c0)
+        novelty = 1.0 / torch.sqrt(soft_count + self.count_smoothing)  # [T]
+
+        # EMA 更新中心 & 累积计数（仍然使用硬分配 idx）
         self._update_centers_and_counts(z, idx)
 
         # 乘上内在奖励系数

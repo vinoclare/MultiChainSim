@@ -10,6 +10,7 @@ import multiprocessing as mp
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
 from models.mappo_model import MAPPOIndustrialModel
+from models.crescent_model import CrescentIndustrialModel
 from algs.crescent import CRESCENT
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
@@ -69,7 +70,9 @@ def _episode_worker(policy_states, with_new_schedule, seed, worker_id):
     buffers_local = {
         lid: {k: [] for k in [
             'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-            'actions', 'logprobs', 'rewards', 'dones', 'values',
+            'actions', 'logprobs',
+            'rewards', 'ext_rewards', 'int_rewards',
+            'dones', 'values',
             'macro_feat', 'episode_ids', 'step_ids'
         ]}
         for lid in range(g_num_layers)
@@ -116,6 +119,7 @@ def _episode_worker(policy_states, with_new_schedule, seed, worker_id):
         for lid in range(g_num_layers):
             r = reward_detail['layer_rewards'][lid]['reward']
             buffers_local[lid]['rewards'].append(r)
+            buffers_local[lid]['ext_rewards'].append(r)
             buffers_local[lid]['dones'].append(done)
 
         step_idx += 1
@@ -152,7 +156,7 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path,
 
     g_agents, g_algs = {}, {}
     for lid in range(g_num_layers):
-        model = MAPPOIndustrialModel(
+        model = CrescentIndustrialModel(
             task_input_dim=obs_space['task_queue'].shape[1],
             worker_load_input_dim=obs_space['worker_loads'].shape[1],
             worker_profile_input_dim=g_profile_dim,
@@ -225,7 +229,7 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
         global_backlog_ratio = total_valid / (total_slots + 1e-8)
     else:
         global_backlog_ratio = 0.0
-    feats.append(global_backlog_ratio)
+    feats.append(float(global_backlog_ratio))
 
     # 时间相位：当前 step 在整条 episode 中的位置
     if max_steps > 0:
@@ -312,7 +316,7 @@ def main():
     agents, algs, return_rms, buffers = {}, {}, {}, {}
 
     for lid in range(num_layers):
-        model = MAPPOIndustrialModel(
+        model = CrescentIndustrialModel(
             task_input_dim=obs_space['task_queue'].shape[1],
             worker_load_input_dim=obs_space['worker_loads'].shape[1],
             worker_profile_input_dim=profile_dim,
@@ -341,7 +345,9 @@ def main():
         return_rms[lid] = RunningMeanStd()
         buffers[lid] = {k: [] for k in [
             'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-            'actions', 'logprobs', 'rewards', 'dones', 'values',
+            'actions', 'logprobs',
+            'rewards', 'ext_rewards', 'int_rewards',
+            'dones', 'values',
             'macro_feat', 'episode_ids', 'step_ids'
         ]}
 
@@ -405,6 +411,7 @@ def main():
                 for lid in range(num_layers):
                     r = reward_detail['layer_rewards'][lid]['reward']
                     buffers[lid]['rewards'].append(r)
+                    buffers[lid]['ext_rewards'].append(r)
                     buffers[lid]['dones'].append(done)
                 if done:
                     break
@@ -430,24 +437,67 @@ def main():
                     return sum([res[lid][key] for res in results], [])
 
                 for key in ['task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-                            'actions', 'logprobs', 'values', 'rewards', 'dones',
-                            'macro_feat', 'episode_ids', 'step_ids']:
+                            'actions', 'logprobs', 'values',
+                            'rewards', 'ext_rewards', 'int_rewards',
+                            'dones', 'macro_feat', 'episode_ids', 'step_ids']:
                     buffers[lid][key].extend(_cat_list(key))
 
-        # 结构聚类 + 内在奖励
+        # ========= 结构聚类 + Per-Layer IR 跨层 credit assignment =========
         macro_seq = np.array(buffers[0]['macro_feat'], dtype=np.float32)  # [T, macro_feat_dim]
         z_seq = algs[0].encode_macro_for_cluster(macro_seq)               # [T, repr_dim]
 
-        global_step = episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)
-        r_int_seq = clusterer.update_and_compute_intrinsic(z_seq, global_step)  # [T]
+        # global IR：针对结构的内在奖励，不区分层
+        r_int_seq = clusterer.update_and_compute_intrinsic(z_seq)  # [T]
 
         T = len(buffers[0]['rewards'])
         assert T == len(r_int_seq), f"IR 长度 {len(r_int_seq)} 和 reward 序列 {T} 不一致"
 
-        # 将同一条结构内在奖励加到各层 reward 上
+        # 1）基于内在 value 头计算每层的重要性 I_l
+        layer_importances = []
+        with torch.no_grad():
+            for lid in range(num_layers):
+                task_arr = np.array(buffers[lid]['task_obs'], dtype=np.float32)
+                load_arr = np.array(buffers[lid]['worker_loads'], dtype=np.float32)
+                prof_arr = np.array(buffers[lid]['worker_profile'], dtype=np.float32)
+                mask_arr = np.array(buffers[lid]['valid_mask'], dtype=np.float32)
+                done_arr = np.array(buffers[lid]['dones'], dtype=np.float32)
+
+                task_t = torch.tensor(task_arr)
+                load_t = torch.tensor(load_arr)
+                prof_t = torch.tensor(prof_arr)
+                mask_t = torch.tensor(mask_arr)
+
+                v_int = algs[lid].int_value(task_t, load_t, prof_t, mask_t)  # [T]
+                v_int = v_int.detach().cpu().numpy().astype(np.float32)
+
+                deltas = []
+                for t in range(T):
+                    v_now = v_int[t]
+                    v_next = v_int[t + 1] if t < T - 1 else 0.0
+                    done_flag = done_arr[t]
+                    delta = r_int_seq[t] + gamma * v_next * (1.0 - done_flag) - v_now
+                    deltas.append(delta)
+                deltas = np.array(deltas, dtype=np.float32)
+
+                I_l = float(np.mean(np.abs(deltas)))
+                layer_importances.append(I_l)
+
+        layer_importances = np.array(layer_importances, dtype=np.float32)
+        layer_importances = np.nan_to_num(layer_importances, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if layer_importances.sum() <= 1e-8:
+            weights = np.ones(num_layers, dtype=np.float32) / float(num_layers)
+        else:
+            weights = layer_importances / (layer_importances.sum() + 1e-8)
+
+        # 2）按权重分配 global IR，得到 Per-Layer IR
         for lid in range(num_layers):
+            assert len(buffers[lid]['int_rewards']) == 0
+            w_l = float(weights[lid])
             for t in range(T):
-                buffers[lid]['rewards'][t] += float(r_int_seq[t])
+                r_int = float(r_int_seq[t] * w_l)
+                buffers[lid]['int_rewards'].append(r_int)
+                buffers[lid]['rewards'][t] += r_int
 
         # ===== Learn each agent independently =====
         for lid in range(num_layers):
@@ -462,6 +512,7 @@ def main():
                 gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
                 advs.insert(0, gae.copy())
             rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
+
             advs = np.array(advs, dtype=np.float32)
             rets = np.array(rets, dtype=np.float32)
             advs = np.repeat(advs[:, None], n_worker, axis=1)
@@ -472,7 +523,18 @@ def main():
                 return_rms[lid].update(np.array(rets))
                 rets = return_rms[lid].normalize(np.array(rets))
 
-            # CRESCENT：喂入 macro_feat + episode_ids + step_ids
+            # 内在奖励折扣回报（用于训练内在价值头）
+            int_rews = buffers[lid]['int_rewards']
+            dones = buffers[lid]['dones']
+            assert len(int_rews) == len(dones) == len(buffers[lid]['rewards'])
+            int_rets = []
+            int_gae = 0.0
+            for t in reversed(range(len(int_rews))):
+                int_gae = int_rews[t] + gamma * int_gae * (1 - dones[t])
+                int_rets.insert(0, float(int_gae))
+            int_rets = np.array(int_rets, dtype=np.float32)
+
+            # CRESCENT：喂入 macro_feat + episode_ids + step_ids + int_returns
             dataset = list(zip(
                 buffers[lid]['task_obs'],
                 buffers[lid]['worker_loads'],
@@ -484,6 +546,7 @@ def main():
                 buffers[lid]['actions'],
                 buffers[lid]['values'],
                 rets,
+                int_rets,
                 buffers[lid]['logprobs'],
                 advs
             ))
@@ -495,6 +558,7 @@ def main():
                     (task_batch, load_batch, prof_batch, mask_batch,
                      macro_batch, ep_id_batch, step_id_batch,
                      act_batch, val_batch, ret_batch,
+                     int_ret_batch,
                      logp_batch, adv_batch) = zip(*batch)
 
                     task_batch_t = torch.tensor(np.array(task_batch, dtype=np.float32))
@@ -505,6 +569,9 @@ def main():
                     act_batch_t = torch.tensor(np.array(act_batch, dtype=np.float32))
                     val_batch_t = torch.tensor(np.array(val_batch, dtype=np.float32))
                     ret_batch_t = torch.tensor(np.array(ret_batch, dtype=np.float32))
+                    int_ret_batch_t = torch.tensor(
+                        np.array(int_ret_batch, dtype=np.float32)
+                    )
                     logp_batch_t = torch.tensor(np.array(logp_batch, dtype=np.float32))
                     adv_batch_t = torch.tensor(np.array(adv_batch, dtype=np.float32))
 
@@ -528,7 +595,8 @@ def main():
                         ret_batch_t,
                         logp_batch_t,
                         adv_batch_t,
-                        current_steps
+                        current_steps,
+                        int_returns=int_ret_batch_t
                     )
 
         # 清空 buffers 进入下个周期

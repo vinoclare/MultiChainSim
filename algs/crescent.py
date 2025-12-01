@@ -11,6 +11,7 @@ class CRESCENT:
                  model,
                  clip_param=0.1,
                  value_loss_coef=0.5,
+                 int_value_loss_coef=0.5,  # NEW: 内在 value loss 系数
                  entropy_coef=0.01,
                  initial_lr=2.5e-4,
                  eps=1e-5,
@@ -40,6 +41,7 @@ class CRESCENT:
 
         self.clip_param = clip_param
         self.value_loss_coef = value_loss_coef
+        self.int_value_loss_coef = int_value_loss_coef  # NEW
         self.entropy_coef = entropy_coef
         self.initial_entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
@@ -126,6 +128,17 @@ class CRESCENT:
         valid_mask = valid_mask.to(self.device)
         return self.model.get_value(task_obs, worker_loads, worker_profile, valid_mask)
 
+    def int_value(self, task_obs, worker_loads, worker_profile, valid_mask):
+        """内在价值估计：优先调用模型的 get_int_value，没有则退化为 get_value。"""
+        task_obs = task_obs.to(self.device)
+        worker_loads = worker_loads.to(self.device)
+        worker_profile = worker_profile.to(self.device)
+        valid_mask = valid_mask.to(self.device)
+        if hasattr(self.model, "get_int_value"):
+            return self.model.get_int_value(task_obs, worker_loads, worker_profile, valid_mask)
+        else:
+            return self.model.get_value(task_obs, worker_loads, worker_profile, valid_mask)
+
     # ---------------------------------------------------------------------
     # NEW: 给聚类 / intrinsic 用的接口（使用 EMA target encoder）
     # ---------------------------------------------------------------------
@@ -180,7 +193,8 @@ class CRESCENT:
               log_probs_old,  # [B, W]
               advantages,     # [B, W]
               current_steps,
-              lr=None):
+              lr=None,
+              int_returns=None):  # NEW: 可选内在回报
 
         device = self.device
         task_obs = task_obs.to(device)
@@ -192,6 +206,8 @@ class CRESCENT:
         returns = returns.to(device)        # [B]
         log_probs_old = log_probs_old.to(device)  # [B, W]
         advantages = advantages.to(device)        # [B, W]
+        if int_returns is not None:
+            int_returns = torch.as_tensor(int_returns, device=device, dtype=torch.float32)  # [B]
 
         # macro_feat / ids 转 tensor
         macro_feat = torch.as_tensor(macro_feat, device=device, dtype=torch.float32)
@@ -253,7 +269,7 @@ class CRESCENT:
                                     1.0 + self.clip_param) * adv
                 action_loss = -torch.min(surr1, surr2).mean()  # scalar
 
-                # 3) critic（共享）损失
+                # 3) critic（共享）损失 —— 外在 value
                 values = self.model.get_value(task_obs,
                                               worker_loads,
                                               worker_profile,
@@ -268,17 +284,29 @@ class CRESCENT:
                 else:
                     value_loss = 0.5 * (returns - values).pow(2).mean()
 
+                # 3b) 内在价值损失（如果提供了 int_returns）
+                int_value_loss = 0.0
+                if int_returns is not None:
+                    if hasattr(self.model, "get_int_value"):
+                        values_int = self.model.get_int_value(task_obs,
+                                                              worker_loads,
+                                                              worker_profile,
+                                                              valid_mask).view(-1)
+                    else:
+                        values_int = values
+                    int_value_loss = 0.5 * (int_returns - values_int).pow(2).mean()
+
                 # 4) 组合总 loss
-                #    注意：对比损失只在第一个 worker 的第一次 inner_k 更新时加一次
+                base_loss = (value_loss * self.value_loss_coef +
+                             int_value_loss * self.int_value_loss_coef +
+                             action_loss -
+                             entropy_coef * entropy)
+
+                # 对比损失只在第一个 worker 的第一次 inner_k 更新时加一次
                 if self.use_contrastive and self.train_contrastive and w == 0 and inner_idx == 0:
-                    total_loss = (value_loss * self.value_loss_coef +
-                                  action_loss -
-                                  entropy_coef * entropy +
-                                  ctr_loss)
+                    total_loss = base_loss + ctr_loss
                 else:
-                    total_loss = (value_loss * self.value_loss_coef +
-                                  action_loss -
-                                  entropy_coef * entropy)
+                    total_loss = base_loss
 
                 if lr:
                     for pg in self.optimizer.param_groups:
