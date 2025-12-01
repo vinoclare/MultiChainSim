@@ -13,18 +13,17 @@ from models.mappo_model import MAPPOIndustrialModel
 from algs.crescent import CRESCENT
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
-# NEW: 结构聚类 + 内在奖励
 from explore.crescent_cluster import CrescentClusterer
-
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
+parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 
 args, _ = parser.parse_known_args()
 dire = args.dire
-alg_name = 'crescent'
+alg_name = args.alg_name.lower()
 
 with open(f'../configs/{dire}/env_config.json') as f:
     env_config = json.load(f)
@@ -47,6 +46,7 @@ g_profile_dim = None
 g_n_worker = None
 g_num_pad = None
 g_max_steps = None
+g_macro_feat_dim = None  # 真实宏观特征维度
 
 
 def _snapshot_policy_states(algs_dict):
@@ -54,7 +54,7 @@ def _snapshot_policy_states(algs_dict):
     return {lid: algs_dict[lid].model.state_dict() for lid in algs_dict}
 
 
-def _episode_worker(policy_states, with_new_schedule, seed):
+def _episode_worker(policy_states, with_new_schedule, seed, worker_id):
     global g_env, g_agents, g_algs, g_num_layers, g_max_steps
 
     random.seed(seed)
@@ -66,15 +66,21 @@ def _episode_worker(policy_states, with_new_schedule, seed):
         g_algs[lid].model.load_state_dict(policy_states[lid])
 
     # 采样一条 episode
-    buffers_local = {lid: {k: [] for k in [
-        'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-        'actions', 'logprobs', 'rewards', 'dones', 'values', 'macro_feat']} for lid in range(g_num_layers)
+    buffers_local = {
+        lid: {k: [] for k in [
+            'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
+            'actions', 'logprobs', 'rewards', 'dones', 'values',
+            'macro_feat', 'episode_ids', 'step_ids'
+        ]}
+        for lid in range(g_num_layers)
     }
 
     obs = g_env.reset(with_new_schedule=with_new_schedule)
     done = False
-    prev_layer_tasks_done = np.zeros(g_num_layers, dtype=np.float32)
     step_idx = 0
+    # 在当前 outer-episode 内，每个 worker 的 episode_id 可以设成 worker_id
+    episode_id = worker_id
+
     while not done:
         actions = {}
         for lid in range(g_num_layers):
@@ -92,12 +98,19 @@ def _episode_worker(policy_states, with_new_schedule, seed):
             buffers_local[lid]['actions'].append(action)
             buffers_local[lid]['logprobs'].append(logprob)
             buffers_local[lid]['values'].append(value)
+            buffers_local[lid]['episode_ids'].append(episode_id)
+            buffers_local[lid]['step_ids'].append(step_idx)
 
-        macro_state = g_env.export_macro_state()
-        macro_feat, curr_done = build_macro_feature(macro_state, prev_layer_tasks_done)
-        prev_layer_tasks_done = curr_done
+        # 构造宏观结构特征（真实维度）
+        raw_macro = build_struct_macro_feature(
+            obs=obs,
+            num_layers=g_num_layers,
+            step_idx=step_idx,
+            max_steps=g_max_steps
+        )
+
         for lid in range(g_num_layers):
-            buffers_local[lid]['macro_feat'].append(macro_feat)
+            buffers_local[lid]['macro_feat'].append(raw_macro)
 
         obs, (_, reward_detail), done, _ = g_env.step(actions)
         for lid in range(g_num_layers):
@@ -106,12 +119,15 @@ def _episode_worker(policy_states, with_new_schedule, seed):
             buffers_local[lid]['dones'].append(done)
 
         step_idx += 1
+
     return buffers_local
 
 
-def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim):
+def _init_worker(dire, env_config_path, schedule_path, worker_config_path,
+                 alg_name, hidden_dim, macro_feat_dim):
     """每个子进程启动时调用一次：创建本进程持久复用的 env / agents（仅推理）"""
-    global g_env, g_agents, g_algs, g_num_layers, g_obs_space, g_profile_dim, g_n_worker, g_num_pad, g_max_steps
+    global g_env, g_agents, g_algs, g_num_layers, g_obs_space, g_profile_dim
+    global g_n_worker, g_num_pad, g_max_steps, g_macro_feat_dim
 
     with open(env_config_path, "r", encoding="utf-8") as f:
         env_cfg = json.load(f)
@@ -123,6 +139,9 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
     g_env.chain = IndustrialChain(g_env.worker_config)
 
     g_num_layers = env_cfg["num_layers"]
+    g_max_steps = env_cfg["max_steps"]
+    g_macro_feat_dim = macro_feat_dim
+
     obs_space = g_env.observation_space[0]
     act_space = g_env.action_space[0]
     g_n_worker, _ = act_space.shape
@@ -130,12 +149,6 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
     g_profile_dim = 2 * n_task_types
     g_num_pad = g_env.num_pad_tasks
     g_obs_space = obs_space
-    g_max_steps = env_cfg["max_steps"]
-
-    # 预先算出 macro_feat_dim，供子进程里的 CRESCENT 使用
-    macro_state = g_env.export_macro_state()
-    macro_feat_example, _ = build_macro_feature(macro_state, prev_layer_tasks_done=None)
-    macro_feat_dim = macro_feat_example.shape[0]
 
     g_agents, g_algs = {}, {}
     for lid in range(g_num_layers):
@@ -147,6 +160,8 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
             num_pad_tasks=g_num_pad,
             hidden_dim=hidden_dim
         )
+
+        # worker 端只负责采样，不训练 encoder / 对比学习
         alg = CRESCENT(
             model,
             clip_param=0.2,
@@ -159,7 +174,8 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
             total_training_steps=1,
             device="cpu",
             macro_feat_dim=macro_feat_dim,
-            use_contrastive=False  # 采样端只用模型，不训练 encoder
+            use_contrastive=False,
+            train_contrastive=False,
         )
 
         g_algs[lid] = alg
@@ -171,81 +187,54 @@ def process_obs(raw_obs, lid):
     return obs['task_queue'], obs['worker_loads'], obs['worker_profile']
 
 
-def build_macro_feature(macro_state, prev_layer_tasks_done=None):
+def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
     """
-    使用 env.export_macro_state() 导出的 numpy 数据，构造当前 step 的宏观结构向量 x_t。
-
-    输入:
-      macro_state: dict, 来自 env.export_macro_state():
-        - load_map: [L, maxW, C]
-        - queue_len: [L, C]
-        - queue_unassigned: [L, C]
-        - queue_wait_mean: [L, C]
-        - tasks_done: [L]
-        - current_step: int
-        - max_steps: int
-      prev_layer_tasks_done: 上一 step 各层累计 tasks_done，用于计算 Δ_l
-
-    返回:
-      macro_feat: [F, ]
-      curr_layer_tasks_done: [L, ]
+    用 env/obs 构造一维宏观结构特征向量（长度为 F）。
     """
-    load_map = macro_state["load_map"]              # [L, maxW, C]
-    queue_len = macro_state["queue_len"]            # [L, C]
-    queue_unassigned = macro_state["queue_unassigned"]  # [L, C]
-    queue_wait_mean = macro_state["queue_wait_mean"]    # [L, C]
-    tasks_done = macro_state["tasks_done"]          # [L]
-    current_step = macro_state["current_step"]
-    max_steps = macro_state["max_steps"] if macro_state["max_steps"] > 0 else 1
-
-    num_layers, max_workers, num_task_types = load_map.shape
     feats = []
 
-    # 1) 任务–Agent 负载结构 (layer l, task_type c) -> [total_load, max_ratio, variance]
+    total_valid = 0.0
+    total_slots = 0.0
+
     for lid in range(num_layers):
-        for tid in range(num_task_types):
-            loads_c = load_map[lid, :, tid]  # [maxW]
-            total_load = float(loads_c.sum())
-            if total_load > 1e-8:
-                p = loads_c / total_load
-                max_ratio = float(p.max())
-                var = float(((p - p.mean()) ** 2).mean())
-            else:
-                max_ratio = 0.0
-                var = 0.0
-            feats.append(total_load)
-            feats.append(max_ratio)
-            feats.append(var)
+        layer_obs = obs[lid]
+        task_obs = layer_obs['task_queue']              # [N_slots, feat_dim]
+        valid_mask = task_obs[:, 3].astype(np.float32)  # 第 4 维是“是否有任务”
+        num_valid = float(valid_mask.sum())
+        num_slots = float(valid_mask.shape[0])
 
-    # 2) 任务排队结构 (layer l, task_type c) -> [queue_len, remain_unassigned, wait_mean]
-    for lid in range(num_layers):
-        for tid in range(num_task_types):
-            feats.append(float(queue_len[lid, tid]))
-            feats.append(float(queue_unassigned[lid, tid]))
-            feats.append(float(queue_wait_mean[lid, tid]))
+        # 每层 backlog 比例
+        backlog_ratio = num_valid / (num_slots + 1e-8)
+        feats.append(backlog_ratio)
 
-    # 3) 跨层流量不平衡 Δ_l
-    curr_layer_tasks_done = np.asarray(tasks_done, dtype=np.float32)
+        total_valid += num_valid
+        total_slots += num_slots
 
-    if prev_layer_tasks_done is None:
-        wip_per_layer = np.zeros_like(curr_layer_tasks_done)
+        # 工人负载结构：对 worker_loads 做简单统计
+        worker_loads = layer_obs['worker_loads']        # [n_worker, k]
+        wl = worker_loads.reshape(-1).astype(np.float32)
+        if wl.size > 0:
+            feats.append(float(wl.mean()))
+            feats.append(float(wl.max()))
+            feats.append(float(wl.std()))
+        else:
+            feats.extend([0.0, 0.0, 0.0])
+
+    # 全局 backlog 比例
+    if total_slots > 0.0:
+        global_backlog_ratio = total_valid / (total_slots + 1e-8)
     else:
-        prev = np.asarray(prev_layer_tasks_done, dtype=np.float32)
-        wip_per_layer = curr_layer_tasks_done - prev
+        global_backlog_ratio = 0.0
+    feats.append(global_backlog_ratio)
 
-    flow_delta = np.zeros_like(curr_layer_tasks_done)
-    for lid in range(1, num_layers):
-        flow_delta[lid] = wip_per_layer[lid - 1] - wip_per_layer[lid]
-    # lid=0 保持 0.0
-    for x in flow_delta:
-        feats.append(float(x))
-
-    # 4) 时间相位
-    time_frac = float(current_step) / float(max_steps)
+    # 时间相位：当前 step 在整条 episode 中的位置
+    if max_steps > 0:
+        time_frac = float(step_idx) / float(max_steps)
+    else:
+        time_frac = 0.0
     feats.append(time_frac)
 
-    macro_feat = np.array(feats, dtype=np.float32)
-    return macro_feat, curr_layer_tasks_done
+    return np.array(feats, dtype=np.float32)  # [F]
 
 
 def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
@@ -303,12 +292,15 @@ def main():
     eval_episodes = ppo_config["eval_episodes"]
     reset_schedule_interval = ppo_config["reset_schedule_interval"]
 
-    # NEW: CReSCENT 探索相关超参（先从 config 里读，找不到就用默认）
-    warmup_episodes = ppo_config.get("crescent_warmup_episodes", 0)
-    num_clusters = ppo_config.get("crescent_num_clusters", 64)
-    cluster_ema = ppo_config.get("crescent_cluster_ema", 0.99)
-    count_smoothing = ppo_config.get("crescent_count_smoothing", 0.1)
-    intrinsic_coef = ppo_config.get("crescent_intrinsic_coef", 0.1)
+    # 预先计算真实宏观特征维度
+    probe_obs = env.reset(with_new_schedule=True)
+    raw_macro_probe = build_struct_macro_feature(
+        obs=probe_obs,
+        num_layers=num_layers,
+        step_idx=0,
+        max_steps=steps_per_episode
+    )
+    macro_feat_dim = int(raw_macro_probe.shape[0])
 
     # ===== Init per-layer models and agents =====
     obs_space = env.observation_space[0]
@@ -316,11 +308,6 @@ def main():
     n_worker, _ = act_space.shape
     n_task_types = len(env_config["task_types"])
     profile_dim = 2 * n_task_types
-
-    # NEW: 预先用 env 算出宏观特征维度
-    macro_state = env.export_macro_state()
-    macro_feat_example, _ = build_macro_feature(macro_state, prev_layer_tasks_done=None)
-    macro_feat_dim = macro_feat_example.shape[0]
 
     agents, algs, return_rms, buffers = {}, {}, {}, {}
 
@@ -344,8 +331,9 @@ def main():
             writer=writer,
             global_step_ref=[0],
             total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"],
-            device=device,
-            macro_feat_dim=macro_feat_dim
+            macro_feat_dim=macro_feat_dim,
+            use_contrastive=True,
+            train_contrastive=True,
         )
 
         agents[lid] = IndustrialAgent(alg, alg_name, device, env.num_pad_tasks)
@@ -353,23 +341,26 @@ def main():
         return_rms[lid] = RunningMeanStd()
         buffers[lid] = {k: [] for k in [
             'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-            'actions', 'logprobs', 'rewards', 'dones', 'values', 'macro_feat']
-                        }
+            'actions', 'logprobs', 'rewards', 'dones', 'values',
+            'macro_feat', 'episode_ids', 'step_ids'
+        ]}
 
-    # NEW: 全局 CReSCENT 聚类器（一个就够了，用 layer 0 的 repr_dim）
+    # 初始化结构聚类器
+    repr_dim = getattr(algs[0], "repr_dim", 64)
     clusterer = CrescentClusterer(
-        repr_dim=algs[0].repr_dim,
-        num_clusters=num_clusters,
-        ema_momentum=cluster_ema,
-        count_smoothing=count_smoothing,
-        intrinsic_coef=intrinsic_coef,
+        repr_dim=repr_dim,
+        num_clusters=64,
+        ema_momentum=0.99,
+        count_smoothing=0.1,
+        intrinsic_coef=1.0,
         device=device,
     )
 
     pool = mp.Pool(
         processes=args.num_workers,
         initializer=_init_worker,
-        initargs=(dire, env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim)
+        initargs=(dire, env_config_path, schedule_path, worker_config_path,
+                  alg_name, hidden_dim, macro_feat_dim)
     ) if args.num_workers > 1 else None
 
     # ===== Training loop =====
@@ -379,7 +370,8 @@ def main():
                 obs = env.reset(with_new_schedule=True)
             else:
                 obs = env.reset()
-            prev_layer_tasks_done = np.zeros(env.num_layers, dtype=np.float32)
+
+            # 单进程：一轮 outer-episode 里只有 1 条轨迹，episode_id 可以直接用 episode
             for step in range(steps_per_episode):
                 actions = {}
                 for lid in range(num_layers):
@@ -395,12 +387,19 @@ def main():
                     buffers[lid]['actions'].append(action)
                     buffers[lid]['logprobs'].append(logprob)
                     buffers[lid]['values'].append(value)
+                    buffers[lid]['episode_ids'].append(episode)
+                    buffers[lid]['step_ids'].append(step)
 
-                macro_state = env.export_macro_state()
-                macro_feat, curr_done = build_macro_feature(macro_state, prev_layer_tasks_done)
-                prev_layer_tasks_done = curr_done
+                # 构造宏观结构特征（真实维度）
+                raw_macro = build_struct_macro_feature(
+                    obs=obs,
+                    num_layers=num_layers,
+                    step_idx=step,
+                    max_steps=steps_per_episode
+                )
+
                 for lid in range(num_layers):
-                    buffers[lid]['macro_feat'].append(macro_feat)
+                    buffers[lid]['macro_feat'].append(raw_macro)
 
                 obs, (_, reward_detail), done, _ = env.step(actions)
                 for lid in range(num_layers):
@@ -410,20 +409,19 @@ def main():
                 if done:
                     break
         else:
-            # ——分布式并发采样：N 个进程各跑一条 episode 然后拼回 buffers——
+            # 多进程并行采样：每个 worker 各跑一条 episode，然后合并
             policy_states = _snapshot_policy_states(algs)
             with_new_schedule = (episode % reset_schedule_interval == 0)
 
-            # 为每个 worker 分配独立随机种子
             seeds = np.random.randint(0, 2 ** 31 - 1, size=args.num_workers).tolist()
 
             results = pool.starmap(
                 _episode_worker,
-                [(policy_states, with_new_schedule, int(seeds[wid]))
+                [(policy_states, with_new_schedule, int(seeds[wid]), wid)
                  for wid in range(args.num_workers)]
             )
 
-            # 先清空，再把所有 worker 的按步样本拼接进来（逐层、逐键拼）
+            # 汇总子进程采样结果
             for lid in range(num_layers):
                 for k in buffers[lid]:
                     buffers[lid][k].clear()
@@ -432,31 +430,28 @@ def main():
                     return sum([res[lid][key] for res in results], [])
 
                 for key in ['task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-                            'actions', 'logprobs', 'values', 'rewards', 'dones', 'macro_feat']:
+                            'actions', 'logprobs', 'values', 'rewards', 'dones',
+                            'macro_feat', 'episode_ids', 'step_ids']:
                     buffers[lid][key].extend(_cat_list(key))
 
-        # ===== 在 GAE 之前：基于结构表示计算内在奖励，并叠加到 reward 上 =====
-        # 使用 layer 0 的 macro_feat 序列作为全局结构时间序列
-        T_global = len(buffers[0]['rewards'])
-        if T_global > 0:
-            macro_seq = np.array(buffers[0]['macro_feat'], dtype=np.float32)  # [T, macro_dim]
-            # 使用 target encoder 得到结构表示 z_seq
-            z_seq = algs[0].encode_macro_for_cluster(macro_seq)  # [T, repr_dim]
+        # 结构聚类 + 内在奖励
+        macro_seq = np.array(buffers[0]['macro_feat'], dtype=np.float32)  # [T, macro_feat_dim]
+        z_seq = algs[0].encode_macro_for_cluster(macro_seq)               # [T, repr_dim]
 
-            global_step = episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)
+        global_step = episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)
+        r_int_seq = clusterer.update_and_compute_intrinsic(z_seq, global_step)  # [T]
 
-            if episode >= warmup_episodes:
-                r_int_seq = clusterer.update_and_compute_intrinsic(z_seq, global_step)
-            else:
-                r_int_seq = np.zeros(T_global, dtype=np.float32)
+        T = len(buffers[0]['rewards'])
+        assert T == len(r_int_seq), f"IR 长度 {len(r_int_seq)} 和 reward 序列 {T} 不一致"
 
-            # 将同一条结构内在奖励加到各层 reward 上
-            for lid in range(num_layers):
-                for t in range(len(buffers[lid]['rewards'])):
-                    buffers[lid]['rewards'][t] += float(r_int_seq[t])
+        # 将同一条结构内在奖励加到各层 reward 上
+        for lid in range(num_layers):
+            for t in range(T):
+                buffers[lid]['rewards'][t] += float(r_int_seq[t])
 
         # ===== Learn each agent independently =====
         for lid in range(num_layers):
+            # GAE（多智能体 advantage）
             advs = []
             vals = buffers[lid]['values'] + [0.0]
             gae = 0.0
@@ -477,19 +472,15 @@ def main():
                 return_rms[lid].update(np.array(rets))
                 rets = return_rms[lid].normalize(np.array(rets))
 
-            T = len(buffers[lid]['rewards'])
-            # episode_id 这里简单全 0，step_id = [0..T-1]
-            episode_ids = np.zeros(T, dtype=np.int64)
-            step_ids = np.arange(T, dtype=np.int64)
-
+            # CRESCENT：喂入 macro_feat + episode_ids + step_ids
             dataset = list(zip(
                 buffers[lid]['task_obs'],
                 buffers[lid]['worker_loads'],
                 buffers[lid]['worker_profile'],
                 buffers[lid]['valid_mask'],
                 buffers[lid]['macro_feat'],
-                episode_ids,
-                step_ids,
+                buffers[lid]['episode_ids'],
+                buffers[lid]['step_ids'],
                 buffers[lid]['actions'],
                 buffers[lid]['values'],
                 rets,
@@ -501,47 +492,42 @@ def main():
                 random.shuffle(dataset)
                 for i in range(0, len(dataset), batch_size):
                     batch = dataset[i:i + batch_size]
-                    (task_batch,
-                     load_batch,
-                     prof_batch,
-                     mask_batch,
-                     macro_batch,
-                     ep_batch,
-                     step_batch,
-                     act_batch,
-                     val_batch,
-                     ret_batch,
-                     logp_batch,
-                     adv_batch) = zip(*batch)
+                    (task_batch, load_batch, prof_batch, mask_batch,
+                     macro_batch, ep_id_batch, step_id_batch,
+                     act_batch, val_batch, ret_batch,
+                     logp_batch, adv_batch) = zip(*batch)
 
-                    task_batch = torch.tensor(np.array(task_batch, dtype=np.float32))
-                    load_batch = torch.tensor(np.array(load_batch, dtype=np.float32))
-                    prof_batch = torch.tensor(np.array(prof_batch, dtype=np.float32))
-                    mask_batch = torch.tensor(np.array(mask_batch, dtype=np.float32))
-                    macro_batch = torch.tensor(np.array(macro_batch, dtype=np.float32))
-                    ep_batch = torch.tensor(np.array(ep_batch, dtype=np.int64))
-                    step_batch = torch.tensor(np.array(step_batch, dtype=np.int64))
-                    act_batch = torch.tensor(np.array(act_batch, dtype=np.float32))
-                    val_batch = torch.tensor(np.array(val_batch, dtype=np.float32))
-                    ret_batch = torch.tensor(np.array(ret_batch, dtype=np.float32))
-                    logp_batch = torch.tensor(np.array(logp_batch, dtype=np.float32))
-                    adv_batch = torch.tensor(np.array(adv_batch, dtype=np.float32))
+                    task_batch_t = torch.tensor(np.array(task_batch, dtype=np.float32))
+                    load_batch_t = torch.tensor(np.array(load_batch, dtype=np.float32))
+                    prof_batch_t = torch.tensor(np.array(prof_batch, dtype=np.float32))
+                    mask_batch_t = torch.tensor(np.array(mask_batch, dtype=np.float32))
+                    macro_batch_t = torch.tensor(np.array(macro_batch, dtype=np.float32))
+                    act_batch_t = torch.tensor(np.array(act_batch, dtype=np.float32))
+                    val_batch_t = torch.tensor(np.array(val_batch, dtype=np.float32))
+                    ret_batch_t = torch.tensor(np.array(ret_batch, dtype=np.float32))
+                    logp_batch_t = torch.tensor(np.array(logp_batch, dtype=np.float32))
+                    adv_batch_t = torch.tensor(np.array(adv_batch, dtype=np.float32))
 
-                    current_steps = episode * steps_per_episode * (args.num_workers if args.num_workers > 1 else 1)
+                    ep_id_batch_np = np.array(ep_id_batch, dtype=np.int64)
+                    step_id_batch_np = np.array(step_id_batch, dtype=np.int64)
+
+                    current_steps = episode * steps_per_episode * (
+                        args.num_workers if args.num_workers > 1 else 1
+                    )
 
                     algs[lid].learn(
-                        task_batch,
-                        load_batch,
-                        prof_batch,
-                        mask_batch,
-                        macro_batch,
-                        ep_batch,
-                        step_batch,
-                        act_batch,
-                        val_batch,
-                        ret_batch,
-                        logp_batch,
-                        adv_batch,
+                        task_batch_t,
+                        load_batch_t,
+                        prof_batch_t,
+                        mask_batch_t,
+                        macro_batch_t,
+                        ep_id_batch_np,
+                        step_id_batch_np,
+                        act_batch_t,
+                        val_batch_t,
+                        ret_batch_t,
+                        logp_batch_t,
+                        adv_batch_t,
                         current_steps
                     )
 

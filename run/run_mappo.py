@@ -57,7 +57,9 @@ def _episode_worker(policy_states, with_new_schedule, seed):
 
     global g_env, g_agents, g_algs, g_num_layers
 
-    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    random.seed(seed);
+    np.random.seed(seed);
+    torch.manual_seed(seed)
 
     # 加载主进程广播的策略快照（只读）
     for lid in range(g_num_layers):
@@ -65,9 +67,9 @@ def _episode_worker(policy_states, with_new_schedule, seed):
 
     # 采样一条 episode
     buffers_local = {lid: {k: [] for k in [
-        'task_obs','worker_loads','worker_profile','valid_mask',
-        'actions','logprobs','rewards','dones','values']} for lid in range(g_num_layers)
-    }
+        'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
+        'actions', 'logprobs', 'rewards', 'dones', 'values']} for lid in range(g_num_layers)
+                     }
 
     obs = g_env.reset(with_new_schedule=with_new_schedule)
     done = False

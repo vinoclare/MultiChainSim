@@ -30,6 +30,8 @@ class CRESCENT:
                  ctr_temperature=0.1,
                  ctr_time_window=1,
                  use_contrastive=True,
+                 # ====== NEW: 控制是否让对比损失参与反传 ======
+                 train_contrastive=True,
                  # ====== NEW: target encoder / EMA 参数 ======
                  ema_momentum=0.99):
 
@@ -56,6 +58,8 @@ class CRESCENT:
         self.ctr_temperature = ctr_temperature
         self.ctr_time_window = ctr_time_window
         self.use_contrastive = use_contrastive
+        # 控制是否真的用 ctr_loss 去训练 encoder
+        self.train_contrastive = train_contrastive
 
         self.struct_encoder = StructureEncoder(
             input_dim=macro_feat_dim,
@@ -148,9 +152,6 @@ class CRESCENT:
         # 返回 numpy，方便在 run_crescent 里丢给 clusterer（它能接受 np 或 tensor）
         return z.detach().cpu().numpy()
 
-    # ---------------------------------------------------------------------
-    # NEW: EMA 更新 target encoder 参数
-    # ---------------------------------------------------------------------
     def update_target_encoder(self):
         """
         使用 EMA 将 target_encoder 向 struct_encoder 缓慢对齐：
@@ -170,14 +171,14 @@ class CRESCENT:
               worker_loads,
               worker_profile,
               valid_mask,
-              macro_feat,  # [B, macro_feat_dim]
+              macro_feat,   # [B, macro_feat_dim]
               episode_ids,  # [B]
-              step_ids,  # [B]
+              step_ids,     # [B]
               actions,
               values_old,
               returns,
               log_probs_old,  # [B, W]
-              advantages,  # [B, W]
+              advantages,     # [B, W]
               current_steps,
               lr=None):
 
@@ -188,9 +189,9 @@ class CRESCENT:
         valid_mask = valid_mask.to(device)
         actions = actions.to(device)
         values_old = values_old.to(device)  # [B]
-        returns = returns.to(device)  # [B]
+        returns = returns.to(device)        # [B]
         log_probs_old = log_probs_old.to(device)  # [B, W]
-        advantages = advantages.to(device)  # [B, W]
+        advantages = advantages.to(device)        # [B, W]
 
         # macro_feat / ids 转 tensor
         macro_feat = torch.as_tensor(macro_feat, device=device, dtype=torch.float32)
@@ -211,7 +212,7 @@ class CRESCENT:
         # === 结构对比学习（online encoder） ===
         if self.use_contrastive:
             z = self.struct_encoder(macro_feat)  # [B, repr_dim]
-            h = self.struct_proj(z)  # [B, proj_dim], 已 normalize
+            h = self.struct_proj(z)             # [B, proj_dim]，已 normalize
             ctr_loss_raw = compute_contrastive_loss(
                 h,
                 episode_ids=episode_ids,
@@ -219,7 +220,11 @@ class CRESCENT:
                 time_window=self.ctr_time_window,
                 temperature=self.ctr_temperature,
             )
-            ctr_loss = self.lambda_ctr * ctr_loss_raw
+            # NEW: train_contrastive 控制是否真的把这个 loss 加到总损失里
+            if self.train_contrastive:
+                ctr_loss = self.lambda_ctr * ctr_loss_raw
+            else:
+                ctr_loss = torch.tensor(0.0, device=device, dtype=ctr_loss_raw.dtype)
         else:
             ctr_loss_raw = torch.tensor(0.0, device=device)
             ctr_loss = torch.tensor(0.0, device=device)
@@ -265,7 +270,7 @@ class CRESCENT:
 
                 # 4) 组合总 loss
                 #    注意：对比损失只在第一个 worker 的第一次 inner_k 更新时加一次
-                if self.use_contrastive and w == 0 and inner_idx == 0:
+                if self.use_contrastive and self.train_contrastive and w == 0 and inner_idx == 0:
                     total_loss = (value_loss * self.value_loss_coef +
                                   action_loss -
                                   entropy_coef * entropy +
@@ -281,7 +286,7 @@ class CRESCENT:
 
                 self.optimizer.zero_grad()
                 total_loss.backward()
-                # NEW: clip policy + encoder + proj 的梯度
+                # clip policy + encoder + proj 的梯度
                 nn.utils.clip_grad_norm_(
                     list(self.model.parameters()) +
                     list(self.struct_encoder.parameters()) +
