@@ -25,7 +25,7 @@ for dire in args.dire_list:
             "python", run_file,
             "--dire", dire,
             "--num_workers", str(args.num_workers),
-            "--mode", "save",
+            "--mode", "load",
         ]
 
         subprocess.run(cmd)

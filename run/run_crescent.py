@@ -21,7 +21,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
-parser.add_argument("--mode", type=str, default="save", help="save or load configs")
+parser.add_argument("--mode", type=str, default="load", help="save or load configs")
 
 args, _ = parser.parse_known_args()
 dire = args.dire
