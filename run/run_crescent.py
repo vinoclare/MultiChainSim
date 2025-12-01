@@ -21,6 +21,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
+parser.add_argument("--mode", type=str, default="save", help="save or load configs")
 
 args, _ = parser.parse_known_args()
 dire = args.dire
@@ -268,7 +269,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
 
 
 def main():
-    mode = "load"
+    mode = args.mode
     if mode == "save":
         env = MultiplexEnv(env_config_path, schedule_save_path=schedule_path,
                            worker_config_save_path=worker_config_path)
