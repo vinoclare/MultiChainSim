@@ -360,7 +360,7 @@ def main():
 
 
 if __name__ == "__main__":
-    log_dir = f'../logs2/no_ir/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs2/ablations/no_ir/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
     mp.set_start_method("spawn", force=True)

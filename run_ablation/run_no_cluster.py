@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import argparse
 import json
@@ -9,12 +10,10 @@ import multiprocessing as mp
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
-from models.mappo_model import MAPPOIndustrialModel
 from models.crescent_model import CrescentIndustrialModel
 from algs.crescent import CRESCENT
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
-from explore.crescent_cluster import CrescentClusterer
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
@@ -242,6 +241,54 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
     return np.array(feats, dtype=np.float32)  # [F]
 
 
+def compute_contrastive_intrinsic(z_seq: np.ndarray, tau: float = 0.1) -> np.ndarray:
+    """
+    使用结构表示 z_seq 构造一个 InfoNCE 风格的逐步对比“损失”，作为全局内在奖励。
+    当前消融中不再使用聚类和 pseudo-count，只用 z 本身的对比难度作为 IR 来源。
+    """
+    T = z_seq.shape[0]
+    if T <= 1:
+        return np.zeros(T, dtype=np.float32)
+
+    z = torch.tensor(z_seq, dtype=torch.float32)
+
+    # 简单做个标准化和 L2 归一化，避免数值太飘
+    z = z - z.mean(dim=0, keepdim=True)
+    z = F.normalize(z, p=2, dim=1)
+
+    # 相似度矩阵 [T, T]
+    sim = torch.matmul(z, z.t())
+    sim = sim / tau
+
+    # 不和自己比，mask 掉对角线
+    mask = torch.eye(T, dtype=torch.bool, device=sim.device)
+    sim = sim.masked_fill(mask, -1e9)
+
+    # 构造正样本下标：t>0 的正样本用 t-1，t=0 的正样本用 1（如果存在）
+    labels = torch.arange(T, dtype=torch.long, device=sim.device)
+    if T >= 2:
+        labels[0] = 1
+        labels[1:] = torch.arange(T - 1, dtype=torch.long, device=sim.device)
+    else:
+        labels[0] = 0
+
+    # InfoNCE 风格的逐步损失（不做 batch mean，保留每个 time step 的 loss）
+    loss_per_step = F.cross_entropy(sim, labels, reduction="none")  # [T]
+
+    r_int = loss_per_step.detach().cpu().numpy().astype(np.float32)
+
+    # 做一个简单的标准化和裁剪，避免 reward 尺度失控
+    mean = r_int.mean()
+    std = r_int.std() + 1e-8
+    r_int = (r_int - mean) / std
+    r_int = np.clip(r_int, -3.0, 3.0)
+
+    # shift 到非负区间，方便和外在奖励叠加
+    r_int = r_int - r_int.min()
+
+    return r_int.astype(np.float32)
+
+
 def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
     total_reward, total_cost, total_utility, total_wait_penalty = 0, 0, 0, 0
     for _ in range(num_episodes):
@@ -352,16 +399,7 @@ def main():
             'macro_feat', 'episode_ids', 'step_ids'
         ]}
 
-    # 初始化结构聚类器
-    repr_dim = getattr(algs[0], "repr_dim", 64)
-    clusterer = CrescentClusterer(
-        repr_dim=repr_dim,
-        num_clusters=64,
-        ema_momentum=0.99,
-        count_smoothing=0.1,
-        intrinsic_coef=1.0,
-        device=device,
-    )
+    # 不再使用结构聚类器，这个消融里 IR 改为对比“损失感”信号
 
     pool = mp.Pool(
         processes=args.num_workers,
@@ -443,12 +481,12 @@ def main():
                             'dones', 'macro_feat', 'episode_ids', 'step_ids']:
                     buffers[lid][key].extend(_cat_list(key))
 
-        # ========= 结构聚类 + Per-Layer IR 跨层 credit assignment =========
+        # ========= 对比损失 IR + Per-Layer IR 跨层 credit assignment =========
         macro_seq = np.array(buffers[0]['macro_feat'], dtype=np.float32)  # [T, macro_feat_dim]
         z_seq = algs[0].encode_macro_for_cluster(macro_seq)               # [T, repr_dim]
 
-        # global IR：针对结构的内在奖励，不区分层
-        r_int_seq = clusterer.update_and_compute_intrinsic(z_seq)  # [T]
+        # global IR：直接用 z_seq 的对比损失构造，不再做聚类
+        r_int_seq = compute_contrastive_intrinsic(z_seq)  # [T]
 
         T = len(buffers[0]['rewards'])
         assert T == len(r_int_seq), f"IR 长度 {len(r_int_seq)} 和 reward 序列 {T} 不一致"
@@ -615,7 +653,7 @@ def main():
 
 
 if __name__ == "__main__":
-    log_dir = f'../logs2/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs2/ablations/no_cluster/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
     mp.set_start_method("spawn", force=True)

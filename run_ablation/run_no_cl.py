@@ -9,7 +9,6 @@ import multiprocessing as mp
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
-from models.mappo_model import MAPPOIndustrialModel
 from models.crescent_model import CrescentIndustrialModel
 from algs.crescent import CRESCENT
 from agents.mappo_agent import IndustrialAgent
@@ -337,8 +336,8 @@ def main():
             global_step_ref=[0],
             total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"],
             macro_feat_dim=macro_feat_dim,
-            use_contrastive=True,
-            train_contrastive=True,
+            use_contrastive=False,   # 消融：关闭对比学习
+            train_contrastive=False, # 消融：关闭对比学习
         )
 
         agents[lid] = IndustrialAgent(alg, alg_name, device, env.num_pad_tasks)
@@ -615,7 +614,7 @@ def main():
 
 
 if __name__ == "__main__":
-    log_dir = f'../logs2/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs2/ablations/no_cl/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
     mp.set_start_method("spawn", force=True)
