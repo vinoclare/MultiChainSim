@@ -3,7 +3,7 @@ import numpy as np
 
 
 class IndustrialAgent:
-    def __init__(self, algorithm, algo_type="mappo", device="cuda", num_pad_tasks=10, profile_dim=None):
+    def __init__(self, algorithm, algo_type="mappo", device="cuda", num_pad_tasks=30, profile_dim=None):
         self.alg = algorithm
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.algo_type = algo_type

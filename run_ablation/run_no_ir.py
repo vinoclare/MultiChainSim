@@ -11,19 +11,16 @@ from envs import IndustrialChain
 from envs.env import MultiplexEnv
 from models.mappo_model import MAPPOIndustrialModel
 from algs.mappo import MAPPO
-from algs.happo import HAPPO
 from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--alg_name", type=str, default="happo")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 
 args, _ = parser.parse_known_args()
 dire = args.dire
-alg_name = args.alg_name.lower()
 
 with open(f'../configs/{dire}/env_config.json') as f:
     env_config = json.load(f)
@@ -132,14 +129,10 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path, alg_n
             num_pad_tasks=g_num_pad,
             hidden_dim=hidden_dim
         )
-        if alg_name.lower() == "mappo":
-            alg = MAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
-                        initial_lr=3e-4, max_grad_norm=0.5,
-                        writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
-        else:
-            alg = HAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
-                        initial_lr=3e-4, max_grad_norm=0.5,
-                        writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
+        alg = MAPPO(model, clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.0,
+                    initial_lr=3e-4, max_grad_norm=0.5,
+                    writer=None, global_step_ref=[0], total_training_steps=1, device="cpu")
+
         g_algs[lid] = alg
         g_agents[lid] = IndustrialAgent(alg, alg_name, device="cpu", num_pad_tasks=g_num_pad)
 
@@ -223,32 +216,19 @@ def main():
             hidden_dim=hidden_dim
         )
 
-        if alg_name == "mappo":
-            alg = MAPPO(
-                model,
-                clip_param=ppo_config["clip_param"],
-                value_loss_coef=ppo_config["value_loss_coef"],
-                entropy_coef=ppo_config["entropy_coef"],
-                initial_lr=ppo_config["initial_lr"],
-                max_grad_norm=ppo_config["max_grad_norm"],
-                writer=writer,
-                global_step_ref=[0],
-                total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
-            )
-        else:  # happo
-            alg = HAPPO(
-                model,
-                clip_param=ppo_config["clip_param"],
-                value_loss_coef=ppo_config["value_loss_coef"],
-                entropy_coef=ppo_config["entropy_coef"],
-                initial_lr=ppo_config["initial_lr"],
-                max_grad_norm=ppo_config["max_grad_norm"],
-                writer=writer,
-                global_step_ref=[0],
-                total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
-            )
+        alg = MAPPO(
+            model,
+            clip_param=ppo_config["clip_param"],
+            value_loss_coef=ppo_config["value_loss_coef"],
+            entropy_coef=ppo_config["entropy_coef"],
+            initial_lr=ppo_config["initial_lr"],
+            max_grad_norm=ppo_config["max_grad_norm"],
+            writer=writer,
+            global_step_ref=[0],
+            total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"]
+        )
 
-        agents[lid] = IndustrialAgent(alg, alg_name, device, env.num_pad_tasks)
+        agents[lid] = IndustrialAgent(alg)
         algs[lid] = alg
         return_rms[lid] = RunningMeanStd()
         buffers[lid] = {k: [] for k in [
@@ -259,7 +239,7 @@ def main():
     pool = mp.Pool(
         processes=args.num_workers,
         initializer=_init_worker,
-        initargs=(dire, env_config_path, schedule_path, worker_config_path, alg_name, hidden_dim)
+        initargs=(dire, env_config_path, schedule_path, worker_config_path, "mappo", hidden_dim)
     ) if args.num_workers > 1 else None
 
     # ===== Training loop =====
@@ -322,30 +302,14 @@ def main():
 
         # ===== Learn each agent independently =====
         for lid in range(num_layers):
-            if alg_name.lower() == "mappo":
-                advs, rets = [], []
-                vals = buffers[lid]['values'] + [0]
-                gae = 0
-                for t in reversed(range(len(buffers[lid]['rewards']))):
-                    delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
-                    gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
-                    advs.insert(0, gae)
-                rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
-            else:  # happo
-                advs = []
-                vals = buffers[lid]['values'] + [0.0]
-                gae = 0.0
-                for t in reversed(range(len(buffers[lid]['rewards']))):
-                    delta = (buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[
-                        t])
-                    gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
-                    advs.insert(0, gae.copy())
-                rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
-                advs = np.array(advs, dtype=np.float32)
-                rets = np.array(rets, dtype=np.float32)
-                advs = np.repeat(advs[:, None], n_worker, axis=1)
-                advs = advs.reshape(-1, n_worker)
-                rets = rets.reshape(-1)
+            advs, rets = [], []
+            vals = buffers[lid]['values'] + [0]
+            gae = 0
+            for t in reversed(range(len(buffers[lid]['rewards']))):
+                delta = buffers[lid]['rewards'][t] + gamma * vals[t + 1] * (1 - buffers[lid]['dones'][t]) - vals[t]
+                gae = delta + gamma * lam * (1 - buffers[lid]['dones'][t]) * gae
+                advs.insert(0, gae)
+            rets = [a + v for a, v in zip(advs, buffers[lid]['values'])]
 
             if ppo_config["return_normalization"]:
                 return_rms[lid].update(np.array(rets))
@@ -396,7 +360,7 @@ def main():
 
 
 if __name__ == "__main__":
-    log_dir = f'../logs2/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs2/no_ir/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
     mp.set_start_method("spawn", force=True)

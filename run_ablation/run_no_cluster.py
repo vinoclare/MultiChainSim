@@ -500,27 +500,6 @@ def main():
                 buffers[lid]['int_rewards'].append(r_int)
                 buffers[lid]['rewards'][t] += r_int
 
-        # === 记录 IR 统计量（用于画训练过程 IR 曲线） ===
-        if episode % eval_interval == 0:
-            global_step = episode * steps_per_episode * args.num_workers
-            # global 结构 IR（clusterer 输出的那条）
-            writer.add_scalar(
-                "train/int_reward_global_mean",
-                float(np.mean(r_int_seq)),
-                global_step
-            )
-
-            # 每一层分到的 per-layer IR 平均值
-            for lid in range(num_layers):
-                mean_int_l = float(
-                    np.mean(np.array(buffers[lid]['int_rewards'], dtype=np.float32))
-                )
-                writer.add_scalar(
-                    f"train/int_reward_layer{lid}_mean",
-                    mean_int_l,
-                    global_step
-                )
-
         # ===== Learn each agent independently =====
         for lid in range(num_layers):
             # GAE（多智能体 advantage）
