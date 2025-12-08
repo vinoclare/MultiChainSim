@@ -20,10 +20,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
+parser.add_argument("--ir_coef", type=float, default=0.1, help="Intrinsic reward coefficient")
 parser.add_argument("--mode", type=str, default="load", help="save or load configs")
 
 args, _ = parser.parse_known_args()
 dire = args.dire
+ir_coef = args.ir_coef
 alg_name = args.alg_name.lower()
 
 with open(f'../configs/{dire}/env_config.json') as f:
@@ -336,8 +338,8 @@ def main():
             global_step_ref=[0],
             total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"],
             macro_feat_dim=macro_feat_dim,
-            use_contrastive=False,   # 消融：关闭对比学习
-            train_contrastive=False,  # 消融：关闭对比学习
+            use_contrastive=True,
+            train_contrastive=True,
         )
 
         agents[lid] = IndustrialAgent(alg, alg_name, device, env.num_pad_tasks)
@@ -358,7 +360,7 @@ def main():
         num_clusters=64,
         ema_momentum=0.99,
         count_smoothing=0.1,
-        intrinsic_coef=1.0,
+        intrinsic_coef=ir_coef,
         device=device,
     )
 
@@ -614,7 +616,7 @@ def main():
 
 
 if __name__ == "__main__":
-    log_dir = f'../logs2/ablations/no_cl/' + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f'../logs2/pl/{ir_coef}/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
     mp.set_start_method("spawn", force=True)
