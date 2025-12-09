@@ -323,7 +323,6 @@ class CRESCENT:
                 action_loss_total += action_loss.item()
                 entropy_total += entropy.item()
 
-        # === NEW: 每次 learn 结束后，EMA 更新 target encoder ===
         self.update_target_encoder()
 
         # 统计输出：取平均值便于对比 MAPPO

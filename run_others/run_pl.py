@@ -338,8 +338,8 @@ def main():
             global_step_ref=[0],
             total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"],
             macro_feat_dim=macro_feat_dim,
-            use_contrastive=True,
-            train_contrastive=True,
+            use_contrastive=(lid == 0),
+            train_contrastive=(lid == 0),
         )
 
         agents[lid] = IndustrialAgent(alg, alg_name, device, env.num_pad_tasks)
