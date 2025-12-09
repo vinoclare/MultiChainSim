@@ -241,7 +241,7 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
     return np.array(feats, dtype=np.float32)  # [F]
 
 
-def compute_contrastive_intrinsic(z_seq: np.ndarray, tau: float = 0.1) -> np.ndarray:
+def compute_contrastive_intrinsic(z_seq: np.ndarray, tau: float = 0.1, intrinsic_coeff: float = 10) -> np.ndarray:
     """
     使用结构表示 z_seq 构造一个 InfoNCE 风格的逐步对比“损失”，作为全局内在奖励。
     当前消融中不再使用聚类和 pseudo-count，只用 z 本身的对比难度作为 IR 来源。
@@ -285,6 +285,8 @@ def compute_contrastive_intrinsic(z_seq: np.ndarray, tau: float = 0.1) -> np.nda
 
     # shift 到非负区间，方便和外在奖励叠加
     r_int = r_int - r_int.min()
+
+    r_int = intrinsic_coeff * r_int
 
     return r_int.astype(np.float32)
 

@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
-parser.add_argument("--ir_coef", type=float, default=0.1, help="Intrinsic reward coefficient")
+parser.add_argument("--ir_coef", type=float, default=1.0, help="Intrinsic reward coefficient")
 parser.add_argument("--mode", type=str, default="load", help="save or load configs")
 
 args, _ = parser.parse_known_args()
@@ -49,7 +49,7 @@ g_profile_dim = None
 g_n_worker = None
 g_num_pad = None
 g_max_steps = None
-g_macro_feat_dim = None  # 真实宏观特征维度
+g_macro_feat_dim = None
 
 
 def _snapshot_policy_states(algs_dict):
@@ -292,7 +292,7 @@ def main():
     lam = ppo_config["lam"]
     batch_size = ppo_config["batch_size"]
     hidden_dim = ppo_config["hidden_dim"]
-    device = ppo_config["device"]
+    device = "cuda"
     log_interval = ppo_config["log_interval"]
     eval_interval = ppo_config["eval_interval"] / args.num_workers
     eval_episodes = ppo_config["eval_episodes"]

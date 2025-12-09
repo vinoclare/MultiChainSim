@@ -45,7 +45,7 @@ class CrescentClusterer:
         self.ema_momentum = ema_momentum
         self.count_smoothing = count_smoothing
         self.intrinsic_coef = intrinsic_coef
-        self.device = torch.device(device)
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
 
         # KNN + Gaussian kernel 相关超参
         self.knn_k = max(1, int(knn_k))
@@ -160,7 +160,6 @@ class CrescentClusterer:
         if not self.initialized:
             self._init_centers(z)
 
-        # 先基于「旧计数」计算新颖度，再更新中心和计数
         old_counts = self.counts.clone()  # [K]
 
         # cluster assignment
@@ -173,12 +172,9 @@ class CrescentClusterer:
         dist2_knn, idx_knn = torch.topk(
             dist2, k=K_eff, dim=1, largest=False
         )  # [T, K_eff], [T, K_eff]
-
-        # 对应的旧计数
         counts_knn = old_counts[idx_knn]  # [T, K_eff]
 
         # Gaussian kernel 权重：w ∝ exp(-tau * dist2)
-        # 注意这里 dist2 已经是平方距离，所以等价于高斯核
         weights = torch.exp(-self.kernel_tau * dist2_knn)  # [T, K_eff]
         # 避免除 0
         eps = 1e-8

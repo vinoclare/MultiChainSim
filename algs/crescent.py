@@ -11,7 +11,7 @@ class CRESCENT:
                  model,
                  clip_param=0.1,
                  value_loss_coef=0.5,
-                 int_value_loss_coef=0.5,  # NEW: 内在 value loss 系数
+                 int_value_loss_coef=0.5,
                  entropy_coef=0.01,
                  initial_lr=2.5e-4,
                  eps=1e-5,
@@ -31,9 +31,7 @@ class CRESCENT:
                  ctr_temperature=0.1,
                  ctr_time_window=1,
                  use_contrastive=True,
-                 # ====== NEW: 控制是否让对比损失参与反传 ======
                  train_contrastive=True,
-                 # ====== NEW: target encoder / EMA 参数 ======
                  ema_momentum=0.99):
 
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -60,7 +58,6 @@ class CRESCENT:
         self.ctr_temperature = ctr_temperature
         self.ctr_time_window = ctr_time_window
         self.use_contrastive = use_contrastive
-        # 控制是否真的用 ctr_loss 去训练 encoder
         self.train_contrastive = train_contrastive
 
         self.struct_encoder = StructureEncoder(
@@ -236,7 +233,6 @@ class CRESCENT:
                 time_window=self.ctr_time_window,
                 temperature=self.ctr_temperature,
             )
-            # NEW: train_contrastive 控制是否真的把这个 loss 加到总损失里
             if self.train_contrastive:
                 ctr_loss = self.lambda_ctr * ctr_loss_raw
             else:
