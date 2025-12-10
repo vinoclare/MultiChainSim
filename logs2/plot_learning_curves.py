@@ -30,11 +30,11 @@ METRICS = [
 # 布局配置：每一行画两个对象（如 layer 2 & layer 4），每个对象画 3 个指标（Cost/Reward/Utility）
 ROW_CONFIG = [
     # (子目录名, [对象 id1, id2], 标题前缀)
-    ("layer", [2, 4], "layer"),
-    ("task", ["1.0", "3.5"], "task"),
-    ("worker", [6, 10], "worker"),
-    ("step", [50, 200], "step"),
-    # ("standard", [None, None], "standard"),
+    # ("layer", [2, 4], "layer"),
+    # ("task", ["1.0", "3.5"], "task"),
+    # ("worker", [6, 10], "worker"),
+    # ("step", [50, 200], "step"),
+    ("standard", [None, None], "standard"),
 ]
 
 
