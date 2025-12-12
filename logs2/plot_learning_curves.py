@@ -3,11 +3,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tensorboard.backend.event_processing import event_accumulator
 
+import argparse
+
+# ===== 命令行参数 =====
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--mode",
+    choices=["multi", "standard"],
+    default="multi",
+    help="multi: layer/task/worker/step 多环境对比; standard: 只画 standard 三张图"
+)
+args = parser.parse_args()
 
 # ===== 手动配置 =====
 
 # logs 根目录（第二层 logs2 那个目录）
-BASE_LOG_DIR = r"E:\Codes\MultiChainSim\logs2\logs2"
+BASE_LOG_DIR = r"E:\Codes\MultiChainSim\logs2\exp"
 
 # 参与对比的算法及图例名字（顺序会影响颜色）
 ALG_ORDER = ["eta_psi", "emu", "mimex", "crescent"]
@@ -28,18 +39,22 @@ METRICS = [
 ]
 
 # 布局配置：每一行画两个对象（如 layer 2 & layer 4），每个对象画 3 个指标（Cost/Reward/Utility）
-ROW_CONFIG = [
-    # (子目录名, [对象 id1, id2], 标题前缀)
-    # ("layer", [2, 4], "layer"),
-    # ("task", ["1.0", "3.5"], "task"),
-    # ("worker", [6, 10], "worker"),
-    # ("step", [50, 200], "step"),
-    ("standard", [None, None], "standard"),
-]
+if args.mode == "multi":
+    # 多环境对比：4 行 * 2 列 (layer/task/worker/step)
+    ROW_CONFIG = [
+        ("layer", [2, 4], "layer"),
+        ("task", ["1.0", "3.5"], "task"),
+        ("worker", [6, 10], "worker"),
+        ("step", [50, 200], "step"),
+    ]
+else:
+    # standard 模式：只画一行，每个算法一条标准曲线
+    ROW_CONFIG = [
+        ("standard", [None], "standard"),
+    ]
 
 
 # ===== 工具函数 =====
-
 def get_leaf_dir(alg_name: str, subdir: str, key):
     """
     根据算法名 + 维度类别 + 具体 id，返回存放若干 seed 子目录的目录路径。
@@ -132,7 +147,8 @@ def aggregate_runs(leaf_dir: str, tag: str):
 def main():
     n_rows = len(ROW_CONFIG)
     n_metrics = len(METRICS)
-    n_entities_per_row = 2  # 每行两个对象：比如 layer 2 & layer 4
+    # 每行的对象数量由 ROW_CONFIG 决定（multi=2, standard=1）
+    n_entities_per_row = len(ROW_CONFIG[0][1])
     n_cols = n_metrics * n_entities_per_row
 
     fig, axes = plt.subplots(
