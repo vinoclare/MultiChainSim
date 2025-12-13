@@ -1,16 +1,18 @@
+import os
 import torch
 import numpy as np
 import argparse
 import json
 import time
 import random
+from math import ceil
 from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
 
-# ==== 新增：t-SNE + 画图 ====
+# ==== t-SNE + 画图 ====
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
-# ============================
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
@@ -20,17 +22,38 @@ from agents.mappo_agent import IndustrialAgent
 from utils.utils import RunningMeanStd
 from explore.crescent_cluster import CrescentClusterer
 
-# ===== t-SNE 可视化相关超参（你可以按需改） =====
-WARMUP_STEPS_FOR_VIZ = 50_000   # 先让策略跑到 50k step 再开始记录
-VIZ_SAMPLE_STEPS = 10_000        # 只记录接下来的 10k step 做 t-SNE
-# =================================================
+# ===== 默认 t-SNE 可视化相关超参 =====
+WARMUP_STEPS_FOR_VIZ = 50000    # 先让策略跑到 50k step 再开始记录
+VIZ_SAMPLE_STEPS = 10000        # 只记录接下来的 10k step 做 t-SNE
+TSNE_DUMP_DIR = "tsne_dump"
+FIG_DIR = "figs"
+# ====================================
 
-# ===== Load configurations =====
+# ===== Load configurations / args =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=1, help="Parallel env workers for sampling")
 parser.add_argument("--mode", type=str, default="load", help="save or load configs")
+parser.add_argument("--use_dump", type=int, default=0,
+                    help="1: load dumped traj and plot only (no training). 0: train, dump and plot.")
+parser.add_argument("--dump_path", type=str, default="",
+                    help="When --use_dump=1, load this .npz. If empty, use default naming.")
+parser.add_argument("--viz_warmup", type=int, default=WARMUP_STEPS_FOR_VIZ,
+                    help="warmup steps before collecting viz samples")
+parser.add_argument("--viz_len", type=int, default=VIZ_SAMPLE_STEPS,
+                    help="how many steps to collect for visualization")
+parser.add_argument("--tsne_perplexity", type=int, default=30)
+parser.add_argument("--tsne_seed", type=int, default=0)
+parser.add_argument("--viz_plot", type=str, default="step1d",
+                    choices=["step1d", "tsne2d"],
+                    help="step1d: y=step in episode, x=1D embedding(PCA) of macro_feat; tsne2d: original t-SNE scatter.")
+parser.add_argument("--max_plot_episodes", type=int, default=100,
+                    help="Max number of episodes to plot (avoid clutter).")
+parser.add_argument("--plot_stride", type=int, default=10,
+                    help="Subsample steps within an episode when plotting (e.g., 5/10/20).")
+parser.add_argument("--pca_seed", type=int, default=0)
+# ==================================================================
 
 args, _ = parser.parse_known_args()
 dire = args.dire
@@ -41,7 +64,7 @@ with open(f'../configs/{dire}/env_config.json') as f:
 with open('../configs/ppo_config.json') as f:
     ppo_config = json.load(f)
 
-# ===== Setup environment =====
+# ===== Setup environment paths =====
 env_config_path = f'../configs/{dire}/env_config.json'
 schedule_path = f"../configs/{dire}/train_schedule.json"
 eval_schedule_path = f"../configs/{dire}/eval_schedule.json"
@@ -58,6 +81,17 @@ g_n_worker = None
 g_num_pad = None
 g_max_steps = None
 g_macro_feat_dim = None  # 真实宏观特征维度
+
+
+def _default_dump_path():
+    warm = int(args.viz_warmup)
+    ln = int(args.viz_len)
+    return os.path.join(TSNE_DUMP_DIR, f"traj_{alg_name}_{dire}_{warm}_{warm + ln}.npz")
+
+
+def _ensure_dirs():
+    os.makedirs(TSNE_DUMP_DIR, exist_ok=True)
+    os.makedirs(FIG_DIR, exist_ok=True)
 
 
 def _snapshot_policy_states(algs_dict):
@@ -91,7 +125,6 @@ def _episode_worker(policy_states, with_new_schedule, seed, worker_id):
     obs = g_env.reset(with_new_schedule=with_new_schedule)
     done = False
     step_idx = 0
-    # 在当前 outer-episode 内，每个 worker 的 episode_id 可以设成 worker_id
     episode_id = worker_id
 
     while not done:
@@ -114,7 +147,6 @@ def _episode_worker(policy_states, with_new_schedule, seed, worker_id):
             buffers_local[lid]['episode_ids'].append(episode_id)
             buffers_local[lid]['step_ids'].append(step_idx)
 
-        # 构造宏观结构特征（真实维度）
         raw_macro = build_struct_macro_feature(
             obs=obs,
             num_layers=g_num_layers,
@@ -146,7 +178,6 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path,
     with open(env_config_path, "r", encoding="utf-8") as f:
         env_cfg = json.load(f)
 
-    # 每个子进程只创建一次环境，以后每个 episode 复用
     g_env = MultiplexEnv(env_config_path,
                          schedule_load_path=schedule_path,
                          worker_config_load_path=worker_config_path)
@@ -175,7 +206,6 @@ def _init_worker(dire, env_config_path, schedule_path, worker_config_path,
             hidden_dim=hidden_dim
         )
 
-        # worker 端只负责采样，不训练 encoder / 对比学习
         alg = CRESCENT(
             model,
             clip_param=0.2,
@@ -202,30 +232,24 @@ def process_obs(raw_obs, lid):
 
 
 def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
-    """
-    用 env/obs 构造一维宏观结构特征向量（长度为 F）。
-    """
     feats = []
-
     total_valid = 0.0
     total_slots = 0.0
 
     for lid in range(num_layers):
         layer_obs = obs[lid]
-        task_obs = layer_obs['task_queue']              # [N_slots, feat_dim]
-        valid_mask = task_obs[:, 3].astype(np.float32)  # 第 4 维是“是否有任务”
+        task_obs = layer_obs['task_queue']
+        valid_mask = task_obs[:, 3].astype(np.float32)
         num_valid = float(valid_mask.sum())
         num_slots = float(valid_mask.shape[0])
 
-        # 每层 backlog 比例
         backlog_ratio = num_valid / (num_slots + 1e-8)
         feats.append(backlog_ratio)
 
         total_valid += num_valid
         total_slots += num_slots
 
-        # 工人负载结构：对 worker_loads 做简单统计
-        worker_loads = layer_obs['worker_loads']        # [n_worker, k]
+        worker_loads = layer_obs['worker_loads']
         wl = worker_loads.reshape(-1).astype(np.float32)
         if wl.size > 0:
             feats.append(float(wl.mean()))
@@ -234,95 +258,194 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
         else:
             feats.extend([0.0, 0.0, 0.0])
 
-    # 全局 backlog 比例
     if total_slots > 0.0:
         global_backlog_ratio = total_valid / (total_slots + 1e-8)
     else:
         global_backlog_ratio = 0.0
     feats.append(float(global_backlog_ratio))
 
-    # 时间相位：当前 step 在整条 episode 中的位置
     if max_steps > 0:
         time_frac = float(step_idx) / float(max_steps)
     else:
         time_frac = 0.0
     feats.append(time_frac)
 
-    return np.array(feats, dtype=np.float32)  # [F]
+    return np.array(feats, dtype=np.float32)
 
 
-# ========= 新增：t-SNE 可视化函数 =========
-def visualize_tsne_from_macro(macro_feats, ep_ids, step_ids, alg_name, dire):
-    """使用训练过程记录下来的 macro_feat 做 t-SNE，可视化轨迹离散程度。"""
-    if len(macro_feats) == 0:
-        print("[t-SNE] No macro features collected for visualization.")
-        return
-
-    X = np.array(macro_feats, dtype=np.float32)
+def dump_viz_data(macro_feats, ep_ids, step_ids, dump_path):
+    _ensure_dirs()
+    macro_feats = np.array(macro_feats, dtype=np.float32)
     ep_ids = np.array(ep_ids, dtype=np.int32)
     step_ids = np.array(step_ids, dtype=np.int32)
+    np.savez(dump_path, macro_feats=macro_feats, episode_ids=ep_ids, step_ids=step_ids)
+    print(f"[t-SNE] Trajectory dump saved: {dump_path} (N={macro_feats.shape[0]})")
 
-    print(f"[t-SNE] Running t-SNE on {X.shape[0]} samples ...")
-    tsne = TSNE(
-        n_components=2,
-        perplexity=30,
-        learning_rate="auto",
-        init="random"
-    )
-    Y = tsne.fit_transform(X)
 
-    # 颜色编码时间步（归一化）
-    step_norm = (step_ids - step_ids.min()) / (step_ids.max() - step_ids.min() + 1e-8)
+def load_viz_data(dump_path):
+    data = np.load(dump_path)
+    X = data["macro_feats"].astype(np.float32)
+    ep_ids = data["episode_ids"].astype(np.int32)
+    step_ids = data["step_ids"].astype(np.int32)
+    return X, ep_ids, step_ids
 
-    plt.figure(figsize=(6, 5))
-    plt.scatter(
-        Y[:, 0],
-        Y[:, 1],
-        c=step_norm,
-        cmap="magma_r",
-        s=8,
-        alpha=0.9,
-        linewidths=0
-    )
-    plt.xlabel("t-SNE dim 1")
-    plt.ylabel("t-SNE dim 2")
-    plt.title(f"Training Trajectory t-SNE ({alg_name}, {dire})")
-    plt.colorbar(label="Normalized step index")
+
+def _traj_to_vec(macro_seq: np.ndarray) -> np.ndarray:
+    """
+    把一个 episode 的轨迹 (T, F) 压成一个固定维度向量 (D,).
+    这样就能对“轨迹”做 t-SNE（每条轨迹=一个样本）。
+    """
+    # macro_seq: [T, F]
+    mean = macro_seq.mean(axis=0)
+    std = macro_seq.std(axis=0)
+    mn = macro_seq.min(axis=0)
+    mx = macro_seq.max(axis=0)
+    first = macro_seq[0]
+    last = macro_seq[-1]
+    # D = 6F
+    return np.concatenate([mean, std, mn, mx, first, last], axis=0).astype(np.float32)
+
+
+def visualize_tsne_from_macro(macro_feats, ep_ids, step_ids, alg_name, dire):
+    """
+    两种画法：
+    1) step1d（默认）：y=step in episode, x=PCA-1D(macro_feat). 轨迹“细/粗”直接表示 intra-episode 的状态多样性。
+    2) tsne2d：原来的 t-SNE 2D scatter.
+    """
+    if len(macro_feats) == 0:
+        print("[viz] No macro features collected for visualization.")
+        return
+
+    _ensure_dirs()
+
+    X = np.array(macro_feats, dtype=np.float32)                 # [N, F]
+    ep_ids = np.array(ep_ids, dtype=np.int32)                   # [N]
+    step_ids = np.array(step_ids, dtype=np.int32)               # [N]
+
+    if args.viz_plot == "tsne2d":
+        # ===== 原 t-SNE 2D scatter（保留）=====
+        print(f"[t-SNE] Running t-SNE on {X.shape[0]} samples ...")
+        tsne = TSNE(
+            n_components=2,
+            perplexity=int(args.tsne_perplexity),
+            learning_rate="auto",
+            init="random",
+            random_state=int(args.tsne_seed),
+        )
+        Y = tsne.fit_transform(X)
+
+        # 这里的 step_norm 是 episode 内 step（仅作颜色展示）
+        step_norm = (step_ids - step_ids.min()) / (step_ids.max() - step_ids.min() + 1e-8)
+
+        plt.figure(figsize=(6, 5))
+        plt.scatter(
+            Y[:, 0], Y[:, 1],
+            c=step_norm,
+            cmap="magma_r",
+            s=8,
+            alpha=0.9,
+            linewidths=0
+        )
+        plt.xlabel("t-SNE dim 1")
+        plt.ylabel("t-SNE dim 2")
+        plt.title(f"Training Trajectory t-SNE (crescent)")
+        plt.colorbar(label="Normalized step index (in-episode)")
+        plt.tight_layout()
+
+        out_path = os.path.join(FIG_DIR, f"tsne_traj_{alg_name}_{dire}.png")
+        plt.savefig(out_path, dpi=300)
+        print(f"[t-SNE] Figure saved to {out_path}")
+        return
+
+    print(f"[step1d] Fitting PCA-1D on {X.shape[0]} samples ...")
+    pca = PCA(n_components=1, random_state=int(args.pca_seed))
+    x1 = pca.fit_transform(X).reshape(-1).astype(np.float32)
+    x1 = (x1 - x1.mean()) / (x1.std() + 1e-8)
+
+    # 选一些 episode（避免极端 outlier 统治分位数）
+    uniq_eps = np.unique(ep_ids)
+    if uniq_eps.size > int(args.max_plot_episodes):
+        rng = np.random.RandomState(0)
+        uniq_eps = rng.choice(uniq_eps, size=int(args.max_plot_episodes), replace=False)
+
+    # 收集每个 step 的 x 分布
+    # 注意：有的 episode 可能提前结束，所以某些 step 样本数会少
+    max_step = int(step_ids.max())
+    steps = np.arange(0, max_step + 1, dtype=np.int32)
+
+    q05, q25, q50, q75, q95 = [], [], [], [], []
+    valid_steps = []
+
+    for s in steps:
+        mask = (step_ids == s) & np.isin(ep_ids, uniq_eps)
+        xs = x1[mask]
+        if xs.size < 5:
+            continue
+        valid_steps.append(s)
+        q05.append(np.percentile(xs, 5))
+        q25.append(np.percentile(xs, 25))
+        q50.append(np.percentile(xs, 50))
+        q75.append(np.percentile(xs, 75))
+        q95.append(np.percentile(xs, 95))
+
+    valid_steps = np.array(valid_steps, dtype=np.float32)
+    q05 = np.array(q05, dtype=np.float32)
+    q25 = np.array(q25, dtype=np.float32)
+    q50 = np.array(q50, dtype=np.float32)
+    q75 = np.array(q75, dtype=np.float32)
+    q95 = np.array(q95, dtype=np.float32)
+
+    plt.figure(figsize=(6, 9))
+
+    # 分位数带：外层更透明，内层更明显
+    plt.fill_betweenx(valid_steps, q05, q95, alpha=0.25)
+    plt.fill_betweenx(valid_steps, q25, q75, alpha=0.45)
+
+    # 中位数曲线
+    plt.plot(q50, valid_steps, linewidth=2.5, alpha=1.0)
+
+    plt.xlabel("1D embedding of macro-state (PCA-1D, z-scored)")
+    plt.ylabel("Step in episode")
+    plt.title(f"Step-vs-Embedding (quantile bands) ({alg_name}, {dire})")
     plt.tight_layout()
 
-    out_path = f"figs/tsne_traj_{alg_name}_{dire}.png"
+    out_path = os.path.join(FIG_DIR, f"step1d_band_{alg_name}_{dire}.png")
     plt.savefig(out_path, dpi=300)
-    print(f"[t-SNE] Figure saved to {out_path}")
-# =========================================
+    print(f"[step1d] Figure saved to {out_path}")
 
 
 def main():
+    # ========== 仅画图模式：直接从 dump 读取 ==========
+    if int(args.use_dump) == 1:
+        dump_path = args.dump_path.strip() or _default_dump_path()
+        if not os.path.exists(dump_path):
+            raise FileNotFoundError(f"[t-SNE] dump not found: {dump_path}")
+        X, ep_ids, step_ids = load_viz_data(dump_path)
+        visualize_tsne_from_macro(X, ep_ids, step_ids, alg_name, dire)
+        return
+    # ===============================================
+
     mode = args.mode
     if mode == "save":
         env = MultiplexEnv(env_config_path, schedule_save_path=schedule_path,
                            worker_config_save_path=worker_config_path)
-        eval_env = MultiplexEnv(env_config_path, schedule_save_path=eval_schedule_path)
-    else:  # mode == "load"
+    else:
         env = MultiplexEnv(env_config_path, schedule_load_path=schedule_path,
                            worker_config_load_path=worker_config_path)
-        eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
-
-    eval_env.worker_config = env.worker_config
-    eval_env.chain = IndustrialChain(eval_env.worker_config)
 
     # ===== Hyperparameters =====
     num_layers = env_config["num_layers"]
-    num_episodes = int((WARMUP_STEPS_FOR_VIZ + VIZ_SAMPLE_STEPS) / 100)
     steps_per_episode = env_config["max_steps"]
+
+    total_need = int(args.viz_warmup) + int(args.viz_len)
+    num_episodes = int(ceil(total_need / float(steps_per_episode)))
+
     update_epochs = ppo_config["update_epochs"]
     gamma = ppo_config["gamma"]
     lam = ppo_config["lam"]
     batch_size = ppo_config["batch_size"]
     hidden_dim = ppo_config["hidden_dim"]
     device = ppo_config["device"]
-    log_interval = ppo_config["log_interval"]
-    eval_interval = ppo_config["eval_interval"] / args.num_workers
-    eval_episodes = ppo_config["eval_episodes"]
     reset_schedule_interval = ppo_config["reset_schedule_interval"]
 
     # 预先计算真实宏观特征维度
@@ -335,7 +458,6 @@ def main():
     )
     macro_feat_dim = int(raw_macro_probe.shape[0])
 
-    # ===== Init per-layer models and agents =====
     obs_space = env.observation_space[0]
     act_space = env.action_space[0]
     n_worker, _ = act_space.shape
@@ -380,14 +502,13 @@ def main():
             'macro_feat', 'episode_ids', 'step_ids'
         ]}
 
-    # 初始化结构聚类器
     repr_dim = getattr(algs[0], "repr_dim", 64)
     clusterer = CrescentClusterer(
         repr_dim=repr_dim,
         num_clusters=64,
         ema_momentum=0.99,
         count_smoothing=0.1,
-        intrinsic_coef=1.0,
+        intrinsic_coef=0.0,
         device=device,
     )
 
@@ -398,12 +519,15 @@ def main():
                   alg_name, hidden_dim, macro_feat_dim)
     ) if args.num_workers > 1 else None
 
-    # ===== 可视化缓存：在训练过程中记录 macro_feat =====
+    # ===== 训练过程可视化缓存 =====
     viz_macro_feats = []
     viz_ep_ids = []
     viz_step_ids = []
 
-    # ===== Training loop =====
+    warmup = int(args.viz_warmup)
+    viz_len = int(args.viz_len)
+    viz_end = warmup + viz_len
+
     for episode in range(num_episodes):
         print(f"Episode {episode} / {num_episodes}")
         if args.num_workers == 1:
@@ -415,7 +539,9 @@ def main():
             for step in range(steps_per_episode):
                 actions = {}
                 for lid in range(num_layers):
-                    task_obs, worker_loads, profile = process_obs(obs, lid)
+                    task_obs = obs[lid]['task_queue']
+                    worker_loads = obs[lid]['worker_loads']
+                    profile = obs[lid]['worker_profile']
                     value, action, logprob, _ = agents[lid].sample(task_obs, worker_loads, profile)
                     actions[lid] = action
                     valid_mask = task_obs[:, 3].astype(np.float32)
@@ -430,7 +556,6 @@ def main():
                     buffers[lid]['episode_ids'].append(episode)
                     buffers[lid]['step_ids'].append(step)
 
-                # 构造宏观结构特征（真实维度）
                 raw_macro = build_struct_macro_feature(
                     obs=obs,
                     num_layers=num_layers,
@@ -438,14 +563,11 @@ def main():
                     max_steps=steps_per_episode
                 )
 
-                # ==== 新增：只在单进程 & 位于 [100k, 110k) 步时记录 macro_feat ====
                 global_step = episode * steps_per_episode + step
-                if (WARMUP_STEPS_FOR_VIZ <= global_step <
-                        WARMUP_STEPS_FOR_VIZ + VIZ_SAMPLE_STEPS):
+                if warmup <= global_step < viz_end:
                     viz_macro_feats.append(raw_macro.copy())
                     viz_ep_ids.append(episode)
                     viz_step_ids.append(step)
-                # ============================================================
 
                 for lid in range(num_layers):
                     buffers[lid]['macro_feat'].append(raw_macro)
@@ -459,10 +581,8 @@ def main():
                 if done:
                     break
         else:
-            # 多进程并行采样：每个 worker 各跑一条 episode，然后合并
             policy_states = _snapshot_policy_states(algs)
             with_new_schedule = (episode % reset_schedule_interval == 0)
-
             seeds = np.random.randint(0, 2 ** 31 - 1, size=args.num_workers).tolist()
 
             results = pool.starmap(
@@ -471,7 +591,6 @@ def main():
                  for wid in range(args.num_workers)]
             )
 
-            # 汇总子进程采样结果
             for lid in range(num_layers):
                 for k in buffers[lid]:
                     buffers[lid][k].clear()
@@ -485,17 +604,14 @@ def main():
                             'dones', 'macro_feat', 'episode_ids', 'step_ids']:
                     buffers[lid][key].extend(_cat_list(key))
 
-        # ========= 结构聚类 + Per-Layer IR 跨层 credit assignment =========
-        macro_seq = np.array(buffers[0]['macro_feat'], dtype=np.float32)  # [T, macro_feat_dim]
-        z_seq = algs[0].encode_macro_for_cluster(macro_seq)               # [T, repr_dim]
-
-        # global IR：针对结构的内在奖励，不区分层
-        r_int_seq = clusterer.update_and_compute_intrinsic(z_seq)  # [T]
+        # ========= IR + credit assignment =========
+        macro_seq = np.array(buffers[0]['macro_feat'], dtype=np.float32)
+        z_seq = algs[0].encode_macro_for_cluster(macro_seq)
+        r_int_seq = clusterer.update_and_compute_intrinsic(z_seq)
 
         T = len(buffers[0]['rewards'])
         assert T == len(r_int_seq), f"IR 长度 {len(r_int_seq)} 和 reward 序列 {T} 不一致"
 
-        # 1）基于内在 value 头计算每层的重要性 I_l
         layer_importances = []
         with torch.no_grad():
             for lid in range(num_layers):
@@ -510,7 +626,7 @@ def main():
                 prof_t = torch.tensor(prof_arr)
                 mask_t = torch.tensor(mask_arr)
 
-                v_int = algs[lid].int_value(task_t, load_t, prof_t, mask_t)  # [T]
+                v_int = algs[lid].int_value(task_t, load_t, prof_t, mask_t)
                 v_int = v_int.detach().cpu().numpy().astype(np.float32)
 
                 deltas = []
@@ -533,7 +649,6 @@ def main():
         else:
             weights = layer_importances / (layer_importances.sum() + 1e-8)
 
-        # 2）按权重分配 global IR，得到 Per-Layer IR
         for lid in range(num_layers):
             assert len(buffers[lid]['int_rewards']) == 0
             w_l = float(weights[lid])
@@ -544,7 +659,6 @@ def main():
 
         # ===== Learn each agent independently =====
         for lid in range(num_layers):
-            # GAE（多智能体 advantage）
             advs = []
             vals = buffers[lid]['values'] + [0.0]
             gae = 0.0
@@ -566,10 +680,8 @@ def main():
                 return_rms[lid].update(np.array(rets))
                 rets = return_rms[lid].normalize(np.array(rets))
 
-            # 内在奖励折扣回报（用于训练内在价值头）
             int_rews = buffers[lid]['int_rewards']
             dones = buffers[lid]['dones']
-            assert len(int_rews) == len(dones) == len(buffers[lid]['rewards'])
             int_rets = []
             int_gae = 0.0
             for t in reversed(range(len(int_rews))):
@@ -577,7 +689,6 @@ def main():
                 int_rets.insert(0, float(int_gae))
             int_rets = np.array(int_rets, dtype=np.float32)
 
-            # CRESCENT：喂入 macro_feat + episode_ids + step_ids + int_returns
             dataset = list(zip(
                 buffers[lid]['task_obs'],
                 buffers[lid]['worker_loads'],
@@ -612,9 +723,7 @@ def main():
                     act_batch_t = torch.tensor(np.array(act_batch, dtype=np.float32))
                     val_batch_t = torch.tensor(np.array(val_batch, dtype=np.float32))
                     ret_batch_t = torch.tensor(np.array(ret_batch, dtype=np.float32))
-                    int_ret_batch_t = torch.tensor(
-                        np.array(int_ret_batch, dtype=np.float32)
-                    )
+                    int_ret_batch_t = torch.tensor(np.array(int_ret_batch, dtype=np.float32))
                     logp_batch_t = torch.tensor(np.array(logp_batch, dtype=np.float32))
                     adv_batch_t = torch.tensor(np.array(adv_batch, dtype=np.float32))
 
@@ -642,20 +751,28 @@ def main():
                         int_returns=int_ret_batch_t
                     )
 
-        # 清空 buffers 进入下个周期
         for lid in buffers:
             for k in buffers[lid]:
                 buffers[lid][k].clear()
+
+        # 提前结束：已经收集够可视化窗口就没必要再训练了（你本来就是为了画图）
+        global_progress = (episode + 1) * steps_per_episode
+        if global_progress >= viz_end:
+            print(f"[INFO] Reached viz_end={viz_end} steps, stop training early for visualization.")
+            break
 
     if pool is not None:
         pool.close()
         pool.join()
 
-    # ===== 训练结束后，基于训练过程采集的 10k step 做一次 t-SNE 可视化 =====
+    # ===== 训练结束：先 dump，再画图 =====
+    dump_path = args.dump_path.strip() or _default_dump_path()
+    dump_viz_data(viz_macro_feats, viz_ep_ids, viz_step_ids, dump_path)
     visualize_tsne_from_macro(viz_macro_feats, viz_ep_ids, viz_step_ids, alg_name, dire)
 
 
 if __name__ == "__main__":
+    _ensure_dirs()
     log_dir = f'../logs2/{alg_name}/{dire}/' + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
