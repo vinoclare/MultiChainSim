@@ -13,7 +13,6 @@ class Agent57IndustrialModel(nn.Module):
             worker_profile_input_dim: int,
             n_worker: int,
             num_pad_tasks: int,
-            global_context_dim: int,
             hidden_dim: int,
             K: int,
             neg_policy: bool = False
@@ -45,16 +44,10 @@ class Agent57IndustrialModel(nn.Module):
             nn.ReLU(),
             nn.LayerNorm(D)
         )
-        # —— 处理 global_context，与 ppo_model.py 保持一致 —— #
-        self.global_fc = nn.Sequential(
-            nn.Linear(global_context_dim, D),
-            nn.ReLU(),
-            nn.Linear(D, D)
-        )
 
         # —— Actor Heads —— #
         # 每个 (worker, task) 对应融合特征 3D → 1 出 mean
-        self.actor_heads = nn.ModuleList([nn.Linear(3 * D, 1) for _ in range(K)])
+        self.actor_heads = nn.ModuleList([nn.Linear(2 * D, 1) for _ in range(K)])
         # log_std 参数：K × (n_worker × num_pad_tasks)
         self.log_stds = nn.Parameter(torch.zeros(K, n_worker, num_pad_tasks))
         with torch.no_grad():
@@ -69,19 +62,18 @@ class Agent57IndustrialModel(nn.Module):
                 nn.Linear(D, 1)
             )
 
-        self.vu_heads = nn.ModuleList([mlp_head(3 * D) for _ in range(K)])
-        self.vc_heads = nn.ModuleList([mlp_head(3 * D) for _ in range(K)])
+        self.vu_heads = nn.ModuleList([mlp_head(2 * D) for _ in range(K)])
+        self.vc_heads = nn.ModuleList([mlp_head(2 * D) for _ in range(K)])
 
         # —— LayerNorm for fused features —— #
-        self.fusion_norm = nn.LayerNorm(3 * D)
+        self.fusion_norm = nn.LayerNorm(2 * D)
 
     # -------------------------------------------------------- #
     def _encode(
             self,
             task_obs: torch.Tensor,  # (B, T, task_dim)
             worker_loads: torch.Tensor,  # (B, W, load_dim)
-            worker_profiles: torch.Tensor,  # (B, W, prof_dim)
-            global_context: torch.Tensor  # (B, global_context_dim)
+            worker_profiles: torch.Tensor  # (B, W, prof_dim)
     ):
         """
         Encode each modality to hidden space D.
@@ -100,10 +92,7 @@ class Agent57IndustrialModel(nn.Module):
         w_cat = torch.cat([wl_proj, wp_proj], dim=-1)  # (B, W, 2D)
         w_feat = self.fc_worker(w_cat)  # (B, W, D)
 
-        # —— Encode global_context —— #
-        g_feat = self.global_fc(global_context)  # (B, D)
-
-        return t_feat, w_feat, g_feat
+        return t_feat, w_feat
 
     # -------------------------------------------------------- #
     def forward(
@@ -111,7 +100,6 @@ class Agent57IndustrialModel(nn.Module):
             task_obs: torch.Tensor,
             worker_loads: torch.Tensor,
             worker_profiles: torch.Tensor,
-            global_context: torch.Tensor,
             valid_mask: torch.Tensor,
             policy_id: int
     ):
@@ -120,7 +108,6 @@ class Agent57IndustrialModel(nn.Module):
             task_obs:        (B, num_pad_tasks, task_input_dim)
             worker_loads:    (B, n_worker, worker_load_input_dim)
             worker_profiles: (B, n_worker, worker_profile_input_dim)
-            global_context:  (B, global_context_dim)
             valid_mask:      (B, num_pad_tasks) 5/1 标志
             policy_id:       子策略索引 ∈ [5, K-1]
 
@@ -134,24 +121,20 @@ class Agent57IndustrialModel(nn.Module):
         pid = int(policy_id)
 
         # —— 获取编码表示 —— #
-        t_feat, w_feat, g_feat = self._encode(
-            task_obs, worker_loads, worker_profiles, global_context
+        t_feat, w_feat = self._encode(
+            task_obs, worker_loads, worker_profiles
         )  # t_feat: (B, T, D), w_feat: (B, W, D), g_feat: (B, D)
 
         # 若为负策略 ⇒ 冻结梯度
         if self.neg_policy and pid in self.neg_pids:
             t_feat = t_feat.detach()
             w_feat = w_feat.detach()
-            g_feat = g_feat.detach()
 
         # —— 构造 Actor 融合特征 —— #
         w_exp = w_feat.unsqueeze(2).expand(-1, -1, self.num_pad_tasks, -1)  # (B, W, T, D)
         t_exp = t_feat.unsqueeze(1).expand(-1, self.n_worker, -1, -1)  # (B, W, T, D)
-        g_exp = g_feat.unsqueeze(1).unsqueeze(2).expand(
-            -1, self.n_worker, self.num_pad_tasks, -1
-        )  # (B, W, T, D)
 
-        fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
+        fusion = torch.cat([w_exp, t_exp], dim=-1)  # (B, W, T, 3D)
         fusion = self.fusion_norm(fusion)  # (B, W, T, 3D)
 
         # —— Actor 输出 —— #
@@ -172,7 +155,7 @@ class Agent57IndustrialModel(nn.Module):
             t_pool = t_feat.mean(dim=1)  # (B, D)
 
         w_pool = w_feat.mean(dim=1)  # (B, D)
-        vc_input = torch.cat([t_pool, w_pool, g_feat], dim=-1)  # (B, 3D)
+        vc_input = torch.cat([t_pool, w_pool], dim=-1)  # (B, 3D)
 
         v_u = self.vu_heads[pid](vc_input).squeeze(-1)  # (B,)
         v_c = self.vc_heads[pid](vc_input).squeeze(-1)  # (B,)

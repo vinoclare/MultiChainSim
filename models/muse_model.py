@@ -16,7 +16,6 @@ class MuseModel(nn.Module):
         worker_profile_input_dim: int,
         n_worker: int,
         num_pad_tasks: int,
-        global_context_dim: int,
         hidden_dim: int,
         K: int,
         neg_policy: bool = False
@@ -59,19 +58,11 @@ class MuseModel(nn.Module):
                 nn.LayerNorm(D)
             )
 
-        def fc_global_block():
-            return nn.Sequential(
-                nn.Linear(global_context_dim, D),
-                nn.ReLU(),
-                nn.Linear(D, D)
-            )
-
         self.fc_workers = nn.ModuleList([fc_worker_block() for _ in range(K)])
         self.fc_tasks = nn.ModuleList([fc_task_block() for _ in range(K)])
-        self.global_fcs = nn.ModuleList([fc_global_block() for _ in range(K)])
 
         # ========== Actor / Value 头 ==========
-        self.actor_heads = nn.ModuleList([nn.Linear(3 * D, 1) for _ in range(K)])
+        self.actor_heads = nn.ModuleList([nn.Linear(2 * D, 1) for _ in range(K)])
 
         # log_std：K × W × T
         self.log_stds = nn.Parameter(torch.zeros(K, n_worker, num_pad_tasks))
@@ -86,11 +77,11 @@ class MuseModel(nn.Module):
                 nn.Linear(D, 1)
             )
 
-        self.vu_heads = nn.ModuleList([mlp_head(3 * D) for _ in range(K)])
-        self.vc_heads = nn.ModuleList([mlp_head(3 * D) for _ in range(K)])
+        self.vu_heads = nn.ModuleList([mlp_head(2 * D) for _ in range(K)])
+        self.vc_heads = nn.ModuleList([mlp_head(2 * D) for _ in range(K)])
 
         # LayerNorm for fused features
-        self.fusion_norm = nn.LayerNorm(3 * D)
+        self.fusion_norm = nn.LayerNorm(2 * D)
 
     # -------------------------------------------------------- #
     def _encode(
@@ -98,14 +89,12 @@ class MuseModel(nn.Module):
         task_obs: torch.Tensor,          # (B, T, task_dim)
         worker_loads: torch.Tensor,      # (B, W, load_dim)
         worker_profiles: torch.Tensor,   # (B, W, prof_dim)
-        global_context: torch.Tensor,    # (B, global_dim)
         pid: int
     ):
         """
         返回：
           t_feat: (B, T, D)
           w_feat: (B, W, D)
-          g_feat: (B, D)
         """
 
         # 每个子策略使用自己的一套编码器 & FC
@@ -115,9 +104,7 @@ class MuseModel(nn.Module):
         wl_proj = self.worker_load_encs[pid](worker_loads)
         wp_proj = self.worker_profile_encs[pid](worker_profiles)
         w_feat = self.fc_workers[pid](torch.cat([wl_proj, wp_proj], dim=-1))
-
-        g_feat = self.global_fcs[pid](global_context)
-        return t_feat, w_feat, g_feat
+        return t_feat, w_feat
 
     # -------------------------------------------------------- #
     def forward(
@@ -125,7 +112,6 @@ class MuseModel(nn.Module):
         task_obs: torch.Tensor,
         worker_loads: torch.Tensor,
         worker_profiles: torch.Tensor,
-        global_context: torch.Tensor,
         valid_mask: torch.Tensor,
         policy_id: int
     ):
@@ -134,7 +120,6 @@ class MuseModel(nn.Module):
             task_obs:        (B, T, task_dim)
             worker_loads:    (B, W, load_dim)
             worker_profiles: (B, W, prof_dim)
-            global_context:  (B, global_dim)
             valid_mask:      (B, T)
             policy_id:       当前子策略索引
 
@@ -147,24 +132,20 @@ class MuseModel(nn.Module):
         pid = int(policy_id)
 
         # 1) 编码
-        t_feat, w_feat, g_feat = self._encode(
-            task_obs, worker_loads, worker_profiles, global_context, pid
+        t_feat, w_feat = self._encode(
+            task_obs, worker_loads, worker_profiles, pid
         )
 
         # 负向策略可选 detach
         if self.neg_policy and pid in self.neg_pids:
             t_feat = t_feat.detach()
             w_feat = w_feat.detach()
-            g_feat = g_feat.detach()
 
         # 2) 构造融合特征
         w_exp = w_feat.unsqueeze(2).expand(-1, -1, self.num_pad_tasks, -1)
         t_exp = t_feat.unsqueeze(1).expand(-1, self.n_worker, -1, -1)
-        g_exp = g_feat.unsqueeze(1).unsqueeze(2).expand(
-            -1, self.n_worker, self.num_pad_tasks, -1
-        )
 
-        fusion = torch.cat([w_exp, t_exp, g_exp], dim=-1)  # (B, W, T, 3D)
+        fusion = torch.cat([w_exp, t_exp], dim=-1)  # (B, W, T, 3D)
         fusion = self.fusion_norm(fusion)
 
         # 3) Actor
@@ -181,7 +162,7 @@ class MuseModel(nn.Module):
             t_pool = t_feat.mean(dim=1)
 
         w_pool = w_feat.mean(dim=1)
-        vc_input = torch.cat([t_pool, w_pool, g_feat], dim=-1)  # (B, 3D)
+        vc_input = torch.cat([t_pool, w_pool], dim=-1)  # (B, 3D)
 
         v_u = self.vu_heads[pid](vc_input).squeeze(-1)
         v_c = self.vc_heads[pid](vc_input).squeeze(-1)
