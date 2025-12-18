@@ -41,8 +41,8 @@ def main():
     parser.add_argument("--vline", type=int, default=25, help="分段切换位置（例如 25 表示 0-24 dense, 25-... sparse）")
     args = parser.parse_args()
 
-    cres = load_step_reward_matrix("eval_last_step_rewards_crescent.json")      # [N, T]
-    muse = load_step_reward_matrix("eval_last_step_rewards_hitac_muse.json")    # [N, T]
+    cres = load_step_reward_matrix("eval_last_step_rewards_crescent_double.json")      # [N, T]
+    muse = load_step_reward_matrix("eval_last_step_rewards_hitac_muse_double.json")    # [N, T]
     T = min(cres.shape[1], muse.shape[1])
     cres = cres[:, :T]
     muse = muse[:, :T]

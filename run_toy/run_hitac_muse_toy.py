@@ -212,8 +212,7 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device,
         per_step = {
             "global_step": int(global_step),
             "episode_idx": int(episode),
-            "total_reward": [],
-            "per_layer_reward": {lid: [] for lid in range(num_layers)}
+            "total_reward": []
         }
 
         while not done:
@@ -237,7 +236,6 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device,
             for lid in range(num_layers):
                 r = reward_detail["layer_rewards"][lid]
                 step_r = float(r["reward"])
-                per_step["per_layer_reward"][lid].append(step_r)
                 step_total += step_r
 
                 episode_reward[lid] += r["reward"]

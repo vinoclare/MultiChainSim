@@ -245,7 +245,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step,
                     save_step_rewards: bool = False):
     total_reward, total_cost, total_utility, total_wait_penalty = 0, 0, 0, 0
 
-    # 逐 step 记录：list[episode] -> dict(total_reward[T], per_layer_reward{lid:[T]})
+    # 逐 step 记录：list[episode] -> dict(total_reward[T])
     eval_step_rewards = []
 
     for ep in range(num_episodes):
@@ -256,8 +256,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step,
         per_step = {
             "global_step": int(global_step),
             "episode_idx": int(ep),
-            "total_reward": [],
-            "per_layer_reward": {}
+            "total_reward": []
         }
 
         while not done:
@@ -283,11 +282,6 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step,
                 total_cost += c
                 total_utility += u
                 total_wait_penalty += wp
-
-                # 逐 step per-layer reward
-                if lid not in per_step["per_layer_reward"]:
-                    per_step["per_layer_reward"][lid] = []
-                per_step["per_layer_reward"][lid].append(r)
 
                 step_total += r
 
