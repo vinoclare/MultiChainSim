@@ -105,7 +105,7 @@ class Worker:
         task.start_time = task.start_time or current_time
         return True
 
-    def step(self) -> List[Tuple[Task, float, float, float]]:
+    def step(self, dense_kpi: bool = False) -> List[Tuple[Task, float, float, float]]:
         finished = []
         new_queue = []
 
@@ -128,8 +128,10 @@ class Worker:
                 utility = 0.0
 
                 if total_amount > 0:
-                    self.total_cost_map[task.task_type] = 0.9 * self.total_cost_map[task.task_type] + 0.1 * cost / total_amount
-                    self.total_util_map[task.task_type] = 0.9 * self.total_util_map[task.task_type] + 0.1 * utility / total_amount
+                    self.total_cost_map[task.task_type] = 0.9 * self.total_cost_map[
+                        task.task_type] + 0.1 * cost / total_amount
+                    self.total_util_map[task.task_type] = 0.9 * self.total_util_map[
+                        task.task_type] + 0.1 * utility / total_amount
 
                 finished.append((task, total_amount, cost, utility))
                 continue
@@ -144,17 +146,28 @@ class Worker:
             step_utility = self.get_utility(task, performed_amount)
 
             if performed_amount > 0:
-                self.total_cost_map[task.task_type] = 0.9 * self.total_cost_map[task.task_type] + 0.1 * step_cost / performed_amount
-                self.total_util_map[task.task_type] = 0.9 * self.total_util_map[task.task_type] + 0.1 * step_utility / performed_amount
+                self.total_cost_map[task.task_type] = 0.9 * self.total_cost_map[
+                    task.task_type] + 0.1 * step_cost / performed_amount
+                self.total_util_map[task.task_type] = 0.9 * self.total_util_map[
+                    task.task_type] + 0.1 * step_utility / performed_amount
+
+            # dense 模式：每步执行都计入 KPI（performed_amount 对应本步 step_cost/step_utility）
+            if dense_kpi and performed_amount > 0:
+                finished.append((task, performed_amount, step_cost, step_utility))
 
             if current_amount <= 0:
-                # 当前worker上的这份任务已执行完
+                # 当前worker上的这份任务已执行完（chunk 完成）
                 self.task_history.append((task, total_amount))
                 self.current_load_map[task.task_type] -= total_amount
                 self.total_current_load -= total_amount
+
                 full_cost = self.get_cost(task, total_amount)
                 full_utility = self.get_utility(task, total_amount)
-                finished.append((task, performed_amount, full_cost, full_utility))
+
+                # sparse(chunk) 模式：只在 chunk 完成时计入一次 KPI
+                # 注意：这里 amount 必须是 total_amount，才能和 full_cost/full_utility 匹配
+                if not dense_kpi:
+                    finished.append((task, total_amount, full_cost, full_utility))
             else:
                 # 继续排队
                 new_queue.append((task, total_amount, current_amount, unit_per_step))
@@ -278,13 +291,13 @@ class Layer:
 
         return list(assigned_tasks), total_assign_amount
 
-    def step(self, current_time: int) -> List[Tuple[Task, float, float, float]]:
+    def step(self, current_time: int, dense_kpi: bool = False) -> List[Tuple[Task, float, float, float]]:
         finished: List[Tuple[Task, float, float, float]] = []
 
-        # 执行每个 worker 的 step，收集每个 task 每步的 partial reward
+        # 执行每个 worker 的 step，收集结果
         for worker in self.workers:
             worker.time = current_time
-            step_result = worker.step()  # 现在每步也可能返回部分执行的任务
+            step_result = worker.step(dense_kpi=dense_kpi)
             finished.extend(step_result)
 
         # 检查是否有任务超时失败
@@ -366,13 +379,13 @@ class IndustrialChain:
             assign_stats[layer_id] = total_assigned
         return assign_stats
 
-    def step(self):
+    def step(self, dense_kpi: bool = False):
         self.step_kpis = {}
         all_finished = []
 
         # 第一步：先让所有 layer 执行 step，收集结果，不做任何任务推进
         for layer_id, layer in enumerate(self.layers):
-            finished = layer.step(self.time)
+            finished = layer.step(self.time, dense_kpi=dense_kpi)
             step_cost = sum(c for _, _, c, _ in finished)
             step_util = sum(u for _, _, _, u in finished)
             self.step_kpis[layer_id] = {

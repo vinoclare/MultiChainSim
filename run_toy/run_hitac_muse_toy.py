@@ -14,7 +14,7 @@ from utils.utils import RunningMeanStd
 
 # ======== Load Configurations ========
 parser = argparse.ArgumentParser()
-parser.add_argument('--dire', type=str, default='standard',
+parser.add_argument('--dire', type=str, default='toy',
                     help='name of sub-folder under ../configs/ 作为本次实验的配置目录')
 args, _ = parser.parse_known_args()
 dire = args.dire
@@ -50,7 +50,7 @@ alpha = env_config["alpha"]
 beta = env_config["beta"]
 
 # ======= 超参提取 =======
-num_episodes = algo_config["training"]["num_episodes"]
+num_episodes = 2000
 eval_interval = algo_config["training"]["eval_interval"]
 log_interval = algo_config["training"]["log_interval"]
 eval_episodes = algo_config["training"]["eval_episodes"]
@@ -184,7 +184,8 @@ def process_obs(obs, lid, device="cuda"):
     return task_obs, worker_loads, worker_profile
 
 
-def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device):
+def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device,
+                    save_step_rewards=False):
     num_layers = eval_env.num_layers
     reward_sums = {lid: [] for lid in range(num_layers)}
     cost_sums = {lid: [] for lid in range(num_layers)}
@@ -192,8 +193,9 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
     assign_bonus_sums = {lid: [] for lid in range(num_layers)}
     wait_penalty_sums = {lid: [] for lid in range(num_layers)}
 
-    # === 保存当前eval所有episode的轨迹 ===
-    eval_trajectories = []
+    # === 逐 step 奖励记录：仅在最后一次 eval 时保存 ===
+    # 结构：list[episode] -> dict(total: [T], per_layer: {lid: [T]})
+    eval_step_rewards = []
 
     for episode in range(eval_episodes):
         obs = eval_env.reset(with_new_schedule=False)
@@ -206,9 +208,13 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
         episode_assign_bonus = {lid: 0.0 for lid in range(num_layers)}
         episode_wait_penalty = {lid: 0.0 for lid in range(num_layers)}
 
-        # 每个 episode 的 per-layer trajectory buffer
-        episode_trajectories = {lid: {"task_obs": [], "worker_loads": [], "worker_profile": [], "actions": []}
-                                for lid in range(num_layers)}
+        # 每个 episode 的逐 step reward 轨迹
+        per_step = {
+            "global_step": int(global_step),
+            "episode_idx": int(episode),
+            "total_reward": [],
+            "per_layer_reward": {lid: [] for lid in range(num_layers)}
+        }
 
         while not done:
             actions = {}
@@ -226,13 +232,21 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
             obs, (total_reward, reward_detail), done, _ = eval_env.step(actions)
 
+            # === 逐 step reward 记录 ===
+            step_total = 0.0
             for lid in range(num_layers):
                 r = reward_detail["layer_rewards"][lid]
+                step_r = float(r["reward"])
+                per_step["per_layer_reward"][lid].append(step_r)
+                step_total += step_r
+
                 episode_reward[lid] += r["reward"]
                 episode_cost[lid] += r["cost"]
                 episode_util[lid] += r["utility"]
                 episode_assign_bonus[lid] += r["assign_bonus"]
                 episode_wait_penalty[lid] += r["wait_penalty"]
+
+            per_step["total_reward"].append(float(step_total))
 
         # === 一个 episode 完后，再 append 一次 episode-level 总和 ===
         for lid in range(num_layers):
@@ -241,6 +255,8 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
             util_sums[lid].append(episode_util[lid])
             assign_bonus_sums[lid].append(episode_assign_bonus[lid])
             wait_penalty_sums[lid].append(episode_wait_penalty[lid])
+
+        eval_step_rewards.append(per_step)
 
     # === tensorboard logging (保持原有逻辑) ===
     total_reward_all = sum([np.mean(reward_sums[lid]) for lid in range(num_layers)])
@@ -254,6 +270,19 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
     writer.add_scalar("eval/waiting_penalty", total_wp_all, global_step)
 
     print(f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
+
+    # === 保存最后一次 eval 的逐 step rewards ===
+    save_path = "eval_last_step_rewards_hitac_muse.json"
+    if save_step_rewards and save_path is not None:
+        payload = {
+            "global_step": int(global_step),
+            "eval_episodes": int(eval_episodes),
+            "max_steps": int(eval_env.max_steps),
+            "step_rewards": eval_step_rewards
+        }
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[Eval Saved] step rewards saved to: {save_path}")
 
 
 # ======= 训练主循环 =======
@@ -410,7 +439,8 @@ for episode in range(num_episodes + 1):
 
     global_step = episode * steps_per_episode
     if episode % eval_interval == 0:
-        evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
+        is_last_eval = (episode == num_episodes)
+        evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device, is_last_eval)
 
     ppo_stats = {}
 

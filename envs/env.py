@@ -28,6 +28,8 @@ class MultiplexEnv(gym.Env):
         self.num_layers = self.config["num_layers"]
         self.num_pad_tasks = self.config.get("num_pad_tasks", 10)
 
+        self.segs = self.config.get("sparse_reward_segments", [])
+
         num_task_types = len(self.config["task_types"])
 
         self.observation_space = spaces.Dict({
@@ -82,12 +84,31 @@ class MultiplexEnv(gym.Env):
             }
         return self._get_obs()
 
+    def _is_sparse_step(self, step_idx: int) -> bool:
+        """
+        判断当前 step 是否落在 sparse_reward_segments 内。
+        约定区间为左闭右开 [start, end)。
+        """
+
+        for seg in self.segs:
+            if not (isinstance(seg, (list, tuple)) and len(seg) == 2):
+                continue
+            s, e = seg
+            if s <= step_idx < e:
+                return True
+        return False
+
     def step(self, action_dict: Dict[int, Any]):
         # 任务注入
         new_tasks = self.task_schedule.get(self.current_step, [])
         self.chain.insert_tasks(new_tasks)
+
         assign_stats = self.chain.apply_action(action_dict)
-        self.chain.step()
+
+        # === 混合奖励 gating：sparse 段用 chunk 结算（dense_kpi=False），其它段用每步结算（dense_kpi=True）===
+        is_sparse = self._is_sparse_step(self.current_step)
+        self.chain.step(dense_kpi=(not is_sparse))
+
         self.current_step += 1
         obs = self._get_obs()
         reward = self._get_reward(assign_stats=assign_stats)

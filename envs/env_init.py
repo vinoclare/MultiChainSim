@@ -16,6 +16,7 @@ def load_env_config(config_path: str) -> dict:
     config.setdefault("task_route", [0, 1, 2])
     config.setdefault("task_amount_range", [1, 5])
     config.setdefault("max_steps", 50)
+    config.setdefault("sparse_reward_segments", [])
     config.setdefault("task_arrival_mode", "poisson")
     config.setdefault("task_arrival_rate", 5)
     config.setdefault("task_timeout_range", [30, 80])

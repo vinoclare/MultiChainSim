@@ -17,7 +17,7 @@ from explore.crescent_cluster import CrescentClusterer
 
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
-parser.add_argument("--dire", type=str, default="standard")
+parser.add_argument("--dire", type=str, default="toy")
 parser.add_argument("--alg_name", type=str, default="crescent")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 parser.add_argument("--mode", type=str, default="load", help="save or load configs")
@@ -241,11 +241,25 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
     return np.array(feats, dtype=np.float32)  # [F]
 
 
-def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
+def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step,
+                    save_step_rewards: bool = False):
     total_reward, total_cost, total_utility, total_wait_penalty = 0, 0, 0, 0
-    for _ in range(num_episodes):
+
+    # 逐 step 记录：list[episode] -> dict(total_reward[T], per_layer_reward{lid:[T]})
+    eval_step_rewards = []
+
+    for ep in range(num_episodes):
         obs = eval_env.reset()
         done = False
+
+        # 这个 episode 的逐 step reward
+        per_step = {
+            "global_step": int(global_step),
+            "episode_idx": int(ep),
+            "total_reward": [],
+            "per_layer_reward": {}
+        }
+
         while not done:
             actions = {}
             for lid in obs:
@@ -254,17 +268,50 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
                 profile = obs[lid]['worker_profile']
                 _, act, _, _ = agent_dict[lid].sample(task_obs, worker_loads, profile)
                 actions[lid] = act
+
             obs, (_, reward_detail), done, _ = eval_env.step(actions)
+
+            # --- 本 step 的 reward 统计（按 layer 拿）---
+            step_total = 0.0
             for lid, layer_stats in reward_detail['layer_rewards'].items():
-                total_reward += layer_stats.get("reward", 0)
-                total_cost += layer_stats.get("cost", 0)
-                total_utility += layer_stats.get("utility", 0)
-                total_wait_penalty += layer_stats.get("waiting_penalty", 0)
+                r = float(layer_stats.get("reward", 0.0))
+                c = float(layer_stats.get("cost", 0.0))
+                u = float(layer_stats.get("utility", 0.0))
+                wp = float(layer_stats.get("waiting_penalty", 0.0))
+
+                total_reward += r
+                total_cost += c
+                total_utility += u
+                total_wait_penalty += wp
+
+                # 逐 step per-layer reward
+                if lid not in per_step["per_layer_reward"]:
+                    per_step["per_layer_reward"][lid] = []
+                per_step["per_layer_reward"][lid].append(r)
+
+                step_total += r
+
+            per_step["total_reward"].append(float(step_total))
+
+        eval_step_rewards.append(per_step)
 
     writer.add_scalar("eval/reward", total_reward / num_episodes, global_step)
     writer.add_scalar("eval/cost", total_cost / num_episodes, global_step)
     writer.add_scalar("eval/utility", total_utility / num_episodes, global_step)
     writer.add_scalar("eval/waiting_penalty", total_wait_penalty / num_episodes, global_step)
+
+    # 保存这次 eval 的逐 step rewards（通常只在最后一次 eval 调用时开启）
+    save_path = "eval_last_step_rewards_crescent.json"
+    if save_step_rewards and save_path:
+        payload = {
+            "global_step": int(global_step),
+            "eval_episodes": int(num_episodes),
+            "max_steps": int(getattr(eval_env, "max_steps", 0)),
+            "step_rewards": eval_step_rewards
+        }
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[Eval Saved] step rewards saved to: {save_path}")
 
 
 def main():
@@ -283,7 +330,7 @@ def main():
 
     # ===== Hyperparameters =====
     num_layers = env_config["num_layers"]
-    num_episodes = ppo_config["num_episodes"]
+    num_episodes = 2000
     steps_per_episode = env_config["max_steps"]
     update_epochs = ppo_config["update_epochs"]
     gamma = ppo_config["gamma"]
@@ -334,7 +381,7 @@ def main():
             max_grad_norm=ppo_config["max_grad_norm"],
             writer=writer,
             global_step_ref=[0],
-            total_training_steps=ppo_config["num_episodes"] * env_config["max_steps"],
+            total_training_steps=2000 * env_config["max_steps"],
             macro_feat_dim=macro_feat_dim,
             use_contrastive=(lid == 0),
             train_contrastive=(lid == 0),
@@ -605,8 +652,9 @@ def main():
                 buffers[lid][k].clear()
 
         if episode % eval_interval == 0:
+            is_last_eval = (episode == int(num_episodes / args.num_workers))
             evaluate_policy(agents, eval_env, eval_episodes, writer,
-                            episode * steps_per_episode * args.num_workers)
+                            episode * steps_per_episode * args.num_workers, is_last_eval)
 
     if pool is not None:
         pool.close()

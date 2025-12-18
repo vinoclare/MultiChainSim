@@ -2,7 +2,7 @@
   "task_types": ["A", "B", "C"],
   "task_route": [0, 1, 2],
   "task_amount_range": [1, 5],
-  "max_steps": 100,
+  "max_steps": 50,
   "task_arrival_mode": "poisson",
   "task_arrival_rate": 2.5,
   "task_timeout_range": [20, 40],
@@ -21,5 +21,5 @@
   "assign_reward_coef": 0.5,
   "wait_penalty_coef": 0.01,
   "worker_type_probs": [0.2, 0.3, 0.3, 0.2],
-  "sparse_reward_segments": [[0, 25], [50, 60]]
+  "sparse_reward_segments": [[0, 25]]
 }
