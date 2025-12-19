@@ -1,13 +1,12 @@
 import json
 import time
-import os
-from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from collections import deque
 import argparse
+import os
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
@@ -18,23 +17,19 @@ from utils.utils import RunningMeanStd
 parser = argparse.ArgumentParser()
 parser.add_argument('--dire', type=str, default='standard',
                     help='name of sub-folder under ../configs/ 作为本次实验的配置目录')
+parser.add_argument('--mode', type=str, default='collect_expert', choices=['train', 'collect_expert'],
+                    help='train: 正常训练; collect_expert: 加载 best_model 采集专家轨迹')
 parser.add_argument('--offline_save_interval', type=int, default=50,
-                    help='每隔多少个episode收集1个完整episode轨迹到offline数据集；<=0表示不收集')
+                    help='每隔多少个 episode 保存 1 个 episode 的 offline 轨迹；<=0 关闭')
 parser.add_argument('--offline_data_root', type=str, default='../offline_data/hitac_muse',
-                    help='Offline数据根目录（会自动再拼接dire子目录）')
+                    help='offline 数据根目录，最终保存到 {offline_data_root}/{dire}/')
 parser.add_argument('--ckpt_root', type=str, default='../checkpoints/hitac_muse',
-                    help='模型checkpoint根目录（会自动再拼接dire子目录）')
+                    help='checkpoint 根目录，最终保存到 {ckpt_root}/{dire}/')
+parser.add_argument('--expert_episodes', type=int, default=200,
+                    help='collect_expert 模式下采集多少个专家 episode')
+
 args, _ = parser.parse_known_args()
 dire = args.dire
-offline_save_interval = args.offline_save_interval
-offline_data_dir = os.path.join(args.offline_data_root, dire)
-ckpt_dir = os.path.join(args.ckpt_root, dire)
-Path(offline_data_dir).mkdir(parents=True, exist_ok=True)
-Path(ckpt_dir).mkdir(parents=True, exist_ok=True)
-
-best_ckpt_path = os.path.join(ckpt_dir, "best_model.pt")
-best_ckpt_meta_path = os.path.join(ckpt_dir, "best_model_meta.json")
-best_episode_reward = -float("inf")
 env_config_path = f'../configs/{dire}/env_config.json'
 algo_config_path = f'../configs/hitac_muse_config.json'
 
@@ -93,7 +88,6 @@ global_kpi_dim = algo_config["hitac"]["global_kpi_dim"]
 policies_info_dim = algo_config["hitac"]["policies_info_dim"]
 traj_save_threshold = (num_episodes - 10 * eval_interval) * steps_per_episode
 
-
 # === 每层 obs 结构描述（供 MuSE init）===
 obs_shapes = []
 for lid in range(num_layers):
@@ -127,12 +121,27 @@ agent = HiTACMuSEAgent(
     total_training_steps=steps_per_episode * num_episodes
 )
 
+# ======= collect_expert 模式：直接用 best_model 采集专家数据后退出 =======
+if args.mode == "collect_expert":
+    expert_out_dir = os.path.join(offline_dir, "expert")
+    collect_expert_data(
+        best_ckpt_path=best_ckpt_path,
+        out_dir=expert_out_dir,
+        expert_episodes=args.expert_episodes,
+        env=eval_env,  # 用 eval_env（固定 eval_schedule）更可复现；想更随机可以换成 env
+        agent=agent,
+        steps_per_episode=steps_per_episode,
+        device=device
+    )
+    print(f"[collect_expert] done. expert data saved to: {expert_out_dir}")
+    raise SystemExit(0)
+
 # === KPI缓冲区初始化 ===
 kpi_window_size = algo_config["hitac"].get("kpi_window_size", 5)
 
 pol_hist = [
     [
-        deque(maxlen=kpi_window_size)   # 每个 deque 里存最近若干 episode 的指标 dict
+        deque(maxlen=kpi_window_size)  # 每个 deque 里存最近若干 episode 的指标 dict
         for _ in range(num_pos_subpolicies)
     ] for _ in range(num_layers)
 ]
@@ -183,84 +192,17 @@ def compute_gae_single_head(rewards, dones, values, next_value, gamma, lam):
     return returns, advs
 
 
-def _safe_state_dict(obj):
-    """尽量从对象中提取可用于推理的 state_dict（不强依赖具体类实现）。"""
-    if obj is None:
-        return None
-    if hasattr(obj, "state_dict") and callable(getattr(obj, "state_dict")):
-        try:
-            return obj.state_dict()
-        except Exception:
-            return None
-    # 常见包装：obj.model / obj.actor / obj.critic 等
-    for attr in ["model", "actor", "critic", "policy", "net", "encoder", "decoder"]:
-        if hasattr(obj, attr):
-            inner = getattr(obj, attr)
-            if hasattr(inner, "state_dict") and callable(getattr(inner, "state_dict")):
-                try:
-                    return inner.state_dict()
-                except Exception:
-                    pass
-    return None
-
-
-def save_best_model_if_needed(agent, episode, global_step, episode_reward_sum):
-    """当 episode_reward_sum 刷新历史最优时，保存模型 checkpoint（覆盖写 best_model.pt）。"""
-    global best_episode_reward
-
-    if episode_reward_sum <= best_episode_reward:
-        return
-
-    best_episode_reward = float(episode_reward_sum)
-
-    ckpt = {
-        "episode": int(episode),
-        "global_step": int(global_step),
-        "best_episode_reward": float(best_episode_reward),
-        "dire": str(dire),
-    }
-
-    # 优先尝试 agent.state_dict()（如果实现了最好）
-    agent_sd = _safe_state_dict(agent)
-    if agent_sd is not None:
-        ckpt["agent_state_dict"] = agent_sd
-    else:
-        # 退化为保存关键子模块（推理通常够用）
-        ckpt["muses_state_dict"] = [
-            _safe_state_dict(m) for m in getattr(agent, "muses", [])
-        ]
-        ckpt["distillers_state_dict"] = [
-            _safe_state_dict(d) for d in getattr(agent, "distillers", [])
-        ]
-        ckpt["hitac_state_dict"] = _safe_state_dict(getattr(agent, "hitac", None))
-
-    torch.save(ckpt, best_ckpt_path)
-
-    meta = {
-        "episode": int(episode),
-        "global_step": int(global_step),
-        "best_episode_reward": float(best_episode_reward),
-        "checkpoint_path": best_ckpt_path,
-        "dire": str(dire),
-    }
-    with open(best_ckpt_meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-
-    print(f"[BestCkpt] episode={episode} global_step={global_step} reward={best_episode_reward:.4f} saved -> {best_ckpt_path}")
-
-
-def _init_offline_ep_buffer(num_layers):
+def _init_offline_ep_buffer(num_layers: int):
+    """离线数据：每个 episode 保存一次轨迹（按 layer 分开存）。"""
     buf = {}
     for lid in range(num_layers):
         buf[lid] = {
-            "obs_task_queue": [],
-            "obs_worker_loads": [],
-            "obs_worker_profile": [],
-            "obs_valid_mask": [],
-
+            "task_obs": [],
+            "worker_loads": [],
+            "worker_profile": [],
+            "valid_mask": [],
             "actions": [],
-            "pids": [],
-
+            "pid": [],
             "rewards": [],
             "costs": [],
             "utils": [],
@@ -268,8 +210,7 @@ def _init_offline_ep_buffer(num_layers):
             "wait_penalty": [],
             "fused_rewards": [],
             "dones": [],
-
-            "next_task_queue": [],
+            "next_task_obs": [],
             "next_worker_loads": [],
             "next_worker_profile": [],
             "next_valid_mask": [],
@@ -277,50 +218,99 @@ def _init_offline_ep_buffer(num_layers):
     return buf
 
 
-def save_offline_episode_npz(offline_buf, episode, global_step,
-                             episode_reward_sum, episode_fused_reward_sum):
-    """将一个 episode 的完整轨迹保存为 .npz（每隔 offline_save_interval 触发一次）。"""
-    out_path = os.path.join(offline_data_dir, f"traj_ep{episode:06d}_step{global_step:09d}.npz")
+def _append_obs_to_offline(buf_lid: dict, layer_obs: dict):
+    task_obs = np.array(layer_obs["task_queue"], dtype=np.float32)
+    worker_loads = np.array(layer_obs["worker_loads"], dtype=np.float32)
+    worker_profile = np.array(layer_obs["worker_profile"], dtype=np.float32)
+    valid_mask = task_obs[:, 3].astype(np.float32)
 
-    # 从任意 layer 取 T（都一样）
-    any_lid = next(iter(offline_buf.keys()))
-    T = len(offline_buf[any_lid]["rewards"])
+    buf_lid["task_obs"].append(task_obs)
+    buf_lid["worker_loads"].append(worker_loads)
+    buf_lid["worker_profile"].append(worker_profile)
+    buf_lid["valid_mask"].append(valid_mask)
 
-    save_dict = {
-        "episode": np.array([episode], dtype=np.int32),
-        "global_step": np.array([global_step], dtype=np.int64),
-        "T": np.array([T], dtype=np.int32),
-        "episode_reward_sum": np.array([episode_reward_sum], dtype=np.float32),
-        "episode_fused_reward_sum": np.array([episode_fused_reward_sum], dtype=np.float32),
-        "num_layers": np.array([num_layers], dtype=np.int32),
-        "valid_mask_col_idx": np.array([3], dtype=np.int32),  # 本脚本训练用 task_queue[:, 3] 作为 valid_mask
-        "dire": np.array([dire], dtype=str),
+
+def _append_next_obs_to_offline(buf_lid: dict, layer_obs_next: dict):
+    task_obs = np.array(layer_obs_next["task_queue"], dtype=np.float32)
+    worker_loads = np.array(layer_obs_next["worker_loads"], dtype=np.float32)
+    worker_profile = np.array(layer_obs_next["worker_profile"], dtype=np.float32)
+    valid_mask = task_obs[:, 3].astype(np.float32)
+
+    buf_lid["next_task_obs"].append(task_obs)
+    buf_lid["next_worker_loads"].append(worker_loads)
+    buf_lid["next_worker_profile"].append(worker_profile)
+    buf_lid["next_valid_mask"].append(valid_mask)
+
+
+def save_offline_episode_npz(ep_buf: dict, save_path: str, meta: dict):
+    """将一个 episode 的轨迹保存为 npz（每层各一套 s,a,r,s',done）。"""
+    to_save = {}
+    for k, v in meta.items():
+        to_save[k] = v
+
+    for lid, b in ep_buf.items():
+        # stack: [T, ...]
+        for key in [
+            "task_obs", "worker_loads", "worker_profile", "valid_mask",
+            "actions", "pid",
+            "rewards", "costs", "utils", "assign_bonus", "wait_penalty", "fused_rewards", "dones",
+            "next_task_obs", "next_worker_loads", "next_worker_profile", "next_valid_mask",
+        ]:
+            arr = b[key]
+            if key in ["pid"]:
+                to_save[f"{key}_l{lid}"] = np.array(arr, dtype=np.int64)
+            elif key in ["dones"]:
+                to_save[f"{key}_l{lid}"] = np.array(arr, dtype=np.bool_)
+            else:
+                to_save[f"{key}_l{lid}"] = np.array(arr, dtype=np.float32)
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    np.savez_compressed(save_path, **to_save)
+
+
+def _try_get_agent_state_dict(agent):
+    """尽量用 state_dict；不行就返回 None（后面会走 pickle 保存）。"""
+    try:
+        if hasattr(agent, "state_dict") and callable(agent.state_dict):
+            return agent.state_dict()
+    except Exception:
+        pass
+    return None
+
+
+def save_best_model_if_needed(agent, episode_reward_sum: float, episode_idx: int, global_step: int,
+                              best_ckpt_path: str, best_meta_path: str, best_reward_holder: dict):
+    """若当前 episode 总回报刷新最优，则保存 best_model。"""
+    best_so_far = best_reward_holder.get("best_reward", -1e18)
+    if episode_reward_sum <= best_so_far:
+        return False
+
+    # 更新 holder
+    best_reward_holder["best_reward"] = float(episode_reward_sum)
+
+    state_dict = _try_get_agent_state_dict(agent)
+    ckpt = {
+        "episode": int(episode_idx),
+        "global_step": int(global_step),
+        "best_reward": float(episode_reward_sum),
+        "save_type": "state_dict" if state_dict is not None else "pickle",
     }
+    if state_dict is not None:
+        ckpt["agent_state_dict"] = state_dict
+    else:
+        # fallback：直接 pickle 整个 agent（要求本地类路径可 import）
+        ckpt["agent_obj"] = agent
 
-    for lid, b in offline_buf.items():
-        save_dict[f"obs_task_queue_l{lid}"] = np.stack(b["obs_task_queue"], axis=0).astype(np.float32)
-        save_dict[f"obs_worker_loads_l{lid}"] = np.stack(b["obs_worker_loads"], axis=0).astype(np.float32)
-        save_dict[f"obs_worker_profile_l{lid}"] = np.stack(b["obs_worker_profile"], axis=0).astype(np.float32)
-        save_dict[f"obs_valid_mask_l{lid}"] = np.stack(b["obs_valid_mask"], axis=0).astype(np.float32)
+    torch.save(ckpt, best_ckpt_path)
 
-        save_dict[f"actions_l{lid}"] = np.stack(b["actions"], axis=0).astype(np.float32)
-        save_dict[f"pids_l{lid}"] = np.asarray(b["pids"], dtype=np.int32)
+    with open(best_meta_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"episode": int(episode_idx), "global_step": int(global_step), "best_reward": float(episode_reward_sum),
+             "save_type": ckpt["save_type"]},
+            f, ensure_ascii=False, indent=2
+        )
+    return True
 
-        save_dict[f"rewards_l{lid}"] = np.asarray(b["rewards"], dtype=np.float32)
-        save_dict[f"costs_l{lid}"] = np.asarray(b["costs"], dtype=np.float32)
-        save_dict[f"utils_l{lid}"] = np.asarray(b["utils"], dtype=np.float32)
-        save_dict[f"assign_bonus_l{lid}"] = np.asarray(b["assign_bonus"], dtype=np.float32)
-        save_dict[f"wait_penalty_l{lid}"] = np.asarray(b["wait_penalty"], dtype=np.float32)
-        save_dict[f"fused_rewards_l{lid}"] = np.asarray(b["fused_rewards"], dtype=np.float32)
-        save_dict[f"dones_l{lid}"] = np.asarray(b["dones"], dtype=np.float32)
-
-        save_dict[f"next_task_queue_l{lid}"] = np.stack(b["next_task_queue"], axis=0).astype(np.float32)
-        save_dict[f"next_worker_loads_l{lid}"] = np.stack(b["next_worker_loads"], axis=0).astype(np.float32)
-        save_dict[f"next_worker_profile_l{lid}"] = np.stack(b["next_worker_profile"], axis=0).astype(np.float32)
-        save_dict[f"next_valid_mask_l{lid}"] = np.stack(b["next_valid_mask"], axis=0).astype(np.float32)
-
-    np.savez_compressed(out_path, **save_dict)
-    print(f"[OfflineData] saved 1 episode traj -> {out_path}")
 
 def process_obs(obs, lid, device="cuda"):
     """
@@ -333,7 +323,8 @@ def process_obs(obs, lid, device="cuda"):
     """
     layer_obs = obs[lid]  # 取出该层 observation（类型为 dict）
 
-    task_obs = torch.tensor(layer_obs["task_queue"], dtype=torch.float32, device=device).unsqueeze(0)  # [1, N, task_dim]
+    task_obs = torch.tensor(layer_obs["task_queue"], dtype=torch.float32, device=device).unsqueeze(
+        0)  # [1, N, task_dim]
     worker_loads = torch.tensor(layer_obs["worker_loads"], dtype=torch.float32, device=device).unsqueeze(0)
     worker_profile = torch.tensor(layer_obs["worker_profile"], dtype=torch.float32, device=device).unsqueeze(0)
 
@@ -409,11 +400,129 @@ def evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
     writer.add_scalar("eval/utility", total_util_all, global_step)
     writer.add_scalar("eval/waiting_penalty", total_wp_all, global_step)
 
-    print(f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
+    print(
+        f"[Eval Summary] Total reward={total_reward_all:.2f}, cost={total_cost_all:.2f}, utility={total_util_all:.2f}")
+
+
+def collect_expert_data(best_ckpt_path: str, out_dir: str, expert_episodes: int,
+                        env: MultiplexEnv, agent: HiTACMuSEAgent, steps_per_episode: int, device):
+    """加载 best_model，用它 rollout 若干 episode 并保存成 offline npz。"""
+    if not os.path.exists(best_ckpt_path):
+        raise FileNotFoundError(f"best_model not found: {best_ckpt_path}")
+
+    ckpt = torch.load(best_ckpt_path, map_location=device)
+    if isinstance(ckpt, dict) and ckpt.get("save_type") == "pickle" and "agent_obj" in ckpt:
+        agent_loaded = ckpt["agent_obj"]
+        agent = agent_loaded
+        # 尽量把内部 module 移到目标 device
+        try:
+            if hasattr(agent, "to"):
+                agent.to(device)
+        except Exception:
+            pass
+    elif isinstance(ckpt, dict) and "agent_state_dict" in ckpt:
+        agent.load_state_dict(ckpt["agent_state_dict"])
+    else:
+        # 兼容你手动 torch.save(state_dict) 的情况
+        if isinstance(ckpt, dict):
+            agent.load_state_dict(ckpt)
+        else:
+            raise ValueError("Unsupported checkpoint format for best_model.pt")
+
+    agent_best_reward = float(ckpt.get("best_reward", 0.0)) if isinstance(ckpt, dict) else 0.0
+    print(f"[collect_expert] loaded best_model, best_reward={agent_best_reward}")
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    num_layers = env.num_layers
+    for ep in range(expert_episodes):
+        obs = env.reset(with_new_schedule=True)
+        done = False
+        ep_buf = _init_offline_ep_buffer(num_layers)
+
+        ep_reward_sum = 0.0
+        t = 0
+        while (not done) and (t < steps_per_episode):
+            actions = {}
+
+            # 保存当前 obs (s_t)
+            for lid in range(num_layers):
+                _append_obs_to_offline(ep_buf[lid], obs[lid])
+
+            # 用 main_policy_predict 选动作（和 evaluate_policy 一致）
+            for lid in range(num_layers):
+                layer_obs = obs[lid]
+                task_obs = np.array(layer_obs["task_queue"], dtype=np.float32)
+                worker_loads = np.array(layer_obs["worker_loads"], dtype=np.float32)
+                worker_profile = np.array(layer_obs["worker_profile"], dtype=np.float32)
+                valid_mask = task_obs[:, 3].astype(np.float32)
+
+                obs_dict = {
+                    "task_obs": torch.tensor(task_obs, dtype=torch.float32, device=device).unsqueeze(0),
+                    "worker_loads": torch.tensor(worker_loads, dtype=torch.float32, device=device).unsqueeze(0),
+                    "worker_profiles": torch.tensor(worker_profile, dtype=torch.float32, device=device).unsqueeze(0),
+                    "valid_mask": torch.tensor(valid_mask, dtype=torch.float32, device=device).unsqueeze(0),
+                }
+                _, _, action_t, _ = agent.main_policy_predict(lid, obs_dict)
+                act = action_t.squeeze(0).detach().cpu().numpy()
+                actions[lid] = act
+
+                ep_buf[lid]["actions"].append(act)
+                ep_buf[lid]["pid"].append(-1)  # expert rollout 不走 HiTAC 子策略选择，这里用 -1 占位
+
+            obs_next, (total_reward, reward_detail), done, _ = env.step(actions)
+
+            # 存 reward 分解 + done + next_obs
+            for lid in range(num_layers):
+                r = reward_detail["layer_rewards"][lid]
+                rew = float(r["reward"])
+                cost = float(r["cost"])
+                util = float(r["utility"])
+                ab = float(r["assign_bonus"])
+                wp = float(r["wait_penalty"])
+
+                ep_buf[lid]["rewards"].append(rew)
+                ep_buf[lid]["costs"].append(cost)
+                ep_buf[lid]["utils"].append(util)
+                ep_buf[lid]["assign_bonus"].append(ab)
+                ep_buf[lid]["wait_penalty"].append(wp)
+                # expert 数据里 fused_reward 没有 pid 对应的 alpha/beta，这里先存原始 reward 作为 fused_reward
+                ep_buf[lid]["fused_rewards"].append(rew)
+                ep_buf[lid]["dones"].append(done)
+
+                _append_next_obs_to_offline(ep_buf[lid], obs_next[lid])
+
+            # episode 总回报：按 layer reward 求和
+            ep_reward_sum += sum(float(reward_detail["layer_rewards"][lid]["reward"]) for lid in range(num_layers))
+            obs = obs_next
+            t += 1
+
+        meta = {
+            "episode": int(ep),
+            "T": int(t),
+            "episode_reward_sum": float(ep_reward_sum),
+        }
+        save_path = os.path.join(out_dir, f"expert_ep{ep:06d}_T{t:03d}.npz")
+        save_offline_episode_npz(ep_buf, save_path, meta)
+
+        if (ep + 1) % 10 == 0:
+            print(f"[collect_expert] saved {ep + 1}/{expert_episodes} episodes -> {out_dir}")
 
 
 # ======= 训练主循环 =======
 global_step = 0
+
+# best model 追踪（按 episode 总 reward）
+best_reward_holder = {"best_reward": -1e18}
+if os.path.exists(best_meta_path):
+    try:
+        with open(best_meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if "best_reward" in meta:
+            best_reward_holder["best_reward"] = float(meta["best_reward"])
+    except Exception:
+        pass
+
 for episode in range(num_episodes + 1):
     # warmup stage：轮询训练每个子策略
     if episode < (warmup_ep * K):
@@ -502,25 +611,28 @@ for episode in range(num_episodes + 1):
         } for lid in range(num_layers)
     }
 
-    # === Offline 数据：每隔 offline_save_interval 采集一个完整 episode 的轨迹 ===
-    collect_offline_this_ep = (offline_save_interval is not None and offline_save_interval > 0
-                              and (episode % offline_save_interval == 0))
-    offline_ep_buf = _init_offline_ep_buffer(num_layers) if collect_offline_this_ep else None
+    # ===== Offline 轨迹采集（每 offline_save_interval 个 episode 保存 1 个 episode）=====
+    collect_offline = (args.offline_save_interval is not None) and (args.offline_save_interval > 0) and (
+                episode % args.offline_save_interval == 0)
+    offline_ep_buf = _init_offline_ep_buffer(num_layers) if collect_offline else None
+    offline_T = 0
 
     for step in range(steps_per_episode):
         # === 构造每层 obs_dict ===
         obs_dicts = {}
+
+        # offline: 记录当前状态 s_t
+        if offline_ep_buf is not None:
+            for lid in range(num_layers):
+                _append_obs_to_offline(offline_ep_buf[lid], obs[lid])
+
         for lid in range(num_layers):
             layer_obs = obs[lid]
             valid_mask = layer_obs["task_queue"][:, 3].astype(np.float32)
-            if collect_offline_this_ep:
-                offline_ep_buf[lid]["obs_task_queue"].append(layer_obs["task_queue"].astype(np.float32))
-                offline_ep_buf[lid]["obs_worker_loads"].append(layer_obs["worker_loads"].astype(np.float32))
-                offline_ep_buf[lid]["obs_worker_profile"].append(layer_obs["worker_profile"].astype(np.float32))
-                offline_ep_buf[lid]["obs_valid_mask"].append(valid_mask.astype(np.float32))
             obs_dicts[lid] = {
                 "task_obs": torch.tensor(layer_obs["task_queue"], dtype=torch.float32, device=device).unsqueeze(0),
-                "worker_loads": torch.tensor(layer_obs["worker_loads"], dtype=torch.float32, device=device).unsqueeze(0),
+                "worker_loads": torch.tensor(layer_obs["worker_loads"], dtype=torch.float32, device=device).unsqueeze(
+                    0),
                 "worker_profile": torch.tensor(layer_obs["worker_profile"], dtype=torch.float32,
                                                device=device).unsqueeze(0),
                 "valid_mask": torch.tensor(valid_mask, dtype=torch.float32, device=device).unsqueeze(0)
@@ -530,6 +642,7 @@ for episode in range(num_episodes + 1):
         sample_out = agent.sample(obs_dicts, current_pid_tensor)
         actions = {lid: sample_out[lid]["actions"].squeeze(0).cpu().numpy() for lid in range(num_layers)}
         obs_next, (total_reward, reward_detail), done, _ = env.step(actions)
+        obs = obs_next
 
         for lid in range(num_layers):
             stats = episode_stats[lid]
@@ -571,54 +684,52 @@ for episode in range(num_episodes + 1):
             buffers[lid]["dones"].append(done)
             buffers[lid]["pid"].append(sample_out[lid]["pid"].item())
 
-        # === Offline: 写入本 step 的 (s, a, r, s', done) ===
-        if collect_offline_this_ep:
+        # offline: 记录 (a_t, r_t, s_{t+1}, done)
+        if offline_ep_buf is not None:
             for lid in range(num_layers):
-                offline_ep_buf[lid]["actions"].append(actions[lid])
-                offline_ep_buf[lid]["pids"].append(int(sample_out[lid]["pid"].item()))
-
                 r = reward_detail["layer_rewards"][lid]
+                offline_ep_buf[lid]["actions"].append(np.array(actions[lid], dtype=np.float32))  # a_t
+                offline_ep_buf[lid]["pid"].append(int(sample_out[lid]["pid"].item()))
                 offline_ep_buf[lid]["rewards"].append(float(r["reward"]))
                 offline_ep_buf[lid]["costs"].append(float(r["cost"]))
                 offline_ep_buf[lid]["utils"].append(float(r["utility"]))
                 offline_ep_buf[lid]["assign_bonus"].append(float(r["assign_bonus"]))
                 offline_ep_buf[lid]["wait_penalty"].append(float(r["wait_penalty"]))
-
-                alpha_k = agent.muses[lid].alphas[current_pid_tensor[lid]].item()
-                beta_k = agent.muses[lid].betas[current_pid_tensor[lid]].item()
-                total_u = beta_k * float(r["utility"]) + float(r["assign_bonus"])
-                total_c = -alpha_k * float(r["cost"]) - float(r["wait_penalty"])
-                offline_ep_buf[lid]["fused_rewards"].append(float(total_u + total_c))
-
-                offline_ep_buf[lid]["dones"].append(float(done))
-
-                nxt = obs_next[lid]
-                nxt_vm = nxt["task_queue"][:, 3].astype(np.float32)
-                offline_ep_buf[lid]["next_task_queue"].append(nxt["task_queue"].astype(np.float32))
-                offline_ep_buf[lid]["next_worker_loads"].append(nxt["worker_loads"].astype(np.float32))
-                offline_ep_buf[lid]["next_worker_profile"].append(nxt["worker_profile"].astype(np.float32))
-                offline_ep_buf[lid]["next_valid_mask"].append(nxt_vm.astype(np.float32))
-
-        obs = obs_next
+                offline_ep_buf[lid]["fused_rewards"].append(float(buffers[lid]["rewards"][-1]))
+                offline_ep_buf[lid]["dones"].append(bool(done))
+                _append_next_obs_to_offline(offline_ep_buf[lid], obs[lid])
+            offline_T += 1
 
         if done:
             break
 
+    # ===== episode 结束：保存 offline 轨迹 + 保存 best_model =====
+    episode_reward_sum_now = sum(stats["reward"] for stats in episode_stats.values())
+
+    # best model: 用原始 reward_sum 刷新最优就保存
+    _ = save_best_model_if_needed(
+        agent=agent,
+        episode_reward_sum=episode_reward_sum_now,
+        episode_idx=episode,
+        global_step=episode * steps_per_episode,
+        best_ckpt_path=best_ckpt_path,
+        best_meta_path=best_meta_path,
+        best_reward_holder=best_reward_holder
+    )
+
+    # offline: 每隔 N episode 保存一次轨迹
+    if offline_ep_buf is not None and offline_T > 0:
+        save_path = os.path.join(offline_dir, f"traj_ep{episode:06d}_T{offline_T:03d}.npz")
+        meta = {
+            "dire": dire,
+            "episode": int(episode),
+            "global_step": int(episode * steps_per_episode),
+            "T": int(offline_T),
+            "episode_reward_sum": float(episode_reward_sum_now),
+        }
+        save_offline_episode_npz(offline_ep_buf, save_path, meta)
+
     global_step = episode * steps_per_episode
-
-    # === episode-level 汇总（用于 best_ckpt / offline 数据元信息 / EMA 等）===
-    reward_sum = sum(episode_stats[lid]["reward"] for lid in range(num_layers))
-    cost_sum = sum(episode_stats[lid]["cost"] for lid in range(num_layers))
-    util_sum = sum(episode_stats[lid]["utility"] for lid in range(num_layers))
-    fused_reward_sum = sum(episode_stats[lid]["fused_reward"] for lid in range(num_layers))
-
-    # === 保存历史最优模型（用于后续采专家数据）===
-    save_best_model_if_needed(agent, episode, global_step, reward_sum)
-
-    # === 按间隔保存 offline 轨迹 ===
-    if collect_offline_this_ep:
-        save_offline_episode_npz(offline_ep_buf, episode, global_step, reward_sum, fused_reward_sum)
-
     if episode % eval_interval == 0:
         evaluate_policy(agent, eval_env, eval_episodes, writer, global_step, device)
 
@@ -728,6 +839,12 @@ for episode in range(num_episodes + 1):
             local_kpi_history[lid].append(local_kpi)
 
         # === 构造 global_kpi ===
+        reward_sum = sum(stats["reward"] for stats in episode_stats.values())
+        cost_sum = sum(stats["cost"] for stats in episode_stats.values())
+        util_sum = sum(stats["utility"] for stats in episode_stats.values())
+        assign_bonus_sum = sum(stats["assign_bonus"] for stats in episode_stats.values())
+        wait_penalty_sum = sum(stats["wait_penalty"] for stats in episode_stats.values())
+
         # 构造 global KPI tensor（仅保留主要全局指标）
         raw_global_kpi = torch.tensor([
             reward_sum,
@@ -766,7 +883,8 @@ for episode in range(num_episodes + 1):
         global_kpi_tensor = global_kpi_history[-1].unsqueeze(0)
 
         # ---- 构造 policies_info 张量 ----
-        policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, policies_info_dim), dtype=torch.float32, device=device)
+        policies_info_tensor = torch.zeros((1, num_layers, num_pos_subpolicies, policies_info_dim), dtype=torch.float32,
+                                           device=device)
         for lid in range(num_layers):
             for k in range(num_pos_subpolicies):
                 hist = pol_hist[lid][k]
