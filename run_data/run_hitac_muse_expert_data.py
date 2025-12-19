@@ -150,12 +150,21 @@ def _build_agent(env_config: Dict[str, Any], algo_config: Dict[str, Any],
 
 
 def _extract_obs_np(obs: Dict[int, Dict[str, np.ndarray]], lid: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    layer_obs = obs[lid]
-    task_q = np.asarray(layer_obs["task_queue"], dtype=np.float32)
-    w_loads = np.asarray(layer_obs["worker_loads"], dtype=np.float32)
-    w_prof = np.asarray(layer_obs["worker_profile"], dtype=np.float32)
-    valid_mask = task_q[:, 3].astype(np.float32)  # consistent with your main loop / eval
-    return task_q, w_loads, w_prof, valid_mask
+    """
+    从环境返回的 obs 中提取某一层的 observation 字段，构造 agent.sample() 所需格式。
+
+    返回：
+        task_obs: Tensor [B, num_pad_tasks, task_dim]
+        worker_loads: Tensor [B, num_worker, load_dim]
+        worker_profile: Tensor [B, num_worker, profile_dim]
+    """
+    layer_obs = obs[lid]  # 取出该层 observation（类型为 dict）
+
+    task_obs = np.asarray(layer_obs["task_queue"], dtype=np.float32)
+    worker_loads = np.asarray(layer_obs["worker_loads"], dtype=np.float32)
+    worker_profile = np.asarray(layer_obs["worker_profile"], dtype=np.float32)
+    valid_mask = task_obs[:, 3].astype(np.float32)  # consistent with your main loop / eval
+    return task_obs, worker_loads, worker_profile, valid_mask
 
 
 @torch.no_grad()

@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from collections import deque
 import copy
@@ -276,7 +277,7 @@ class Distiller2:
 
 
 # 使用单头Agent57模型作为主策略
-class Distiller3:
+class Distiller3(nn.Module):
     def __init__(
             self,
             obs_spaces,
@@ -292,6 +293,7 @@ class Distiller3:
             margin=3.0,
             std_t=0.2
     ):
+        super().__init__()
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model = Agent57IndustrialModel(
             task_input_dim=obs_spaces["task"],

@@ -10,31 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--dire", type=str, default="standard")
-parser.add_argument("--offline_dir", type=str, default=None, help="默认 ../offline_data/hitac_muse/{dire}")
-parser.add_argument("--num_updates", type=int, default=20000)
-parser.add_argument("--batch_size", type=int, default=256)
-parser.add_argument("--hidden_dim", type=int, default=256)
-parser.add_argument("--lr", type=float, default=3e-4)
-parser.add_argument("--gamma", type=float, default=0.99)
-parser.add_argument("--tau", type=float, default=0.005)
-
-parser.add_argument("--cql_alpha", type=float, default=1.0)
-parser.add_argument("--cql_temp", type=float, default=1.0)
-parser.add_argument("--cql_n_actions", type=int, default=10)
-
-parser.add_argument("--eval_interval", type=int, default=2000)
-parser.add_argument("--eval_episodes", type=int, default=5)
-
-parser.add_argument("--seed", type=int, default=0)
-parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
-parser.add_argument("--save_dir", type=str, default="../models/offline_cql")
-args = parser.parse_args()
 
 
 # =========================
@@ -48,21 +25,27 @@ def set_seed(seed: int):
 
 
 def flatten_obs(task_q, worker_loads, worker_profile):
-    # task_q: [30, 7], worker_loads: [8, 4], worker_profile: [8, 6]
-    return np.concatenate([
-        task_q.reshape(-1).astype(np.float32),
-        worker_loads.reshape(-1).astype(np.float32),
-        worker_profile.reshape(-1).astype(np.float32),
-    ], axis=0)
+    """
+    task_q: [30, 7], worker_loads: [8, 4], worker_profile: [8, 6]
+    -> obs_vec: [30*7 + 8*4 + 8*6] = [210 + 32 + 48] = [290]
+    """
+    return np.concatenate(
+        [
+            task_q.reshape(-1).astype(np.float32),
+            worker_loads.reshape(-1).astype(np.float32),
+            worker_profile.reshape(-1).astype(np.float32),
+        ],
+        axis=0,
+    )
 
 
 def to_tanh_action(a01: np.ndarray) -> np.ndarray:
-    # [0,1] -> [-1,1]
+    """[0,1] -> [-1,1]"""
     return (a01 * 2.0 - 1.0).astype(np.float32)
 
 
 def to_01_action(a_tanh: torch.Tensor) -> torch.Tensor:
-    # [-1,1] -> [0,1]
+    """[-1,1] -> [0,1]"""
     return (a_tanh + 1.0) * 0.5
 
 
@@ -71,35 +54,46 @@ def to_01_action(a_tanh: torch.Tensor) -> torch.Tensor:
 # =========================
 class OfflineNpzReplay:
     """
-    把 offline_dir 下的 traj_ep*_step*.npz 合并成一个离线 replay buffer（numpy arrays）。
-    每个 layer 单独一份数据： (s, a, r, s', done)
+    从一个目录中读取 traj_ep*_step*.npz，合并成离线 replay：
+        (s, a, r, s', done)
+
+    约定 npz 内字段：
+        obs_task_queue_l{lid}, obs_worker_loads_l{lid}, obs_worker_profile_l{lid}
+        next_task_queue_l{lid}, next_worker_loads_l{lid}, next_worker_profile_l{lid}
+        actions_l{lid}  (in [0,1], shape [T,8,30])
+        rewards_l{lid}  (shape [T])
+        dones_l{lid}    (shape [T])
     """
     def __init__(self, offline_dir: str, layer_id: int):
-        files = sorted(glob.glob(os.path.join(offline_dir, "traj_ep*_step*.npz")))
+        pattern = os.path.join(offline_dir, "*.npz")
+        files = sorted(glob.glob(pattern))
         if not files:
             raise RuntimeError(f"No npz files found under: {offline_dir}")
 
         s_list, a_list, r_list, sp_list, d_list = [], [], [], [], []
 
-        # quick sanity counters
         nz_task = 0
         nz_prof = 0
 
         for fp in files:
             data = np.load(fp, allow_pickle=True)
-            T = int(data["T"][0])
+            t = data["T"]
+            if isinstance(t, np.ndarray):
+                T = int(t.item()) if t.ndim == 0 else int(t[0])
+            else:
+                T = int(t)
 
-            task = data[f"obs_task_queue_l{layer_id}"][:T]           # [T, 30, 7]
-            loads = data[f"obs_worker_loads_l{layer_id}"][:T]        # [T, 8, 4]
-            prof = data[f"obs_worker_profile_l{layer_id}"][:T]       # [T, 8, 6]
+            task = data[f"obs_task_queue_l{layer_id}"][:T]
+            loads = data[f"obs_worker_loads_l{layer_id}"][:T]
+            prof = data[f"obs_worker_profile_l{layer_id}"][:T]
 
             task_n = data[f"next_task_queue_l{layer_id}"][:T]
             loads_n = data[f"next_worker_loads_l{layer_id}"][:T]
             prof_n = data[f"next_worker_profile_l{layer_id}"][:T]
 
-            act01 = data[f"actions_l{layer_id}"][:T]                 # [T, 8, 30] in [0,1]
-            rew = data[f"rewards_l{layer_id}"][:T].astype(np.float32)  # [T]
-            done = data[f"dones_l{layer_id}"][:T].astype(np.float32)   # [T]
+            act01 = data[f"actions_l{layer_id}"][:T]
+            rew = data[f"rewards_l{layer_id}"][:T].astype(np.float32)
+            done = data[f"dones_l{layer_id}"][:T].astype(np.float32)
 
             nz_task += int(np.count_nonzero(task))
             nz_prof += int(np.count_nonzero(prof))
@@ -107,7 +101,6 @@ class OfflineNpzReplay:
             for t in range(T):
                 s = flatten_obs(task[t], loads[t], prof[t])
                 sp = flatten_obs(task_n[t], loads_n[t], prof_n[t])
-
                 a = to_tanh_action(act01[t].reshape(-1))  # [240] in [-1,1]
 
                 s_list.append(s)
@@ -116,21 +109,20 @@ class OfflineNpzReplay:
                 r_list.append(rew[t])
                 d_list.append(done[t])
 
-        self.s = np.stack(s_list, axis=0)      # [N, obs_dim]
-        self.a = np.stack(a_list, axis=0)      # [N, act_dim]
+        self.s = np.stack(s_list, axis=0)  # [N, obs_dim]
+        self.a = np.stack(a_list, axis=0)  # [N, act_dim]
         self.r = np.array(r_list, dtype=np.float32)[:, None]  # [N,1]
-        self.sp = np.stack(sp_list, axis=0)    # [N, obs_dim]
+        self.sp = np.stack(sp_list, axis=0)  # [N, obs_dim]
         self.d = np.array(d_list, dtype=np.float32)[:, None]  # [N,1]
 
         self.N = self.s.shape[0]
         self.obs_dim = self.s.shape[1]
         self.act_dim = self.a.shape[1]
 
-        print(f"[Replay L{layer_id}] files={len(files)} samples={self.N} obs_dim={self.obs_dim} act_dim={self.act_dim}")
+        print(f"[Replay L{layer_id}] dir={offline_dir} files={len(files)} samples={self.N} obs_dim={self.obs_dim} act_dim={self.act_dim}")
         print(f"[Replay L{layer_id}] nonzero task_queue total={nz_task}, nonzero worker_profile total={nz_prof}")
         if nz_task == 0 or nz_prof == 0:
-            print(f"[WARN] L{layer_id}: task_queue/profile seems all-zero in loaded data. "
-                  f"Offline RL will likely be crippled unless this is expected.")
+            print(f"[WARN] L{layer_id}: task_queue/profile seems all-zero in loaded data. Offline RL will likely be crippled.")
 
     def sample(self, batch_size: int, device: torch.device):
         idx = np.random.randint(0, self.N, size=batch_size)
@@ -142,6 +134,79 @@ class OfflineNpzReplay:
         return s, a, r, sp, d
 
 
+class MixedReplay:
+    """
+    混合 4 份离线数据：
+        (hitac_muse, crescent) × (expert, suboptimal)
+
+    采样策略：
+        batch 内先按 expert_frac 切 expert/suboptimal，
+        再在各自子集中按 *_hitac_ratio 切 hitac/crescent。
+    """
+    def __init__(
+        self,
+        hitac_expert_dir: str,
+        hitac_subopt_dir: str,
+        crescent_expert_dir: str,
+        crescent_subopt_dir: str,
+        layer_id: int,
+    ):
+        self.re_h_e = OfflineNpzReplay(hitac_expert_dir, layer_id)
+        self.re_h_s = OfflineNpzReplay(hitac_subopt_dir, layer_id)
+        self.re_c_e = OfflineNpzReplay(crescent_expert_dir, layer_id)
+        self.re_c_s = OfflineNpzReplay(crescent_subopt_dir, layer_id)
+
+        self.obs_dim = self.re_h_e.obs_dim
+        self.act_dim = self.re_h_e.act_dim
+        for r in [self.re_h_s, self.re_c_e, self.re_c_s]:
+            if r.obs_dim != self.obs_dim or r.act_dim != self.act_dim:
+                raise ValueError("MixedReplay: obs_dim/act_dim mismatch across datasets")
+
+    def sample_mix(
+        self,
+        batch_size: int,
+        expert_frac: float,
+        expert_hitac_ratio: float,
+        subopt_hitac_ratio: float,
+        device: torch.device,
+    ):
+        # 数量分配
+        n_e = int(round(batch_size * float(expert_frac)))
+        n_s = batch_size - n_e
+
+        n_e_h = int(round(n_e * float(expert_hitac_ratio)))
+        n_e_c = n_e - n_e_h
+
+        n_s_h = int(round(n_s * float(subopt_hitac_ratio)))
+        n_s_c = n_s - n_s_h
+
+        chunks = []
+        masks = []
+
+        def _append(replay: OfflineNpzReplay, n: int, is_expert: bool):
+            if n <= 0:
+                return
+            s, a, r, sp, d = replay.sample(n, device)
+            chunks.append((s, a, r, sp, d))
+            masks.append(torch.ones((n, 1), device=device) if is_expert else torch.zeros((n, 1), device=device))
+
+        _append(self.re_h_e, n_e_h, True)
+        _append(self.re_c_e, n_e_c, True)
+        _append(self.re_h_s, n_s_h, False)
+        _append(self.re_c_s, n_s_c, False)
+
+        s = torch.cat([c[0] for c in chunks], dim=0)
+        a = torch.cat([c[1] for c in chunks], dim=0)
+        r = torch.cat([c[2] for c in chunks], dim=0)
+        sp = torch.cat([c[3] for c in chunks], dim=0)
+        d = torch.cat([c[4] for c in chunks], dim=0)
+        expert_mask = torch.cat(masks, dim=0)
+
+        # 打乱 batch（避免固定顺序偏差）
+        perm = torch.randperm(s.shape[0], device=device)
+        return s[perm], a[perm], r[perm], sp[perm], d[perm], expert_mask[perm]
+
+
 # =========================
 # Networks
 # =========================
@@ -149,8 +214,10 @@ class MLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden: int = 256):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(in_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
             nn.Linear(hidden, out_dim),
         )
 
@@ -163,7 +230,7 @@ class TanhGaussianPolicy(nn.Module):
     SAC policy: a ~ tanh(N(mean, std))
     输出动作在 [-1,1]。给环境用时再映射到 [0,1]。
     """
-    def __init__(self, obs_dim: int, act_dim: int, hidden: int = 256, log_std_min=-20, log_std_max=2):
+    def __init__(self, obs_dim: int, act_dim: int, hidden: int = 256, log_std_min: float = -20, log_std_max: float = 2):
         super().__init__()
         self.backbone = MLP(obs_dim, hidden, hidden=hidden)
         self.mean = nn.Linear(hidden, act_dim)
@@ -185,10 +252,8 @@ class TanhGaussianPolicy(nn.Module):
         a = torch.tanh(pre_tanh)
 
         # log_prob correction for tanh
-        # log N(pre_tanh | mean, std) - sum log(1 - tanh(x)^2)
         log_prob = (-0.5 * (((pre_tanh - mean) / (std + 1e-8)) ** 2 + 2 * log_std + np.log(2 * np.pi))).sum(dim=-1, keepdim=True)
         log_prob -= torch.log(1 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
-
         return a, log_prob
 
     def deterministic(self, obs):
@@ -245,7 +310,6 @@ class CQLSAC:
 
         self.auto_alpha = auto_alpha
         if target_entropy is None:
-            # SAC 常用设置：- |A|
             target_entropy = -float(act_dim)
         self.target_entropy = target_entropy
 
@@ -265,8 +329,23 @@ class CQLSAC:
         for p, tp in zip(net.parameters(), target.parameters()):
             tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
 
-    def train_step(self, replay: OfflineNpzReplay, batch_size: int):
-        s, a, r, sp, d = replay.sample(batch_size, self.device)
+    def train_step(
+        self,
+        replay: MixedReplay,
+        batch_size: int,
+        expert_frac: float,
+        expert_hitac_ratio: float,
+        subopt_hitac_ratio: float,
+        bc_coef: float,
+    ):
+        # --- mixed batch ---
+        s, a, r, sp, d, expert_mask = replay.sample_mix(
+            batch_size=batch_size,
+            expert_frac=expert_frac,
+            expert_hitac_ratio=expert_hitac_ratio,
+            subopt_hitac_ratio=subopt_hitac_ratio,
+            device=self.device,
+        )
 
         # -----------------------------
         # Critic target
@@ -292,7 +371,7 @@ class CQLSAC:
         # random actions ~ U[-1,1]
         a_rand = torch.empty(B, n, self.act_dim, device=self.device).uniform_(-1.0, 1.0)
 
-        # policy actions sampled at s
+        # policy actions sampled at s (critic 阶段：不要让梯度进 policy)
         s_rep = s[:, None, :].repeat(1, n, 1).reshape(B * n, self.obs_dim)
         with torch.no_grad():
             a_pi, _ = self.policy.sample(s_rep)
@@ -324,13 +403,24 @@ class CQLSAC:
         self.q2_opt.step()
 
         # -----------------------------
-        # Policy update
+        # Policy update (SAC + expert BC anchor)
         # -----------------------------
         a_new, logp_new = self.policy.sample(s)
         q1_new = self.q1(s, a_new)
         q2_new = self.q2(s, a_new)
         q_new = torch.min(q1_new, q2_new)
-        pi_loss = (self.alpha.detach() * logp_new - q_new).mean()
+
+        sac_pi_loss = (self.alpha.detach() * logp_new - q_new).mean()
+
+        bc_loss = torch.tensor(0.0, device=self.device)
+        if bc_coef > 0:
+            # expert-only: deterministic policy action 贴近 expert action（tanh-space）
+            a_det = self.policy.deterministic(s)  # [-1,1]
+            per = ((a_det - a) ** 2).mean(dim=-1, keepdim=True)  # [B,1]
+            denom = expert_mask.sum().clamp(min=1.0)
+            bc_loss = (per * expert_mask).sum() / denom
+
+        pi_loss = sac_pi_loss + float(bc_coef) * bc_loss
 
         self.pi_opt.zero_grad()
         pi_loss.backward()
@@ -362,6 +452,8 @@ class CQLSAC:
             "cql2": float(cql2.item()),
             "bellman1": float(bellman1.item()),
             "bellman2": float(bellman2.item()),
+            "bc_loss": float(bc_loss.item()),
+            "expert_frac_in_batch": float(expert_mask.mean().item()),
         }
 
     def act_env(self, obs_np: np.ndarray, deterministic: bool = True) -> np.ndarray:
@@ -411,15 +503,52 @@ def evaluate_cql(policies, eval_env: MultiplexEnv, num_episodes: int):
     }
 
 
-# =========================
-# Main
-# =========================
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dire", type=str, default="standard")
+
+    # 两种算法的离线数据根目录（默认按你的工程习惯拼）
+    parser.add_argument("--hitac_root", type=str, default=None, help="默认 ../offline_data/hitac_muse/{dire}")
+    parser.add_argument("--crescent_root", type=str, default=None, help="默认 ../offline_data/crescent/{dire}")
+
+    # 两类数据的子目录名
+    parser.add_argument("--expert_tag", type=str, default="expert")
+    parser.add_argument("--subopt_tag", type=str, default="suboptimal")  # <-- 你说就叫 suboptimal
+
+    # 混合采样比例
+    parser.add_argument("--expert_frac", type=float, default=0.7, help="每个 batch 中 expert 样本比例")
+    parser.add_argument("--expert_hitac_ratio", type=float, default=0.5, help="expert 子集中 hitac_muse 占比（其余给 crescent）")
+    parser.add_argument("--subopt_hitac_ratio", type=float, default=0.5, help="suboptimal 子集中 hitac_muse 占比（其余给 crescent）")
+
+    # expert-only BC 正则：让 policy 别背叛专家
+    parser.add_argument("--bc_coef", type=float, default=0.05, help="expert BC loss 系数，0 表示关闭")
+
+    # 训练超参
+    parser.add_argument("--num_updates", type=int, default=20000)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--hidden_dim", type=int, default=256)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--tau", type=float, default=0.005)
+
+    # CQL 超参
+    parser.add_argument("--cql_alpha", type=float, default=1.0)
+    parser.add_argument("--cql_temp", type=float, default=1.0)
+    parser.add_argument("--cql_n_actions", type=int, default=10)
+
+    parser.add_argument("--eval_interval", type=int, default=2000)
+    parser.add_argument("--eval_episodes", type=int, default=5)
+
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument("--save_dir", type=str, default="../logs/cql")
+    args = parser.parse_args()
+
     set_seed(args.seed)
     device = torch.device("cuda" if (args.device == "cuda" and torch.cuda.is_available()) else "cpu")
     print(f"Using device: {device}")
 
-    # ---- env init (follow your run_crescent style) ----
+    # ---- env init ----
     env_config_path = f"../configs/{args.dire}/env_config.json"
     schedule_path = f"../configs/{args.dire}/train_schedule.json"
     eval_schedule_path = f"../configs/{args.dire}/eval_schedule.json"
@@ -437,19 +566,38 @@ def main():
     num_layers = int(env_cfg["num_layers"])
     print(f"num_layers={num_layers}")
 
-    # ---- offline dir ----
-    offline_dir = args.offline_dir
-    if offline_dir is None:
-        offline_dir = f"../offline_data/hitac_muse/{args.dire}"
-    print(f"offline_dir={offline_dir}")
+    # ---- data dirs ----
+    hitac_root = args.hitac_root or f"../offline_data/hitac_muse/{args.dire}"
+    crescent_root = args.crescent_root or f"../offline_data/crescent/{args.dire}"
+
+    hitac_expert_dir = os.path.join(hitac_root, args.expert_tag)
+    hitac_subopt_dir = os.path.join(hitac_root, args.subopt_tag)
+    crescent_expert_dir = os.path.join(crescent_root, args.expert_tag)
+    crescent_subopt_dir = os.path.join(crescent_root, args.subopt_tag)
+
+    print("[DATA DIRS]")
+    print(" hitac_expert    =", hitac_expert_dir)
+    print(" hitac_suboptimal=", hitac_subopt_dir)
+    print(" crescent_expert =", crescent_expert_dir)
+    print(" crescent_subopt =", crescent_subopt_dir)
+
+    # ---- tensorboard ----
+    os.makedirs(args.save_dir, exist_ok=True)
+    tb_dir = os.path.join(args.save_dir, args.dire, time.strftime("%Y%m%d-%H%M%S"))
+    writer = SummaryWriter(log_dir=tb_dir)
+    print(f"TensorBoard log_dir: {tb_dir}")
 
     # ---- train per layer ----
-    os.makedirs(args.save_dir, exist_ok=True)
-
     replays = {}
     trainers = {}
     for lid in range(num_layers):
-        replay = OfflineNpzReplay(offline_dir, layer_id=lid)
+        replay = MixedReplay(
+            hitac_expert_dir=hitac_expert_dir,
+            hitac_subopt_dir=hitac_subopt_dir,
+            crescent_expert_dir=crescent_expert_dir,
+            crescent_subopt_dir=crescent_subopt_dir,
+            layer_id=lid,
+        )
         replays[lid] = replay
 
         trainer = CQLSAC(
@@ -468,13 +616,20 @@ def main():
         )
         trainers[lid] = trainer
 
+    # ---- training loop ----
     for step in range(1, args.num_updates + 1):
         logs = {}
         for lid in range(num_layers):
-            logs[lid] = trainers[lid].train_step(replays[lid], args.batch_size)
+            logs[lid] = trainers[lid].train_step(
+                replays[lid],
+                args.batch_size,
+                expert_frac=args.expert_frac,
+                expert_hitac_ratio=args.expert_hitac_ratio,
+                subopt_hitac_ratio=args.subopt_hitac_ratio,
+                bc_coef=args.bc_coef,
+            )
 
         if step % 200 == 0:
-            # 打印 layer0 的几个关键量，避免刷屏
             l0 = logs[0]
             writer.add_scalar("train/q1_loss", l0["q1_loss"], step)
             writer.add_scalar("train/q2_loss", l0["q2_loss"], step)
@@ -482,10 +637,16 @@ def main():
             writer.add_scalar("train/alpha", l0["alpha"], step)
             writer.add_scalar("train/cql1", l0["cql1"], step)
             writer.add_scalar("train/bellman1", l0["bellman1"], step)
-            print(f"[upd {step}] "
-                  f"q1={l0['q1_loss']:.4f} q2={l0['q2_loss']:.4f} "
-                  f"pi={l0['pi_loss']:.4f} alpha={l0['alpha']:.4f} "
-                  f"cql1={l0['cql1']:.4f} bell1={l0['bellman1']:.4f}")
+            writer.add_scalar("train/bc_loss", l0["bc_loss"], step)
+            writer.add_scalar("train/expert_frac_in_batch", l0["expert_frac_in_batch"], step)
+
+            print(
+                f"[upd {step}] "
+                f"q1={l0['q1_loss']:.4f} q2={l0['q2_loss']:.4f} "
+                f"pi={l0['pi_loss']:.4f} alpha={l0['alpha']:.4f} "
+                f"cql1={l0['cql1']:.4f} bell1={l0['bellman1']:.4f} "
+                f"bc={l0['bc_loss']:.4f} expert_frac={l0['expert_frac_in_batch']:.2f}"
+            )
 
         if args.eval_interval > 0 and step % args.eval_interval == 0:
             stats = evaluate_cql(trainers, eval_env, args.eval_episodes)
@@ -493,30 +654,37 @@ def main():
             writer.add_scalar("eval/cost", stats["cost"], step)
             writer.add_scalar("eval/utility", stats["utility"], step)
             writer.add_scalar("eval/wait_penalty", stats["waiting_penalty"], step)
-            print(f"[EVAL upd {step}] reward={stats['reward']:.4f} cost={stats['cost']:.4f} "
-                  f"utility={stats['utility']:.4f} wait_penalty={stats['waiting_penalty']:.4f}")
+            print(
+                f"[EVAL upd {step}] reward={stats['reward']:.4f} cost={stats['cost']:.4f} "
+                f"utility={stats['utility']:.4f} wait_penalty={stats['waiting_penalty']:.4f}"
+            )
 
     # ---- save ----
     for lid in range(num_layers):
-        save_path = os.path.join(args.save_dir, f"cql_layer{lid}.pth")
-        torch.save({
-            "policy": trainers[lid].policy.state_dict(),
-            "q1": trainers[lid].q1.state_dict(),
-            "q2": trainers[lid].q2.state_dict(),
-            "q1_t": trainers[lid].q1_t.state_dict(),
-            "q2_t": trainers[lid].q2_t.state_dict(),
-            "log_alpha": trainers[lid].log_alpha.detach().cpu().numpy(),
-            "obs_dim": trainers[lid].obs_dim,
-            "act_dim": trainers[lid].act_dim,
-        }, save_path)
+        save_path = os.path.join(args.save_dir, f"cql_mix_layer{lid}.pth")
+        torch.save(
+            {
+                "policy": trainers[lid].policy.state_dict(),
+                "q1": trainers[lid].q1.state_dict(),
+                "q2": trainers[lid].q2.state_dict(),
+                "q1_t": trainers[lid].q1_t.state_dict(),
+                "q2_t": trainers[lid].q2_t.state_dict(),
+                "log_alpha": trainers[lid].log_alpha.detach().cpu().numpy(),
+                "obs_dim": trainers[lid].obs_dim,
+                "act_dim": trainers[lid].act_dim,
+            },
+            save_path,
+        )
         print(f"Saved: {save_path}")
 
     stats = evaluate_cql(trainers, eval_env, max(1, args.eval_episodes))
-    print(f"[FINAL EVAL] reward={stats['reward']:.4f} cost={stats['cost']:.4f} "
-          f"utility={stats['utility']:.4f} wait_penalty={stats['waiting_penalty']:.4f}")
+    print(
+        f"[FINAL EVAL] reward={stats['reward']:.4f} cost={stats['cost']:.4f} "
+        f"utility={stats['utility']:.4f} wait_penalty={stats['waiting_penalty']:.4f}"
+    )
+
+    writer.close()
 
 
 if __name__ == "__main__":
     main()
-    log_dir = f'../logs/cql/{args.dire}/' + time.strftime("%Y%m%d-%H%M%S")
-    writer = SummaryWriter(log_dir=log_dir)
