@@ -3,13 +3,38 @@ import glob
 import json
 import argparse
 import random
+import time
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+
 
 from envs import IndustrialChain
 from envs.env import MultiplexEnv
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dire", type=str, default="standard")
+parser.add_argument("--offline_dir", type=str, default=None, help="默认 ../offline_data/hitac_muse/{dire}")
+parser.add_argument("--num_updates", type=int, default=20000)
+parser.add_argument("--batch_size", type=int, default=256)
+parser.add_argument("--hidden_dim", type=int, default=256)
+parser.add_argument("--lr", type=float, default=3e-4)
+parser.add_argument("--gamma", type=float, default=0.99)
+parser.add_argument("--tau", type=float, default=0.005)
+
+parser.add_argument("--cql_alpha", type=float, default=1.0)
+parser.add_argument("--cql_temp", type=float, default=1.0)
+parser.add_argument("--cql_n_actions", type=int, default=10)
+
+parser.add_argument("--eval_interval", type=int, default=2000)
+parser.add_argument("--eval_episodes", type=int, default=5)
+
+parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
+parser.add_argument("--save_dir", type=str, default="../models/offline_cql")
+args = parser.parse_args()
 
 
 # =========================
@@ -269,7 +294,8 @@ class CQLSAC:
 
         # policy actions sampled at s
         s_rep = s[:, None, :].repeat(1, n, 1).reshape(B * n, self.obs_dim)
-        a_pi, _ = self.policy.sample(s_rep)  # [B*n, act_dim]
+        with torch.no_grad():
+            a_pi, _ = self.policy.sample(s_rep)
         a_pi = a_pi.reshape(B, n, self.act_dim)
 
         # evaluate Q for sampled actions
@@ -389,28 +415,6 @@ def evaluate_cql(policies, eval_env: MultiplexEnv, num_episodes: int):
 # Main
 # =========================
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dire", type=str, default="standard")
-    parser.add_argument("--offline_dir", type=str, default=None, help="默认 ../offline_data/hitac_muse/{dire}")
-    parser.add_argument("--num_updates", type=int, default=20000)
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--hidden_dim", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--tau", type=float, default=0.005)
-
-    parser.add_argument("--cql_alpha", type=float, default=1.0)
-    parser.add_argument("--cql_temp", type=float, default=1.0)
-    parser.add_argument("--cql_n_actions", type=int, default=10)
-
-    parser.add_argument("--eval_interval", type=int, default=2000)
-    parser.add_argument("--eval_episodes", type=int, default=5)
-
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--save_dir", type=str, default="../models/offline_cql")
-    args = parser.parse_args()
-
     set_seed(args.seed)
     device = torch.device("cuda" if (args.device == "cuda" and torch.cuda.is_available()) else "cpu")
     print(f"Using device: {device}")
@@ -472,6 +476,12 @@ def main():
         if step % 200 == 0:
             # 打印 layer0 的几个关键量，避免刷屏
             l0 = logs[0]
+            writer.add_scalar("train/q1_loss", l0["q1_loss"], step)
+            writer.add_scalar("train/q2_loss", l0["q2_loss"], step)
+            writer.add_scalar("train/pi_loss", l0["pi_loss"], step)
+            writer.add_scalar("train/alpha", l0["alpha"], step)
+            writer.add_scalar("train/cql1", l0["cql1"], step)
+            writer.add_scalar("train/bellman1", l0["bellman1"], step)
             print(f"[upd {step}] "
                   f"q1={l0['q1_loss']:.4f} q2={l0['q2_loss']:.4f} "
                   f"pi={l0['pi_loss']:.4f} alpha={l0['alpha']:.4f} "
@@ -479,6 +489,10 @@ def main():
 
         if args.eval_interval > 0 and step % args.eval_interval == 0:
             stats = evaluate_cql(trainers, eval_env, args.eval_episodes)
+            writer.add_scalar("eval/reward", stats["reward"], step)
+            writer.add_scalar("eval/cost", stats["cost"], step)
+            writer.add_scalar("eval/utility", stats["utility"], step)
+            writer.add_scalar("eval/wait_penalty", stats["waiting_penalty"], step)
             print(f"[EVAL upd {step}] reward={stats['reward']:.4f} cost={stats['cost']:.4f} "
                   f"utility={stats['utility']:.4f} wait_penalty={stats['waiting_penalty']:.4f}")
 
@@ -504,3 +518,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    log_dir = f'../logs/cql/{args.dire}/' + time.strftime("%Y%m%d-%H%M%S")
+    writer = SummaryWriter(log_dir=log_dir)
