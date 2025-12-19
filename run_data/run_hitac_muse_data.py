@@ -27,7 +27,7 @@ parser.add_argument('--ckpt_root', type=str, default='../checkpoints/hitac_muse'
 args, _ = parser.parse_known_args()
 dire = args.dire
 offline_save_interval = args.offline_save_interval
-offline_data_dir = os.path.join(args.offline_data_root, dire)
+offline_data_dir = os.path.join(args.offline_data_root, dire, "suboptimal")
 ckpt_dir = os.path.join(args.ckpt_root, dire)
 Path(offline_data_dir).mkdir(parents=True, exist_ok=True)
 Path(ckpt_dir).mkdir(parents=True, exist_ok=True)

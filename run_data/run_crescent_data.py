@@ -597,7 +597,7 @@ def main():
     reset_schedule_interval = ppo_config["reset_schedule_interval"]
 
     # offline dirs
-    offline_dir = Path(args.offline_data_root) / dire
+    offline_dir = Path(args.offline_data_root) / dire / "suboptimal"
     ckpt_dir = Path(args.ckpt_root) / dire
     _ensure_dir(offline_dir)
     _ensure_dir(ckpt_dir)
