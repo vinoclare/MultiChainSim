@@ -436,7 +436,7 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    device = torch.device(args.device)
+    device = torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
 
     dire = args.dire
     env_config_path = f"../configs/{dire}/env_config.json"

@@ -382,7 +382,7 @@ def main():
     parser.add_argument("--max_files", type=int, default=0, help="0=all")
     parser.add_argument("--seed", type=int, default=0)
 
-    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--updates", type=int, default=200000)
     parser.add_argument("--batch_size", type=int, default=256)
 
@@ -402,7 +402,7 @@ def main():
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    device = torch.device(args.device)
+    device = torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
 
     dire = args.dire
     env_config_path = f"../configs/{dire}/env_config.json"
