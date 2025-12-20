@@ -334,7 +334,7 @@ def main():
     parser.add_argument("--dire", type=str, default="standard")
     parser.add_argument("--alg_name", type=str, default="crescent")
     parser.add_argument("--num_workers", type=int, default=10)
-    parser.add_argument("--expert_episodes", type=int, default=200)
+    parser.add_argument("--expert_episodes", type=int, default=500)
     parser.add_argument("--start_episode_id", type=int, default=0, help="Episode id offset for saved filenames")
     parser.add_argument("--with_new_schedule", action="store_true", help="Reset with new schedule every episode")
     parser.add_argument("--offline_data_root", type=str, default="../offline_data/crescent")
@@ -371,7 +371,7 @@ def main():
         tmp_env = MultiplexEnv(env_config_path, schedule_load_path=schedule_path,
                                worker_config_load_path=worker_config_path)
     tmp_env.chain = IndustrialChain(tmp_env.worker_config)
-    probe_obs = tmp_env.reset(with_new_schedule=True)
+    probe_obs = tmp_env.reset()
     raw_macro_probe = build_struct_macro_feature(
         obs=probe_obs, num_layers=num_layers, step_idx=0, max_steps=steps_per_episode
     )
