@@ -152,13 +152,11 @@ def _save_offline_episode_npz(
         npz_dict[prefix + "actions"] = _stack_or_array(buffers_local[lid]['actions'], dtype=np.float32)
 
         # reward + decomposition
-        npz_dict[prefix + "reward"] = _stack_or_array(buffers_local[lid]['reward'], dtype=np.float32)
+        npz_dict[prefix + "rewards"] = _stack_or_array(buffers_local[lid]['reward'], dtype=np.float32)
         npz_dict[prefix + "cost"] = _stack_or_array(buffers_local[lid]['cost'], dtype=np.float32)
         npz_dict[prefix + "utility"] = _stack_or_array(buffers_local[lid]['utility'], dtype=np.float32)
         npz_dict[prefix + "assign_bonus"] = _stack_or_array(buffers_local[lid]['assign_bonus'], dtype=np.float32)
         npz_dict[prefix + "wait_penalty"] = _stack_or_array(buffers_local[lid]['wait_penalty'], dtype=np.float32)
-        npz_dict[prefix + "reward_u"] = _stack_or_array(buffers_local[lid]['reward_u'], dtype=np.float32)
-        npz_dict[prefix + "reward_c"] = _stack_or_array(buffers_local[lid]['reward_c'], dtype=np.float32)
 
         # done
         npz_dict[prefix + "dones"] = _stack_or_array(buffers_local[lid]['dones'], dtype=np.float32)
@@ -317,17 +315,12 @@ def _episode_worker_expert(with_new_schedule, seed, episode_id):
             u = _must_get(layer_info, 'utility', lid)
             ab = _must_get(layer_info, 'assign_bonus', lid)
             wp = _must_get(layer_info, 'wait_penalty', lid)
-            ru = _must_get(layer_info, 'reward_u', lid)
-            rc = _must_get(layer_info, 'reward_c', lid)
 
             buffers_local[lid]['reward'].append(r)
             buffers_local[lid]['cost'].append(c)
             buffers_local[lid]['utility'].append(u)
             buffers_local[lid]['assign_bonus'].append(ab)
             buffers_local[lid]['wait_penalty'].append(wp)
-            buffers_local[lid]['reward_u'].append(ru)
-            buffers_local[lid]['reward_c'].append(rc)
-
             buffers_local[lid]['dones'].append(float(done))
 
         obs = obs_next
@@ -357,7 +350,7 @@ def main():
     alg_name = args.alg_name.lower()
 
     env_config_path = f"../configs/{dire}/env_config.json"
-    schedule_path = f"../configs/{dire}/train_schedule.json"
+    schedule_path = f"../configs/{dire}/eval_schedule.json"
     worker_config_path = f"../configs/{dire}/worker_config.json"
 
     # config
