@@ -264,6 +264,8 @@ def _init_offline_ep_buffer(num_layers):
             "rewards": [],
             "costs": [],
             "utils": [],
+            "reward_u": [],
+            "reward_c": [],
             "assign_bonus": [],
             "wait_penalty": [],
             "fused_rewards": [],
@@ -279,45 +281,61 @@ def _init_offline_ep_buffer(num_layers):
 
 def save_offline_episode_npz(offline_buf, episode, global_step,
                              episode_reward_sum, episode_fused_reward_sum):
-    """将一个 episode 的完整轨迹保存为 .npz（每隔 offline_save_interval 触发一次）。"""
+    """
+    将一个 episode 的完整轨迹保存为 .npz（每隔 offline_save_interval 触发一次）。
+
+    注意：npz 字段命名严格对齐你的离线训练读取格式：
+    - 全局：episode_id, dire, T, ext_return, fused_return
+    - 每层：l{lid}_task_obs / worker_loads / worker_profile / valid_mask / actions /
+            reward / cost / utility / assign_bonus / wait_penalty / reward_u / reward_c /
+            fused_rewards / dones / next_*
+    """
     out_path = os.path.join(offline_data_dir, f"traj_ep{episode:06d}_step{global_step:09d}.npz")
 
     # 从任意 layer 取 T（都一样）
     any_lid = next(iter(offline_buf.keys()))
     T = len(offline_buf[any_lid]["rewards"])
 
+    # ===== 全局字段（对齐你给的 list）=====
     save_dict = {
-        "episode": np.array([episode], dtype=np.int32),
-        "global_step": np.array([global_step], dtype=np.int64),
-        "T": np.array([T], dtype=np.int32),
-        "episode_reward_sum": np.array([episode_reward_sum], dtype=np.float32),
-        "episode_fused_reward_sum": np.array([episode_fused_reward_sum], dtype=np.float32),
-        "num_layers": np.array([num_layers], dtype=np.int32),
-        "valid_mask_col_idx": np.array([3], dtype=np.int32),  # 本脚本训练用 task_queue[:, 3] 作为 valid_mask
+        "episode_id": np.array([episode], dtype=np.int32),
         "dire": np.array([dire], dtype=str),
+        "T": np.array([T], dtype=np.int32),
+        "ext_return": np.array([episode_reward_sum], dtype=np.float32),
+        "fused_return": np.array([episode_fused_reward_sum], dtype=np.float32),
     }
 
+    # ===== 每层字段（对齐你给的 list）=====
     for lid, b in offline_buf.items():
-        save_dict[f"obs_task_queue_l{lid}"] = np.stack(b["obs_task_queue"], axis=0).astype(np.float32)
-        save_dict[f"obs_worker_loads_l{lid}"] = np.stack(b["obs_worker_loads"], axis=0).astype(np.float32)
-        save_dict[f"obs_worker_profile_l{lid}"] = np.stack(b["obs_worker_profile"], axis=0).astype(np.float32)
-        save_dict[f"obs_valid_mask_l{lid}"] = np.stack(b["obs_valid_mask"], axis=0).astype(np.float32)
+        # s
+        save_dict[f"l{lid}_task_obs"] = np.stack(b["obs_task_queue"], axis=0).astype(np.float32)
+        save_dict[f"l{lid}_worker_loads"] = np.stack(b["obs_worker_loads"], axis=0).astype(np.float32)
+        save_dict[f"l{lid}_worker_profile"] = np.stack(b["obs_worker_profile"], axis=0).astype(np.float32)
+        save_dict[f"l{lid}_valid_mask"] = np.stack(b["obs_valid_mask"], axis=0).astype(np.float32)
 
-        save_dict[f"actions_l{lid}"] = np.stack(b["actions"], axis=0).astype(np.float32)
-        save_dict[f"pids_l{lid}"] = np.asarray(b["pids"], dtype=np.int32)
+        # a
+        save_dict[f"l{lid}_actions"] = np.asarray(b["actions"])
 
-        save_dict[f"rewards_l{lid}"] = np.asarray(b["rewards"], dtype=np.float32)
-        save_dict[f"costs_l{lid}"] = np.asarray(b["costs"], dtype=np.float32)
-        save_dict[f"utils_l{lid}"] = np.asarray(b["utils"], dtype=np.float32)
-        save_dict[f"assign_bonus_l{lid}"] = np.asarray(b["assign_bonus"], dtype=np.float32)
-        save_dict[f"wait_penalty_l{lid}"] = np.asarray(b["wait_penalty"], dtype=np.float32)
-        save_dict[f"fused_rewards_l{lid}"] = np.asarray(b["fused_rewards"], dtype=np.float32)
-        save_dict[f"dones_l{lid}"] = np.asarray(b["dones"], dtype=np.float32)
+        # r (raw)
+        save_dict[f"l{lid}_rewards"] = np.asarray(b["rewards"], dtype=np.float32)
+        save_dict[f"l{lid}_cost"] = np.asarray(b["costs"], dtype=np.float32)
+        save_dict[f"l{lid}_utility"] = np.asarray(b["utils"], dtype=np.float32)
+        save_dict[f"l{lid}_assign_bonus"] = np.asarray(b["assign_bonus"], dtype=np.float32)
+        save_dict[f"l{lid}_wait_penalty"] = np.asarray(b["wait_penalty"], dtype=np.float32)
 
-        save_dict[f"next_task_queue_l{lid}"] = np.stack(b["next_task_queue"], axis=0).astype(np.float32)
-        save_dict[f"next_worker_loads_l{lid}"] = np.stack(b["next_worker_loads"], axis=0).astype(np.float32)
-        save_dict[f"next_worker_profile_l{lid}"] = np.stack(b["next_worker_profile"], axis=0).astype(np.float32)
-        save_dict[f"next_valid_mask_l{lid}"] = np.stack(b["next_valid_mask"], axis=0).astype(np.float32)
+        # reward decomposition + fused
+        save_dict[f"l{lid}_reward_u"] = np.asarray(b["reward_u"], dtype=np.float32)
+        save_dict[f"l{lid}_reward_c"] = np.asarray(b["reward_c"], dtype=np.float32)
+        save_dict[f"l{lid}_fused_rewards"] = np.asarray(b["fused_rewards"], dtype=np.float32)
+
+        # done
+        save_dict[f"l{lid}_dones"] = np.asarray(b["dones"], dtype=np.float32)
+
+        # s'
+        save_dict[f"l{lid}_next_task_obs"] = np.stack(b["next_task_queue"], axis=0).astype(np.float32)
+        save_dict[f"l{lid}_next_worker_loads"] = np.stack(b["next_worker_loads"], axis=0).astype(np.float32)
+        save_dict[f"l{lid}_next_worker_profile"] = np.stack(b["next_worker_profile"], axis=0).astype(np.float32)
+        save_dict[f"l{lid}_next_valid_mask"] = np.stack(b["next_valid_mask"], axis=0).astype(np.float32)
 
     np.savez_compressed(out_path, **save_dict)
     print(f"[OfflineData] saved 1 episode traj -> {out_path}")
@@ -588,6 +606,8 @@ for episode in range(num_episodes + 1):
                 beta_k = agent.muses[lid].betas[current_pid_tensor[lid]].item()
                 total_u = beta_k * float(r["utility"]) + float(r["assign_bonus"])
                 total_c = -alpha_k * float(r["cost"]) - float(r["wait_penalty"])
+                offline_ep_buf[lid]["reward_u"].append(float(total_u))
+                offline_ep_buf[lid]["reward_c"].append(float(total_c))
                 offline_ep_buf[lid]["fused_rewards"].append(float(total_u + total_c))
 
                 offline_ep_buf[lid]["dones"].append(float(done))

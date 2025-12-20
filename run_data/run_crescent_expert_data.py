@@ -44,14 +44,13 @@ def _stack_or_array(lst, dtype=None):
             arr = arr.astype(dtype)
         return arr
     except Exception:
-        arr = np.array(lst, dtype=object)
-        return arr
+        return np.array(lst, dtype=object)
 
 
 def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
     """
     Build 1D macro structural feature vector (length F).
-    Must be identical to the training script's definition to keep compatibility.
+    Used only to probe macro_feat_dim for alg init compatibility.
     """
     feats = []
     total_valid = 0.0
@@ -79,85 +78,98 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
         else:
             feats.extend([0.0, 0.0, 0.0])
 
-    if total_slots > 0.0:
-        global_backlog_ratio = total_valid / (total_slots + 1e-8)
-    else:
-        global_backlog_ratio = 0.0
+    global_backlog_ratio = total_valid / (total_slots + 1e-8) if total_slots > 0.0 else 0.0
     feats.append(float(global_backlog_ratio))
 
-    if max_steps > 0:
-        time_frac = float(step_idx) / float(max_steps)
-    else:
-        time_frac = 0.0
+    time_frac = float(step_idx) / float(max_steps) if max_steps > 0 else 0.0
     feats.append(time_frac)
 
     return np.array(feats, dtype=np.float32)  # [F]
 
 
 def _episode_ext_return(buffers_local, num_layers: int) -> float:
-    """Episode extrinsic return: sum over layers."""
+    """Episode extrinsic return: sum over layers of l{lid}_reward."""
     s = 0.0
     for lid in range(num_layers):
-        s += float(np.sum(np.array(buffers_local[lid]['ext_rewards'], dtype=np.float32)))
+        s += float(np.sum(np.array(buffers_local[lid]['reward'], dtype=np.float32)))
     return s
 
 
-def _save_offline_episode_npz(buffers_local, out_dir: Path, num_layers: int, tag: str = "expert",
-                             dire: str = "", alg_name: str = "") -> None:
+def _must_get(layer_info: dict, key: str, lid: int) -> float:
+    """Strict getter: if missing, raise to avoid silently writing wrong data."""
+    if key not in layer_info:
+        raise KeyError(
+            f"[reward_detail missing] layer_rewards[{lid}] has no key '{key}'. "
+            f"Available keys = {list(layer_info.keys())}"
+        )
+    return float(layer_info[key])
+
+
+def _save_offline_episode_npz(
+        buffers_local,
+        out_dir: Path,
+        num_layers: int,
+        episode_id: int,
+        tag: str = "expert",
+        dire: str = ""
+) -> None:
     """
-    Save ONE episode (contains L layer trajectories) into a compressed npz.
-    The structure is compatible with run_crescent_offline.py outputs.
+    Save ONE episode into a compressed npz.
+
+    Saved keys (NO fused fields):
+      global:
+        - episode_id, dire, T, ext_return
+      per-layer (for each lid):
+        - l{lid}_task_obs, l{lid}_worker_loads, l{lid}_worker_profile, l{lid}_valid_mask
+        - l{lid}_actions
+        - l{lid}_reward, l{lid}_cost, l{lid}_utility, l{lid}_assign_bonus, l{lid}_wait_penalty
+        - l{lid}_reward_u, l{lid}_reward_c
+        - l{lid}_dones
+        - l{lid}_next_task_obs, l{lid}_next_worker_loads, l{lid}_next_worker_profile, l{lid}_next_valid_mask
     """
     _ensure_dir(out_dir)
 
-    ep_id = int(buffers_local[0]['episode_ids'][0]) if len(buffers_local[0]['episode_ids']) > 0 else -1
-    T = len(buffers_local[0]['rewards'])
-
+    T = int(len(buffers_local[0]['reward']))
     ext_ret = _episode_ext_return(buffers_local, num_layers)
-    tot_ret = 0.0
-    int_ret = 0.0
-    for lid in range(num_layers):
-        tot_ret += float(np.sum(np.array(buffers_local[lid]['rewards'], dtype=np.float32)))
-        int_ret += float(np.sum(np.array(buffers_local[lid]['int_rewards'], dtype=np.float32)))
 
     npz_dict = {
-        "episode_id": np.int64(ep_id),
+        "episode_id": np.int64(int(episode_id)),
+        "dire": np.array(dire),
         "T": np.int64(T),
         "ext_return": np.float32(ext_ret),
-        "int_return": np.float32(int_ret),
-        "total_return": np.float32(tot_ret),
-        "dire": np.array(dire),
-        "alg_name": np.array(alg_name),
-        "valid_mask_col_idx": np.int64(3),
-        "source": np.array("best_model"),
     }
 
     for lid in range(num_layers):
         prefix = f"l{lid}_"
+
+        # obs
         npz_dict[prefix + "task_obs"] = _stack_or_array(buffers_local[lid]['task_obs'], dtype=np.float32)
         npz_dict[prefix + "worker_loads"] = _stack_or_array(buffers_local[lid]['worker_loads'], dtype=np.float32)
         npz_dict[prefix + "worker_profile"] = _stack_or_array(buffers_local[lid]['worker_profile'], dtype=np.float32)
         npz_dict[prefix + "valid_mask"] = _stack_or_array(buffers_local[lid]['valid_mask'], dtype=np.float32)
 
+        # action
         npz_dict[prefix + "actions"] = _stack_or_array(buffers_local[lid]['actions'], dtype=np.float32)
-        npz_dict[prefix + "logprobs"] = _stack_or_array(buffers_local[lid]['logprobs'], dtype=np.float32)
-        npz_dict[prefix + "values"] = _stack_or_array(buffers_local[lid]['values'], dtype=np.float32)
 
-        npz_dict[prefix + "rewards"] = _stack_or_array(buffers_local[lid]['rewards'], dtype=np.float32)
-        npz_dict[prefix + "ext_rewards"] = _stack_or_array(buffers_local[lid]['ext_rewards'], dtype=np.float32)
-        npz_dict[prefix + "int_rewards"] = _stack_or_array(buffers_local[lid]['int_rewards'], dtype=np.float32)
+        # reward + decomposition
+        npz_dict[prefix + "reward"] = _stack_or_array(buffers_local[lid]['reward'], dtype=np.float32)
+        npz_dict[prefix + "cost"] = _stack_or_array(buffers_local[lid]['cost'], dtype=np.float32)
+        npz_dict[prefix + "utility"] = _stack_or_array(buffers_local[lid]['utility'], dtype=np.float32)
+        npz_dict[prefix + "assign_bonus"] = _stack_or_array(buffers_local[lid]['assign_bonus'], dtype=np.float32)
+        npz_dict[prefix + "wait_penalty"] = _stack_or_array(buffers_local[lid]['wait_penalty'], dtype=np.float32)
+        npz_dict[prefix + "reward_u"] = _stack_or_array(buffers_local[lid]['reward_u'], dtype=np.float32)
+        npz_dict[prefix + "reward_c"] = _stack_or_array(buffers_local[lid]['reward_c'], dtype=np.float32)
+
+        # done
         npz_dict[prefix + "dones"] = _stack_or_array(buffers_local[lid]['dones'], dtype=np.float32)
 
-        npz_dict[prefix + "macro_feat"] = _stack_or_array(buffers_local[lid]['macro_feat'], dtype=np.float32)
-        npz_dict[prefix + "episode_ids"] = _stack_or_array(buffers_local[lid]['episode_ids'], dtype=np.int64)
-        npz_dict[prefix + "step_ids"] = _stack_or_array(buffers_local[lid]['step_ids'], dtype=np.int64)
-
+        # next obs
         npz_dict[prefix + "next_task_obs"] = _stack_or_array(buffers_local[lid]['next_task_obs'], dtype=np.float32)
         npz_dict[prefix + "next_worker_loads"] = _stack_or_array(buffers_local[lid]['next_worker_loads'], dtype=np.float32)
         npz_dict[prefix + "next_worker_profile"] = _stack_or_array(buffers_local[lid]['next_worker_profile'], dtype=np.float32)
         npz_dict[prefix + "next_valid_mask"] = _stack_or_array(buffers_local[lid]['next_valid_mask'], dtype=np.float32)
 
-    filename = f"{tag}_ep{ep_id:07d}_T{T:03d}.npz"
+    filename = f"{tag}_ep{int(episode_id):07d}_T{T:03d}.npz"
     np.savez_compressed(str(out_dir / filename), **npz_dict)
 
 
@@ -231,14 +243,14 @@ def _init_worker_expert(dire, env_config_path, schedule_path, worker_config_path
     # Load best_model weights once
     model_state_dicts = _load_best_model_state_dicts(Path(best_model_path))
     for lid in range(g_num_layers):
-        # keys might be str due to torch save
         sd = model_state_dicts[lid] if lid in model_state_dicts else model_state_dicts[str(lid)]
         g_algs[lid].model.load_state_dict(sd)
 
 
 def _episode_worker_expert(with_new_schedule, seed, episode_id):
     """
-    Worker: rollout ONE episode using loaded best_model, and return buffers.
+    Worker: rollout ONE episode using loaded best_model, and return buffers_local.
+    Saved fields are aligned with your required npz keys (except fused fields).
     """
     global g_env, g_agents, g_num_layers, g_max_steps
 
@@ -246,13 +258,13 @@ def _episode_worker_expert(with_new_schedule, seed, episode_id):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    # Only keep keys that will be saved (strict format)
     buffers_local = {
         lid: {k: [] for k in [
             'task_obs', 'worker_loads', 'worker_profile', 'valid_mask',
-            'actions', 'logprobs',
-            'rewards', 'ext_rewards', 'int_rewards',
-            'dones', 'values',
-            'macro_feat', 'episode_ids', 'step_ids',
+            'actions',
+            'reward', 'cost', 'utility', 'assign_bonus', 'wait_penalty', 'reward_u', 'reward_c',
+            'dones',
             'next_task_obs', 'next_worker_loads', 'next_worker_profile', 'next_valid_mask',
         ]}
         for lid in range(g_num_layers)
@@ -264,34 +276,28 @@ def _episode_worker_expert(with_new_schedule, seed, episode_id):
 
     while (not done) and (step_idx < g_max_steps):
         actions = {}
+
+        # store current obs + action
         for lid in range(g_num_layers):
             task_obs = obs[lid]['task_queue']
             worker_loads = obs[lid]['worker_loads']
             profile = obs[lid]['worker_profile']
-            value, action, logprob, _ = g_agents[lid].sample(task_obs, worker_loads, profile)
+
+            _, action, _, _ = g_agents[lid].sample(task_obs, worker_loads, profile)
             actions[lid] = action
+
             valid_mask = task_obs[:, 3].astype(np.float32)
 
             buffers_local[lid]['task_obs'].append(task_obs)
             buffers_local[lid]['worker_loads'].append(worker_loads)
             buffers_local[lid]['worker_profile'].append(profile)
             buffers_local[lid]['valid_mask'].append(valid_mask)
-
             buffers_local[lid]['actions'].append(action)
-            buffers_local[lid]['logprobs'].append(logprob)
-            buffers_local[lid]['values'].append(value)
 
-            buffers_local[lid]['episode_ids'].append(int(episode_id))
-            buffers_local[lid]['step_ids'].append(int(step_idx))
-
-        raw_macro = build_struct_macro_feature(
-            obs=obs, num_layers=g_num_layers, step_idx=step_idx, max_steps=g_max_steps
-        )
-        for lid in range(g_num_layers):
-            buffers_local[lid]['macro_feat'].append(raw_macro)
-
+        # env step
         obs_next, (_, reward_detail), done, _ = g_env.step(actions)
 
+        # store reward decomposition + next obs
         for lid in range(g_num_layers):
             n_task_obs = obs_next[lid]['task_queue']
             n_worker_loads = obs_next[lid]['worker_loads']
@@ -303,20 +309,29 @@ def _episode_worker_expert(with_new_schedule, seed, episode_id):
             buffers_local[lid]['next_worker_profile'].append(n_profile)
             buffers_local[lid]['next_valid_mask'].append(n_valid_mask)
 
-            r = float(reward_detail['layer_rewards'][lid]['reward'])
-            buffers_local[lid]['rewards'].append(r)       # expert: use extrinsic only
-            buffers_local[lid]['ext_rewards'].append(r)
+            layer_info = reward_detail['layer_rewards'][lid]
+
+            # strict: must exist, otherwise crash loudly
+            r = _must_get(layer_info, 'reward', lid)
+            c = _must_get(layer_info, 'cost', lid)
+            u = _must_get(layer_info, 'utility', lid)
+            ab = _must_get(layer_info, 'assign_bonus', lid)
+            wp = _must_get(layer_info, 'wait_penalty', lid)
+            ru = _must_get(layer_info, 'reward_u', lid)
+            rc = _must_get(layer_info, 'reward_c', lid)
+
+            buffers_local[lid]['reward'].append(r)
+            buffers_local[lid]['cost'].append(c)
+            buffers_local[lid]['utility'].append(u)
+            buffers_local[lid]['assign_bonus'].append(ab)
+            buffers_local[lid]['wait_penalty'].append(wp)
+            buffers_local[lid]['reward_u'].append(ru)
+            buffers_local[lid]['reward_c'].append(rc)
+
             buffers_local[lid]['dones'].append(float(done))
 
         obs = obs_next
         step_idx += 1
-
-    # Fill int_rewards with zeros to keep the same keys/lengths as training npz
-    T = len(buffers_local[0]['rewards'])
-    for lid in range(g_num_layers):
-        if len(buffers_local[lid]['int_rewards']) != 0:
-            buffers_local[lid]['int_rewards'].clear()
-        buffers_local[lid]['int_rewards'].extend([0.0] * T)
 
     return buffers_local
 
@@ -355,7 +370,7 @@ def main():
     steps_per_episode = int(env_cfg["max_steps"])
     hidden_dim = int(ppo_cfg.get("hidden_dim", 256))
 
-    # Determine macro_feat_dim (must match training definition)
+    # Determine macro_feat_dim (only for alg init compatibility)
     if args.mode == "save":
         tmp_env = MultiplexEnv(env_config_path, schedule_save_path=schedule_path,
                                worker_config_save_path=worker_config_path)
@@ -404,14 +419,9 @@ def main():
         batch_k = min(args.num_workers, args.expert_episodes - collected)
         episode_ids = [start_id + collected + i for i in range(batch_k)]
         seeds = rng.randint(0, 2 ** 31 - 1, size=batch_k).tolist()
-
-        # Note: by default, with_new_schedule is False unless user adds --with_new_schedule
         with_new_schedule = bool(args.with_new_schedule)
 
         if pool is None:
-            # single worker in main process (rebuild env/agent each time would be heavy),
-            # so we just run a small local env with same best_model weights.
-            # For simplicity and consistency with multi-worker, enforce num_workers>1 in expert collection.
             raise RuntimeError("Please use --num_workers >= 2 for expert collection (this script is designed for MP sampling).")
         else:
             results = pool.starmap(
@@ -419,13 +429,21 @@ def main():
                 [(with_new_schedule, int(seeds[i]), int(episode_ids[i])) for i in range(batch_k)]
             )
 
-        # Save each episode
+        # Save each episode (bind episode_id explicitly to avoid relying on buffers)
         ext_returns = []
-        for res in results:
+        for i, res in enumerate(results):
+            ep_id = int(episode_ids[i])
             ext_r = _episode_ext_return(res, num_layers)
             ext_returns.append(ext_r)
-            _save_offline_episode_npz(res, out_dir=out_dir, num_layers=num_layers,
-                                     tag=args.tag, dire=dire, alg_name=alg_name)
+
+            _save_offline_episode_npz(
+                res,
+                out_dir=out_dir,
+                num_layers=num_layers,
+                episode_id=ep_id,
+                tag=args.tag,
+                dire=dire
+            )
 
         collected += batch_k
         avg_ret = float(np.mean(ext_returns)) if ext_returns else 0.0

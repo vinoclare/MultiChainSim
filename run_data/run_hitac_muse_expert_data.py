@@ -285,7 +285,7 @@ def save_episode_npz(ep: Dict[str, Any], out_path: str, episode_id: int, dire: s
 
         data[f"l{lid}_actions"] = _as_np("actions")
 
-        data[f"l{lid}_reward"] = _as_np("reward")
+        data[f"l{lid}_rewards"] = _as_np("reward")
         data[f"l{lid}_cost"] = _as_np("cost")
         data[f"l{lid}_utility"] = _as_np("utility")
         data[f"l{lid}_assign_bonus"] = _as_np("assign_bonus")

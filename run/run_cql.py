@@ -58,12 +58,13 @@ class OfflineNpzReplay:
         (s, a, r, s', done)
 
     约定 npz 内字段：
-        obs_task_queue_l{lid}, obs_worker_loads_l{lid}, obs_worker_profile_l{lid}
-        next_task_queue_l{lid}, next_worker_loads_l{lid}, next_worker_profile_l{lid}
-        actions_l{lid}  (in [0,1], shape [T,8,30])
-        rewards_l{lid}  (shape [T])
-        dones_l{lid}    (shape [T])
+        l{lid}_task_obs, l{lid}_worker_loads, l{lid}_worker_profile
+        l{lid}_next_task_obs, l{lid}_next_worker_loads, l{lid}_next_worker_profile
+        l{lid}_actions  (in [0,1], shape [T,8,30])
+        l{lid}_reward   (shape [T])
+        l{lid}_dones    (shape [T])
     """
+
     def __init__(self, offline_dir: str, layer_id: int):
         pattern = os.path.join(offline_dir, "*.npz")
         files = sorted(glob.glob(pattern))
@@ -83,31 +84,31 @@ class OfflineNpzReplay:
             else:
                 T = int(t)
 
-            task = data[f"obs_task_queue_l{layer_id}"][:T]
-            loads = data[f"obs_worker_loads_l{layer_id}"][:T]
-            prof = data[f"obs_worker_profile_l{layer_id}"][:T]
+            task = data[f"l{layer_id}_task_obs"][:T]
+            loads = data[f"l{layer_id}_worker_loads"][:T]
+            prof = data[f"l{layer_id}_worker_profile"][:T]
 
-            task_n = data[f"next_task_queue_l{layer_id}"][:T]
-            loads_n = data[f"next_worker_loads_l{layer_id}"][:T]
-            prof_n = data[f"next_worker_profile_l{layer_id}"][:T]
+            task_n = data[f"l{layer_id}_next_task_obs"][:T]
+            loads_n = data[f"l{layer_id}_next_worker_loads"][:T]
+            prof_n = data[f"l{layer_id}_next_worker_profile"][:T]
 
-            act01 = data[f"actions_l{layer_id}"][:T]
-            rew = data[f"rewards_l{layer_id}"][:T].astype(np.float32)
-            done = data[f"dones_l{layer_id}"][:T].astype(np.float32)
+            act01 = data[f"l{layer_id}_actions"][:T]
+            rew = data[f"l{layer_id}_reward"][:T].astype(np.float32)
+            done = data[f"l{layer_id}_dones"][:T].astype(np.float32)
 
             nz_task += int(np.count_nonzero(task))
             nz_prof += int(np.count_nonzero(prof))
 
-            for t in range(T):
-                s = flatten_obs(task[t], loads[t], prof[t])
-                sp = flatten_obs(task_n[t], loads_n[t], prof_n[t])
-                a = to_tanh_action(act01[t].reshape(-1))  # [240] in [-1,1]
+            for tt in range(T):
+                s = flatten_obs(task[tt], loads[tt], prof[tt])
+                sp = flatten_obs(task_n[tt], loads_n[tt], prof_n[tt])
+                a = to_tanh_action(act01[tt].reshape(-1))  # [240] in [-1,1]
 
                 s_list.append(s)
                 sp_list.append(sp)
                 a_list.append(a)
-                r_list.append(rew[t])
-                d_list.append(done[t])
+                r_list.append(rew[tt])
+                d_list.append(done[tt])
 
         self.s = np.stack(s_list, axis=0)  # [N, obs_dim]
         self.a = np.stack(a_list, axis=0)  # [N, act_dim]
@@ -119,10 +120,17 @@ class OfflineNpzReplay:
         self.obs_dim = self.s.shape[1]
         self.act_dim = self.a.shape[1]
 
-        print(f"[Replay L{layer_id}] dir={offline_dir} files={len(files)} samples={self.N} obs_dim={self.obs_dim} act_dim={self.act_dim}")
-        print(f"[Replay L{layer_id}] nonzero task_queue total={nz_task}, nonzero worker_profile total={nz_prof}")
+        print(
+            f"[Replay L{layer_id}] dir={offline_dir} files={len(files)} samples={self.N} "
+            f"obs_dim={self.obs_dim} act_dim={self.act_dim}"
+        )
+        print(
+            f"[Replay L{layer_id}] nonzero task_queue total={nz_task}, nonzero worker_profile total={nz_prof}"
+        )
         if nz_task == 0 or nz_prof == 0:
-            print(f"[WARN] L{layer_id}: task_queue/profile seems all-zero in loaded data. Offline RL will likely be crippled.")
+            print(
+                f"[WARN] L{layer_id}: task_queue/profile seems all-zero in loaded data. Offline RL will likely be crippled."
+            )
 
     def sample(self, batch_size: int, device: torch.device):
         idx = np.random.randint(0, self.N, size=batch_size)
@@ -142,7 +150,10 @@ class MixedReplay:
     采样策略：
         batch 内先按 expert_frac 切 expert/suboptimal，
         再在各自子集中按 *_hitac_ratio 切 hitac/crescent。
+
+    重要：如果某个数据集对应的“使用比例”为 0，则该数据集不会被加载（目录不存在/为空也不会报错）。
     """
+
     def __init__(
         self,
         hitac_expert_dir: str,
@@ -150,17 +161,46 @@ class MixedReplay:
         crescent_expert_dir: str,
         crescent_subopt_dir: str,
         layer_id: int,
+        use_hitac_expert: bool = True,
+        use_hitac_subopt: bool = True,
+        use_crescent_expert: bool = True,
+        use_crescent_subopt: bool = True,
     ):
-        self.re_h_e = OfflineNpzReplay(hitac_expert_dir, layer_id)
-        self.re_h_s = OfflineNpzReplay(hitac_subopt_dir, layer_id)
-        self.re_c_e = OfflineNpzReplay(crescent_expert_dir, layer_id)
-        self.re_c_s = OfflineNpzReplay(crescent_subopt_dir, layer_id)
+        # 只有真正需要的数据集才会初始化/读取（比例为 0 -> 不加载 -> 不报错）
+        self.re_h_e = OfflineNpzReplay(hitac_expert_dir, layer_id) if use_hitac_expert else None
+        self.re_h_s = OfflineNpzReplay(hitac_subopt_dir, layer_id) if use_hitac_subopt else None
+        self.re_c_e = OfflineNpzReplay(crescent_expert_dir, layer_id) if use_crescent_expert else None
+        self.re_c_s = OfflineNpzReplay(crescent_subopt_dir, layer_id) if use_crescent_subopt else None
 
-        self.obs_dim = self.re_h_e.obs_dim
-        self.act_dim = self.re_h_e.act_dim
-        for r in [self.re_h_s, self.re_c_e, self.re_c_s]:
+        enabled = [
+            ("hitac_expert", self.re_h_e),
+            ("hitac_suboptimal", self.re_h_s),
+            ("crescent_expert", self.re_c_e),
+            ("crescent_suboptimal", self.re_c_s),
+        ]
+
+        base = None
+        for _, r in enabled:
+            if r is not None:
+                base = r
+                break
+        if base is None:
+            raise RuntimeError(
+                "MixedReplay: all datasets are disabled by ratios. "
+                "You must enable at least one dataset (i.e., some ratio > 0)."
+            )
+
+        self.obs_dim = base.obs_dim
+        self.act_dim = base.act_dim
+        for name, r in enabled:
+            if r is None:
+                continue
             if r.obs_dim != self.obs_dim or r.act_dim != self.act_dim:
-                raise ValueError("MixedReplay: obs_dim/act_dim mismatch across datasets")
+                raise ValueError(f"MixedReplay: obs_dim/act_dim mismatch on dataset={name}")
+
+        loaded = [name for name, r in enabled if r is not None]
+        skipped = [name for name, r in enabled if r is None]
+        print(f"[MixedReplay L{layer_id}] loaded={loaded} skipped={skipped}")
 
     def sample_mix(
         self,
@@ -183,17 +223,30 @@ class MixedReplay:
         chunks = []
         masks = []
 
-        def _append(replay: OfflineNpzReplay, n: int, is_expert: bool):
+        def _append(name: str, replay: OfflineNpzReplay, n: int, is_expert: bool):
             if n <= 0:
                 return
+            if replay is None:
+                raise RuntimeError(
+                    f"MixedReplay.sample_mix: dataset '{name}' is disabled/unavailable, but n={n} samples are requested. "
+                    f"Check your ratios (expert_frac/expert_hitac_ratio/subopt_hitac_ratio)."
+                )
             s, a, r, sp, d = replay.sample(n, device)
             chunks.append((s, a, r, sp, d))
-            masks.append(torch.ones((n, 1), device=device) if is_expert else torch.zeros((n, 1), device=device))
+            masks.append(
+                torch.ones((n, 1), device=device) if is_expert else torch.zeros((n, 1), device=device)
+            )
 
-        _append(self.re_h_e, n_e_h, True)
-        _append(self.re_c_e, n_e_c, True)
-        _append(self.re_h_s, n_s_h, False)
-        _append(self.re_c_s, n_s_c, False)
+        _append("hitac_expert", self.re_h_e, n_e_h, True)
+        _append("crescent_expert", self.re_c_e, n_e_c, True)
+        _append("hitac_suboptimal", self.re_h_s, n_s_h, False)
+        _append("crescent_suboptimal", self.re_c_s, n_s_c, False)
+
+        if not chunks:
+            raise RuntimeError(
+                "MixedReplay.sample_mix: empty batch (no dataset contributes). "
+                "This usually means batch_size=0 or all ratios lead to 0 samples."
+            )
 
         s = torch.cat([c[0] for c in chunks], dim=0)
         a = torch.cat([c[1] for c in chunks], dim=0)
@@ -230,7 +283,15 @@ class TanhGaussianPolicy(nn.Module):
     SAC policy: a ~ tanh(N(mean, std))
     输出动作在 [-1,1]。给环境用时再映射到 [0,1]。
     """
-    def __init__(self, obs_dim: int, act_dim: int, hidden: int = 256, log_std_min: float = -20, log_std_max: float = 2):
+
+    def __init__(
+        self,
+        obs_dim: int,
+        act_dim: int,
+        hidden: int = 256,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
+    ):
         super().__init__()
         self.backbone = MLP(obs_dim, hidden, hidden=hidden)
         self.mean = nn.Linear(hidden, act_dim)
@@ -252,7 +313,10 @@ class TanhGaussianPolicy(nn.Module):
         a = torch.tanh(pre_tanh)
 
         # log_prob correction for tanh
-        log_prob = (-0.5 * (((pre_tanh - mean) / (std + 1e-8)) ** 2 + 2 * log_std + np.log(2 * np.pi))).sum(dim=-1, keepdim=True)
+        log_prob = (
+            -0.5
+            * (((pre_tanh - mean) / (std + 1e-8)) ** 2 + 2 * log_std + np.log(2 * np.pi))
+        ).sum(dim=-1, keepdim=True)
         log_prob -= torch.log(1 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         return a, log_prob
 
@@ -388,8 +452,12 @@ class CQLSAC:
         q1_cat = torch.cat([q1_rand, q1_pi], dim=1)  # [B, 2n]
         q2_cat = torch.cat([q2_rand, q2_pi], dim=1)
 
-        cql1 = (torch.logsumexp(q1_cat / self.cql_temp, dim=1) * self.cql_temp - q1.squeeze(-1)).mean()
-        cql2 = (torch.logsumexp(q2_cat / self.cql_temp, dim=1) * self.cql_temp - q2.squeeze(-1)).mean()
+        cql1 = (
+            torch.logsumexp(q1_cat / self.cql_temp, dim=1) * self.cql_temp - q1.squeeze(-1)
+        ).mean()
+        cql2 = (
+            torch.logsumexp(q2_cat / self.cql_temp, dim=1) * self.cql_temp - q2.squeeze(-1)
+        ).mean()
 
         q1_loss = bellman1 + self.cql_alpha * cql1
         q2_loss = bellman2 + self.cql_alpha * cql2
@@ -517,8 +585,18 @@ def main():
 
     # 混合采样比例
     parser.add_argument("--expert_frac", type=float, default=0.7, help="每个 batch 中 expert 样本比例")
-    parser.add_argument("--expert_hitac_ratio", type=float, default=0.5, help="expert 子集中 hitac_muse 占比（其余给 crescent）")
-    parser.add_argument("--subopt_hitac_ratio", type=float, default=0.5, help="suboptimal 子集中 hitac_muse 占比（其余给 crescent）")
+    parser.add_argument(
+        "--expert_hitac_ratio",
+        type=float,
+        default=0.5,
+        help="expert 子集中 hitac_muse 占比（其余给 crescent）",
+    )
+    parser.add_argument(
+        "--subopt_hitac_ratio",
+        type=float,
+        default=0,
+        help="suboptimal 子集中 hitac_muse 占比（其余给 crescent）",
+    )
 
     # expert-only BC 正则：让 policy 别背叛专家
     parser.add_argument("--bc_coef", type=float, default=0.05, help="expert BC loss 系数，0 表示关闭")
@@ -557,7 +635,11 @@ def main():
     with open(env_config_path, "r", encoding="utf-8") as f:
         env_cfg = json.load(f)
 
-    env = MultiplexEnv(env_config_path, schedule_load_path=schedule_path, worker_config_load_path=worker_config_path)
+    env = MultiplexEnv(
+        env_config_path,
+        schedule_load_path=schedule_path,
+        worker_config_load_path=worker_config_path,
+    )
     eval_env = MultiplexEnv(env_config_path, schedule_load_path=eval_schedule_path)
 
     eval_env.worker_config = env.worker_config
@@ -581,6 +663,33 @@ def main():
     print(" crescent_expert =", crescent_expert_dir)
     print(" crescent_subopt =", crescent_subopt_dir)
 
+    # ---- ratio sanity + dataset enable flags ----
+    def _assert_01(name: str, x: float) -> float:
+        x = float(x)
+        if not (0.0 <= x <= 1.0):
+            raise ValueError(f"{name} must be in [0, 1], got {x}")
+        return x
+
+    args.expert_frac = _assert_01("expert_frac", args.expert_frac)
+    args.expert_hitac_ratio = _assert_01("expert_hitac_ratio", args.expert_hitac_ratio)
+    args.subopt_hitac_ratio = _assert_01("subopt_hitac_ratio", args.subopt_hitac_ratio)
+
+    eps = 1e-12
+    use_expert = args.expert_frac > eps
+    use_subopt = (1.0 - args.expert_frac) > eps
+
+    # 比例为 0 -> 对应数据集完全不加载（目录不存在/为空也不会报错）
+    use_h_e = use_expert and (args.expert_hitac_ratio > eps)
+    use_c_e = use_expert and ((1.0 - args.expert_hitac_ratio) > eps)
+    use_h_s = use_subopt and (args.subopt_hitac_ratio > eps)
+    use_c_s = use_subopt and ((1.0 - args.subopt_hitac_ratio) > eps)
+
+    print("[DATA ENABLE FLAGS]")
+    print(" use_hitac_expert     =", use_h_e)
+    print(" use_crescent_expert  =", use_c_e)
+    print(" use_hitac_suboptimal =", use_h_s)
+    print(" use_crescent_subopt  =", use_c_s)
+
     # ---- tensorboard ----
     os.makedirs(args.save_dir, exist_ok=True)
     tb_dir = os.path.join(args.save_dir, args.dire, time.strftime("%Y%m%d-%H%M%S"))
@@ -597,6 +706,10 @@ def main():
             crescent_expert_dir=crescent_expert_dir,
             crescent_subopt_dir=crescent_subopt_dir,
             layer_id=lid,
+            use_hitac_expert=use_h_e,
+            use_hitac_subopt=use_h_s,
+            use_crescent_expert=use_c_e,
+            use_crescent_subopt=use_c_s,
         )
         replays[lid] = replay
 
