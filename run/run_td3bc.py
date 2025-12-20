@@ -359,7 +359,22 @@ def train_td3_bc(args):
     print(f"[train] start TD3+BC offline training, total_updates={total_updates}")
     start_time = time.time()
 
-    for it in range(1, total_updates + 1):
+    for it in range(0, total_updates + 1):
+        # ----- 评估 & 写 TensorBoard -----
+        if it % args.eval_interval == 0 or it == total_updates:
+            avg_ret, std_ret = evaluate_policy(
+                actors, eval_env, num_layers, state_dims, action_shapes,
+                args.eval_episodes, device, seed=args.seed
+            )
+            writer.add_scalar("eval/avg_return", avg_ret, it)
+            writer.add_scalar("eval/std_return", std_ret, it)
+
+            if avg_ret > best_return:
+                best_return = avg_ret
+                best_actor_state_dicts = {lid: actors[lid].state_dict() for lid in range(num_layers)}
+                best_critic_state_dicts = {lid: critics[lid].state_dict() for lid in range(num_layers)}
+                print(f"[train] *** new best_return={best_return:.3f} at it={it}")
+
         # 每个迭代统计一次所有 layer 的 loss，用于写 TB
         critic_losses_step = []
         actor_losses_step = []
@@ -449,21 +464,6 @@ def train_td3_bc(args):
                 writer.add_scalar("train/actor_loss_mean", mean_actor, it)
                 writer.add_scalar("train/lambda_mean", mean_lambda, it)
 
-        # ----- 评估 & 写 TensorBoard -----
-        if it % args.eval_interval == 0 or it == total_updates:
-            avg_ret, std_ret = evaluate_policy(
-                actors, eval_env, num_layers, state_dims, action_shapes,
-                args.eval_episodes, device, seed=args.seed
-            )
-            writer.add_scalar("eval/avg_return", avg_ret, it)
-            writer.add_scalar("eval/std_return", std_ret, it)
-
-            if avg_ret > best_return:
-                best_return = avg_ret
-                best_actor_state_dicts = {lid: actors[lid].state_dict() for lid in range(num_layers)}
-                best_critic_state_dicts = {lid: critics[lid].state_dict() for lid in range(num_layers)}
-                print(f"[train] *** new best_return={best_return:.3f} at it={it}")
-
     # ---------- 保存最优模型 ----------
     if best_actor_state_dicts is None:
         best_actor_state_dicts = {lid: actors[lid].state_dict() for lid in range(num_layers)}
@@ -528,7 +528,7 @@ def main():
     parser.add_argument(
         "--alpha",
         type=float,
-        default=0,
+        default=0.5,
         help="TD3+BC alpha, λ = α / E|Q|",
     )
 
