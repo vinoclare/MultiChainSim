@@ -1,3 +1,4 @@
+# agents/mappo_agent.py
 import torch
 import numpy as np
 
@@ -29,23 +30,38 @@ class IndustrialAgent:
         valid_flag = task_obs_tensor[0, :, -1]
         return (valid_flag > 0).float().unsqueeze(0)  # (1, T)
 
-    def predict(self, task_obs_np, worker_obs_np, worker_profile_np):
+    def predict(self, task_obs_np, worker_obs_np, worker_profile_np, macro_hist_np=None):
         task_obs = self._pad_task_obs(task_obs_np)
         worker_obs = self._pad_worker_obs(worker_obs_np)
         profile = self._pad_worker_profile(worker_profile_np)
         valid_mask = self._get_valid_mask(task_obs)
 
+        # WTOE 不需要在 predict 时强制用 macro_hist（评估一般走确定性 mean）
         mean = self.alg.predict(task_obs, worker_obs, profile, valid_mask)
         return mean.detach().cpu().numpy()[0]
 
-    def sample(self, task_obs_np, worker_obs_np, worker_profile_np):
+    def sample(self, task_obs_np, worker_obs_np, worker_profile_np, macro_hist_np=None):
         task_obs = self._pad_task_obs(task_obs_np)
         worker_obs = self._pad_worker_obs(worker_obs_np)
         profile = self._pad_worker_profile(worker_profile_np)
         valid_mask = self._get_valid_mask(task_obs)
 
-        value, action, log_prob, entropy = self.alg.sample(
-            task_obs, worker_obs, profile, valid_mask)
+        # 关键改动：如果算法支持 macro_hist，就透传
+        if macro_hist_np is not None:
+            macro_hist = torch.tensor(macro_hist_np, dtype=torch.float32, device=self.device).unsqueeze(0)
+            try:
+                value, action, log_prob, entropy = self.alg.sample(
+                    task_obs, worker_obs, profile, valid_mask, macro_hist=macro_hist
+                )
+            except TypeError:
+                # 兼容旧算法签名
+                value, action, log_prob, entropy = self.alg.sample(
+                    task_obs, worker_obs, profile, valid_mask
+                )
+        else:
+            value, action, log_prob, entropy = self.alg.sample(
+                task_obs, worker_obs, profile, valid_mask
+            )
 
         return (
             value[0].detach().cpu().numpy(),
