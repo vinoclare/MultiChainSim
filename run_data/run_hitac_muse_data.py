@@ -18,7 +18,7 @@ from utils.utils import RunningMeanStd
 parser = argparse.ArgumentParser()
 parser.add_argument('--dire', type=str, default='standard',
                     help='name of sub-folder under ../configs/ 作为本次实验的配置目录')
-parser.add_argument('--offline_save_interval', type=int, default=50,
+parser.add_argument('--offline_save_interval', type=int, default=10,
                     help='每隔多少个episode收集1个完整episode轨迹到offline数据集；<=0表示不收集')
 parser.add_argument('--offline_data_root', type=str, default='../offline_data/hitac_muse',
                     help='Offline数据根目录（会自动再拼接dire子目录）')
@@ -74,7 +74,7 @@ eval_episodes = algo_config["training"]["eval_episodes"]
 distill_interval = algo_config["scheduler"]["distill_interval"]
 switch_interval = algo_config["scheduler"]["switch_interval"]
 hitac_update_interval = algo_config["scheduler"]["hitac_update_interval"]
-reset_schedule_interval = algo_config["training"]["reset_schedule_interval"]
+reset_schedule_interval = 1
 neg_interval = algo_config["scheduler"]["neg_interval"]
 
 steps_per_episode = env_config["max_steps"]

@@ -24,7 +24,7 @@ parser.add_argument("--num_workers", type=int, default=10, help="Parallel env wo
 parser.add_argument("--mode", type=str, default="load", help="save or load configs")
 
 # ===== Offline data collection (HiTAC-consistent) =====
-parser.add_argument("--offline_save_interval", type=int, default=50,
+parser.add_argument("--offline_save_interval", type=int, default=10,
                     help="Save ONE episode trajectory every N episodes (1-indexed). <=0 disables saving.")
 parser.add_argument("--offline_data_root", type=str, default="../offline_data/crescent",
                     help="Root dir to save offline trajectories (will append /{dire}/)")
@@ -684,7 +684,7 @@ def main():
     # ===== Training loop =====
     num_outer = int(num_episodes / args.num_workers) + 1
     for outer_idx in range(num_outer):
-        with_new_schedule = (outer_idx % reset_schedule_interval == 0)
+        with_new_schedule = True
         base_episode_id = outer_idx * (args.num_workers if args.num_workers > 1 else 1)
 
         # 1) sample episodes (results: list of episode buffers)

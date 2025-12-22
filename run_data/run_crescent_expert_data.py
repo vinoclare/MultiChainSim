@@ -334,7 +334,7 @@ def main():
     parser.add_argument("--dire", type=str, default="standard")
     parser.add_argument("--alg_name", type=str, default="crescent")
     parser.add_argument("--num_workers", type=int, default=10)
-    parser.add_argument("--expert_episodes", type=int, default=500)
+    parser.add_argument("--expert_episodes", type=int, default=1000)
     parser.add_argument("--start_episode_id", type=int, default=0, help="Episode id offset for saved filenames")
     parser.add_argument("--with_new_schedule", action="store_true", help="Reset with new schedule every episode")
     parser.add_argument("--offline_data_root", type=str, default="../offline_data/crescent")

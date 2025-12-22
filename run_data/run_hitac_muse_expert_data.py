@@ -309,7 +309,7 @@ def main():
     parser.add_argument('--dire', type=str, default='standard',
                         help='name of sub-folder under ../configs/ 作为本次实验的配置目录')
 
-    parser.add_argument('--expert_episodes', type=int, default=200)
+    parser.add_argument('--expert_episodes', type=int, default=1000)
     parser.add_argument('--with_new_schedule', action='store_true',
                         help='每个episode reset时使用 with_new_schedule=True，增加多样性（但可能更难复现）')
 
