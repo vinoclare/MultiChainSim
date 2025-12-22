@@ -30,6 +30,7 @@ class IndustrialAgent:
         valid_flag = task_obs_tensor[0, :, -1]
         return (valid_flag > 0).float().unsqueeze(0)  # (1, T)
 
+    @torch.inference_mode()
     def predict(self, task_obs_np, worker_obs_np, worker_profile_np, macro_hist_np=None):
         task_obs = self._pad_task_obs(task_obs_np)
         worker_obs = self._pad_worker_obs(worker_obs_np)
@@ -40,6 +41,7 @@ class IndustrialAgent:
         mean = self.alg.predict(task_obs, worker_obs, profile, valid_mask)
         return mean.detach().cpu().numpy()[0]
 
+    @torch.inference_mode()
     def sample(self, task_obs_np, worker_obs_np, worker_profile_np, macro_hist_np=None):
         task_obs = self._pad_task_obs(task_obs_np)
         worker_obs = self._pad_worker_obs(worker_obs_np)
