@@ -332,7 +332,7 @@ class BHERA:
         else:
             h_fast_prev = h_fast_prev * (1.0 - done_prev.unsqueeze(-1))
 
-        h_fast_new, mu_f, logvar_f, z_f = self._call_fast_step(token_t, h_fast_prev, done_prev)  # [B,Hf],[B,Df]...
+        h_fast_new, mu_f, logvar_f, z_f = self._call_fast_step(token_t, h_fast_prev, done_prev, z_s)
 
         z = torch.cat([z_s, z_f], dim=-1)  # [B,Z]
         q = self._call_q_head(z)  # [B,1]
