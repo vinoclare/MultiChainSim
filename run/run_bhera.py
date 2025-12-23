@@ -22,6 +22,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="bhera")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
+
+parser.add_argument("--bhera_lambda_q", type=float, default=1.0)
+parser.add_argument("--bhera_decoder_coef", type=float, default=1.0)
+parser.add_argument("--bhera_decoder_sparse_weight", type=float, default=0.0)
+parser.add_argument("--bhera_n_step", type=int, default=10)
+
+parser.add_argument("--bhera_beta_init", type=float, default=0.1)
+parser.add_argument("--bhera_kl_capacity", type=float, default=1.0)
+parser.add_argument("--bhera_beta_lr", type=float, default=1e-3)
+parser.add_argument("--bhera_kl_ema_decay", type=float, default=0.99)
+
 args, _ = parser.parse_known_args()
 
 dire = args.dire
@@ -437,34 +448,34 @@ def main():
     eval_episodes = ppo_config["eval_episodes"]
     reset_schedule_interval = ppo_config["reset_schedule_interval"]
 
-    # ===== BHERA extra hparams（不强依赖 config，有默认值）=====
-    obs_embed_dim = int(ppo_config.get("bhera_obs_embed_dim", hidden_dim))
-    coupling_hidden = int(ppo_config.get("bhera_coupling_hidden", hidden_dim))
-    belief_in_dim = int(ppo_config.get("bhera_belief_in_dim", 128))
+    # ===== BHERA extra hparams =====
+    obs_embed_dim = hidden_dim
+    coupling_hidden = hidden_dim
+    belief_in_dim = 128
 
     slow_window_len = int(ppo_config.get("bhera_slow_window", 16))
     slow_n_layers = int(ppo_config.get("bhera_slow_layers", 2))
     slow_n_heads = int(ppo_config.get("bhera_slow_heads", 4))
     slow_ff_dim = int(ppo_config.get("bhera_slow_ff_dim", 256))
 
-    fast_hidden = int(ppo_config.get("bhera_fast_hidden", 128))
-    z_slow_dim = int(ppo_config.get("bhera_z_slow_dim", 32))
-    z_fast_dim = int(ppo_config.get("bhera_z_fast_dim", 32))
+    fast_hidden = 128
+    z_slow_dim = 32
+    z_fast_dim = 32
 
-    policy_hidden = int(ppo_config.get("bhera_policy_hidden", 256))
-    value_hidden = int(ppo_config.get("bhera_value_hidden", 256))
-    value_ensemble = int(ppo_config.get("bhera_value_ensemble", 5))
-    decoder_hidden = int(ppo_config.get("bhera_decoder_hidden", 256))
+    policy_hidden = 256
+    value_hidden = 256
+    value_ensemble = 5
+    decoder_hidden = 256
 
-    lambda_q = float(ppo_config.get("bhera_lambda_q", 1.0))
-    decoder_coef = float(ppo_config.get("bhera_decoder_coef", 1.0))
-    decoder_sparse_weight = float(ppo_config.get("bhera_decoder_sparse_weight", 0.0))
-    n_step = int(ppo_config.get("bhera_n_step", 5))
+    lambda_q = float(args.bhera_lambda_q)
+    decoder_coef = float(args.bhera_decoder_coef)
+    decoder_sparse_weight = float(args.bhera_decoder_sparse_weight)
+    n_step = int(args.bhera_n_step)
 
-    beta_init = float(ppo_config.get("bhera_beta_init", 0.1))
-    kl_capacity = float(ppo_config.get("bhera_kl_capacity", 1.0))
-    beta_lr = float(ppo_config.get("bhera_beta_lr", 1e-3))
-    kl_ema_decay = float(ppo_config.get("bhera_kl_ema_decay", 0.99))
+    beta_init = float(args.bhera_beta_init)
+    kl_capacity = float(args.bhera_kl_capacity)
+    beta_lr = float(args.bhera_beta_lr)
+    kl_ema_decay = float(args.bhera_kl_ema_decay)
 
     # ===== Init model/alg (joint) =====
     obs_space = env.observation_space[0]
