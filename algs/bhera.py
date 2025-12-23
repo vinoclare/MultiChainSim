@@ -1,3 +1,4 @@
+# algs/bhera.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -18,34 +19,41 @@ class BHERA:
     """
 
     def __init__(
-        self,
-        model,
-        clip_param=0.1,
-        value_loss_coef=0.5,
-        entropy_coef=0.01,
-        initial_lr=2.5e-4,
-        eps=1e-5,
-        max_grad_norm=0.5,
-        inner_k=1,
-        device="cuda",
-        use_clipped_value_loss=True,
-        norm_adv=True,
-        # regime-balanced
-        lambda_q=1.0,
-        # decoder / KL
-        decoder_coef=1.0,
-        decoder_sparse_weight=0.0,   # >0：对 |r|>0 加权
-        gamma=0.99,
-        n_step=5,
-        # homeostasis
-        beta_init=0.1,
-        kl_capacity=1.0,
-        beta_lr=1e-3,
-        kl_ema_decay=0.99,
-        # logging
-        writer=None,
-        global_step_ref=None,
-        total_training_steps=None,
+            self,
+            model,
+            clip_param=0.1,
+            value_loss_coef=0.5,
+            entropy_coef=0.01,
+            initial_lr=2.5e-4,
+            eps=1e-5,
+            max_grad_norm=0.5,
+            inner_k=1,
+            device="cuda",
+            use_clipped_value_loss=True,
+            norm_adv=True,
+            # regime-balanced
+            lambda_q=1.0,
+            # decoder / KL
+            decoder_coef=1.0,
+            decoder_sparse_weight=1.0,  # >0：对 |r|>0 加权
+            gamma=0.99,
+            n_step=5,
+            # homeostasis
+            beta_init=0.1,
+            kl_capacity=1.0,
+            beta_lr=1e-3,
+            kl_ema_decay=0.99,
+            # ===== 新增：q 条件化熵系数（探索强度调节）=====
+            entropy_sparse_boost=2.0,  # alpha_sparse = alpha_dense * boost
+            # ===== 新增：bootstrap 不确定性权重 =====
+            u_weight_kappa=1.0,  # 越大越抑制高不确定样本
+            u_weight_clip_min=0.25,
+            u_weight_clip_max=4.0,
+            weight_normalize=True,
+            # logging
+            writer=None,
+            global_step_ref=None,
+            total_training_steps=None,
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
@@ -70,6 +78,15 @@ class BHERA:
         self.kl_capacity = float(kl_capacity)
         self.beta_lr = float(beta_lr)
         self.kl_ema = EMA(decay=float(kl_ema_decay), init=0.0)
+
+        # ===== 新增：探索强度调节 =====
+        self.entropy_sparse_boost = float(entropy_sparse_boost)
+
+        # ===== 新增：u 加权 =====
+        self.u_weight_kappa = float(u_weight_kappa)
+        self.u_weight_clip_min = float(u_weight_clip_min)
+        self.u_weight_clip_max = float(u_weight_clip_max)
+        self.weight_normalize = bool(weight_normalize)
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=float(initial_lr), eps=float(eps))
 
@@ -110,63 +127,32 @@ class BHERA:
             y = x
         return y.reshape(B, T, L, D)
 
-    def _call_slow_infer(self, token_win_bk_d: torch.Tensor, padding_mask: torch.Tensor = None):
-        return self.model.belief_slow(token_win_bk_d, padding_mask=padding_mask)
+    def _call_slow_infer(self, token_win_bk_d: torch.Tensor):
+        return self.model.belief_slow(token_win_bk_d)
 
     def _call_fast_step(self, token_b_d: torch.Tensor, h_prev: torch.Tensor, done_prev: torch.Tensor):
-        # return h_new, mu, logvar, z
-        if hasattr(self.model, "fast_step"):
-            return self.model.fast_step(token_b_d, h_prev, done_prev)
-        if hasattr(self.model, "belief_fast_step"):
-            return self.model.belief_fast_step(token_b_d, h_prev, done_prev)
-        if hasattr(self.model, "belief_step_fast"):
-            return self.model.belief_step_fast(token_b_d, h_prev, done_prev)
-        raise AttributeError("BHERA model missing fast step method: fast_step / belief_fast_step / belief_step_fast")
+        return self.model.belief_fast_step(token_b_d, h_prev, done_prev)
 
     def _call_q_head(self, z_bt_d: torch.Tensor) -> torch.Tensor:
-        # z: [B*T,Z] -> q: [B*T,1]
-        if hasattr(self.model, "q_head"):
-            q_logits = self.model.q_head(z_bt_d)
-            q = torch.sigmoid(q_logits)
-        elif hasattr(self.model, "compute_q"):
-            q = self.model.compute_q(z_bt_d)
-        else:
-            # 没 q head 就给 0（等价于不做 regime-balanced）
-            q = torch.zeros((z_bt_d.shape[0], 1), dtype=z_bt_d.dtype, device=z_bt_d.device)
+        q_logits = self.model.q_head(z_bt_d)
+        q = torch.sigmoid(q_logits)
         return q
 
     def _call_forward_actor(self, lid: int, s_flat: torch.Tensor, z_flat: torch.Tensor):
-        # return mean, std
-        if hasattr(self.model, "forward_actor"):
-            try:
-                return self.model.forward_actor(lid, s_flat, z_flat)
-            except TypeError:
-                return self.model.forward_actor(s_flat, z_flat)
-        raise AttributeError("BHERA model missing forward_actor")
+        return self.model.forward_actor(lid, s_flat, z_flat)
 
     def _call_value_ensemble(self, lid: int, s_flat: torch.Tensor, z_flat: torch.Tensor) -> torch.Tensor:
-        # want: v_all [B*T, N]
-        if hasattr(self.model, "get_value_ensemble"):
-            out = self.model.get_value_ensemble(lid, s_flat, z_flat)
-        elif hasattr(self.model, "value_ensemble"):
-            out = self.model.value_ensemble(lid, s_flat, z_flat)
-        else:
-            raise AttributeError("BHERA model missing value ensemble method: get_value_ensemble / value_ensemble")
+        out = self.model.get_value_ensemble(lid, s_flat, z_flat)
 
-        if torch.is_tensor(out):
-            v_all = out
-        elif isinstance(out, (tuple, list)):
-            # 找一个看起来像 [B*T,N] 的 tensor
-            cand = None
-            for item in out:
-                if torch.is_tensor(item) and item.dim() >= 2:
-                    cand = item
-                    break
-            if cand is None:
-                raise RuntimeError("get_value_ensemble returned tuple/list but no tensor found")
-            v_all = cand
-        else:
-            raise RuntimeError("get_value_ensemble returned unsupported type")
+        # 找一个看起来像 [B*T,N] 的 tensor
+        cand = None
+        for item in out:
+            if torch.is_tensor(item) and item.dim() >= 2:
+                cand = item
+                break
+        if cand is None:
+            raise RuntimeError("get_value_ensemble returned tuple/list but no tensor found")
+        v_all = cand
 
         # 统一成 [B*T, N]
         if v_all.dim() == 1:
@@ -181,16 +167,7 @@ class BHERA:
         return v_all.reshape(v_all.shape[0], -1)
 
     def _call_decode_return(self, x_flat: torch.Tensor, a_flat: torch.Tensor, z_flat: torch.Tensor) -> torch.Tensor:
-        # pred: [B*T,1]
-        if hasattr(self.model, "decode_return"):
-            pred = self.model.decode_return(x_flat, a_flat, z_flat)
-        elif hasattr(self.model, "decode_nstep_return"):
-            pred = self.model.decode_nstep_return(x_flat, a_flat, z_flat)
-        elif hasattr(self.model, "reward_decoder"):
-            pred = self.model.reward_decoder(torch.cat([x_flat, a_flat, z_flat], dim=-1))
-        else:
-            raise AttributeError("BHERA model missing decoder: decode_return / decode_nstep_return / reward_decoder")
-
+        pred = self.model.decode_nstep_return(x_flat, a_flat, z_flat)
         if pred.dim() == 1:
             pred = pred.unsqueeze(-1)
         return pred
@@ -209,17 +186,17 @@ class BHERA:
           a_pool : [B,T,A]    (跨层 pooled action）
           z_seq  : [B,T,Z]
           q_seq  : [B,T,1]
-          r_global: [B,T,1]
           kl_slow, kl_fast (scalar tensors)
         """
         B, T, L, _ = obs_raw.shape
 
-        # 1) encode obs per layer
+        # 1) encode obs -> h: [B,T,L,D]
         obs_flat = obs_raw.reshape(B * T * L, -1)
-        h = self.model.encode_obs(obs_flat).reshape(B, T, L, -1)  # [B,T,L,D]
+        h_flat = self.model.encode_obs(obs_flat)
+        h = h_flat.reshape(B, T, L, -1)
 
-        # 2) couple across layers (BiGRU over layer-dim)
-        h_cpl = self._call_couple_layers(h)  # [B, T, L, D]
+        # 2) couple across layers at each time
+        h_cpl = self._call_couple_layers(h)  # [B,T,L,D]
 
         # 3) pooled features for belief/decoder
         x_pool = h_cpl.mean(dim=2)  # [B,T,D]
@@ -237,57 +214,30 @@ class BHERA:
             d_prev[:, 1:] = d_global[:, :-1]
         token = torch.cat([x_pool, a_prev, r_prev, d_prev], dim=-1)  # [B,T,token_dim]
 
-        # 5) slow infer per-timestep with causal window (NO future leakage)
-        ks = int(getattr(self.model, "slow_window_len", min(32, T)))
-        ks = max(1, min(ks, T))
-        Dtok = token.shape[-1]
+        # 5) slow infer (use last window, slow z constant for this sequence)
+        ks = self.model.slow_window_len
+        token_win = left_pad_last_k(token, ks)  # [B,ks,token_dim]
+        mu_slow, logvar_slow, z_slow = self._call_slow_infer(token_win)  # [B,Ds], [B,Ds], [B,Ds]
+        kl_slow = self._kl_standard_normal(mu_slow, logvar_slow).mean()
 
-        # left pad so every timestep t has a full window ending at t
-        pad = torch.zeros((B, ks - 1, Dtok), device=token.device, dtype=token.dtype)
-        token_pad = torch.cat([pad, token], dim=1)  # [B, T+ks-1, Dtok]
+        # 6) fast infer recurrently
+        fast_hidden = int(self.model.fast_hidden)
+        h_fast = torch.zeros((B, fast_hidden), dtype=torch.float32, device=self.device)
 
-        # windows from token_pad:
-        # PyTorch unfold gives [B, T, Dtok, ks] -> permute to [B, T, ks, Dtok]
-        wins = token_pad.unfold(dimension=1, size=ks, step=1)  # [B, T, Dtok, ks]
-        wins = wins.permute(0, 1, 3, 2).contiguous()  # [B, T, ks, Dtok]
-        wins = wins.view(B * T, ks, Dtok)  # [B*T, ks, Dtok]
-
-        # ---- padding_mask per timestep (关键：逐 t 不同) ----
-        # 对时刻 t（从 0 开始）：pad_len(t) = max(0, ks-1 - t)
-        # mask True 表示 PAD（左侧的补零）
-        t_idx = torch.arange(T, device=token.device)  # [T]
-        pad_len = (ks - 1 - t_idx).clamp(min=0)  # [T]
-        pos = torch.arange(ks, device=token.device)  # [ks]
-        mask_tk = (pos.unsqueeze(0) < pad_len.unsqueeze(1))  # [T, ks] bool
-        pad_mask = mask_tk.unsqueeze(0).expand(B, T, ks).reshape(B * T, ks)  # [B*T, ks]
-
-        mu_slow_bt, logvar_slow_bt, z_slow_bt = self._call_slow_infer(wins, padding_mask=pad_mask)  # [B*T,Ds]
-        kl_slow = self._kl_standard_normal(mu_slow_bt, logvar_slow_bt).mean()
-        z_slow = z_slow_bt.view(B, T, -1)  # [B,T,Ds]
-
-        # 6) fast infer recurrently (GRUCell step)
-        # init fast hidden
-        if hasattr(self.model, "fast_hidden"):
-            fast_hidden = int(self.model.fast_hidden)
-        elif hasattr(self.model, "belief_fast_hidden"):
-            fast_hidden = int(self.model.belief_fast_hidden)
-        else:
-            # fallback
-            fast_hidden = 128
-
-        h_fast = torch.zeros((B, fast_hidden), device=token.device, dtype=token.dtype)
         z_fast_list, mu_fast_list, logvar_fast_list = [], [], []
-
         for t in range(T):
-            token_t = token[:, t, :]  # [B, token_dim]
-            done_prev_t = d_prev[:, t, :]  # [B,1]
-            h_fast, mu_f, logvar_f, z_f = self._call_fast_step(token_t, h_fast, done_prev_t)
+            dp = d_prev[:, t]  # done_{t-1}
+            if dp.dim() == 2:
+                h_fast = h_fast * (1.0 - dp)
+            else:
+                h_fast = h_fast * (1.0 - dp.unsqueeze(-1))
+            h_fast, mu_f, logvar_f, z_f = self._call_fast_step(token[:, t], h_fast, dp)
             z_fast_list.append(z_f)
             mu_fast_list.append(mu_f)
             logvar_fast_list.append(logvar_f)
 
-        z_fast = torch.stack(z_fast_list, dim=1)  # [B,T,Df]
-        mu_fast = torch.stack(mu_fast_list, dim=1)  # [B,T,Df]
+        z_fast = torch.stack(z_fast_list, dim=1)            # [B,T,Df]
+        mu_fast = torch.stack(mu_fast_list, dim=1)          # [B,T,Df]
         logvar_fast = torch.stack(logvar_fast_list, dim=1)  # [B,T,Df]
         kl_fast = self._kl_standard_normal(
             mu_fast.reshape(B * T, -1),
@@ -295,7 +245,8 @@ class BHERA:
         ).mean()
 
         # 7) concat slow+fast -> z_t
-        z_seq = torch.cat([z_slow, z_fast], dim=-1)  # [B,T,Z]
+        z_slow_rep = z_slow.unsqueeze(1).expand(B, T, -1)
+        z_seq = torch.cat([z_slow_rep, z_fast], dim=-1)   # [B,T,Z]
 
         # 8) q_t head
         q_flat = self._call_q_head(z_seq.reshape(B * T, -1))  # [B*T,1]
@@ -379,17 +330,17 @@ class BHERA:
     # ------------------------- learn (called by run_bhera.py) -------------------------
 
     def learn_joint(
-        self,
-        obs_raw,        # [B,T,L,obs_dim]
-        actions,        # [B,T,L,act_dim]
-        values_old,     # [B,T,L,1]
-        returns,        # [B,T,L,1]
-        log_probs_old,  # [B,T,L,1]
-        advantages,     # [B,T,L,1]
-        rewards,        # [B,T,L,1]
-        dones,          # [B,T,L,1]
-        current_steps,
-        lr=None,
+            self,
+            obs_raw,  # [B,T,L,obs_dim]
+            actions,  # [B,T,L,act_dim]
+            values_old,  # [B,T,L,1]
+            returns,  # [B,T,L,1]
+            log_probs_old,  # [B,T,L,1]
+            advantages,  # [B,T,L,1]
+            rewards,  # [B,T,L,1]
+            dones,  # [B,T,L,1]
+            current_steps,
+            lr=None,
     ):
         obs_raw = obs_raw.to(self.device)
         actions = actions.to(self.device)
@@ -401,7 +352,6 @@ class BHERA:
         dones = dones.to(self.device)
 
         B, T, L, _ = obs_raw.shape
-
         last_info = {}
 
         for _ in range(max(1, self.inner_k)):
@@ -410,9 +360,9 @@ class BHERA:
                 obs_raw, actions, rewards, dones
             )
 
-            # 2) regime-balanced weights (detach q 防止 q 自己“刷权重”作弊)
-            q_flat = q_seq.reshape(B * T, 1).detach()
-            w_flat = (1.0 + self.lambda_q * q_flat).clamp(min=0.0)  # [B*T,1]
+            # 2) regime-balanced weight w(q) (detach 防止 q “刷权重”作弊)
+            q_flat = q_seq.reshape(B * T).detach()  # [B*T]
+            w_q = (1.0 + self.lambda_q * q_flat).clamp(min=0.0)  # [B*T]
 
             # 3) decoder target: n-step return on global reward
             target_g = compute_nstep_returns(r_global, gamma=self.gamma, n_step=self.n_step)  # [B,T,1]
@@ -424,28 +374,37 @@ class BHERA:
 
             tgt = target_g.reshape(B * T, 1)
             if self.decoder_sparse_weight > 0:
-                q_flat = q_seq.reshape(B * T, 1).detach()
-                w_dec = 1.0 + self.decoder_sparse_weight * q_flat
-                decoder_loss = (F.smooth_l1_loss(pred_g, tgt, reduction="none") * w_dec).mean()
+                q_dec = q_seq.reshape(B * T, 1).detach()
+                w_sp = 1.0 + self.decoder_sparse_weight * q_dec
+                decoder_loss = (F.smooth_l1_loss(pred_g, tgt, reduction="none") * w_sp).mean()
             else:
                 decoder_loss = F.smooth_l1_loss(pred_g, tgt)
 
-            kl_total = kl_slow + kl_fast  # tensor scalar
-            # homeostasis update beta (use EMA of detached KL)
+            kl_total = kl_slow + kl_fast
             kl_ema_val = self.kl_ema.update(float(kl_total.detach().cpu().item()))
             self.beta = max(0.0, self.beta + self.beta_lr * (kl_ema_val - self.kl_capacity))
 
-            # 4) PPO across layers (shared z_t, per-layer policy/value head)
+            # ===== 探索强度调节：alpha = entropy_coef(q) =====
+            base_entropy_coef = float(self._entropy_coef(int(current_steps)))
+            q_mean = float(q_flat.mean().cpu().item())
+            entropy_coef = base_entropy_coef * ((1.0 - q_mean) + q_mean * self.entropy_sparse_boost)
+            entropy_coef = max(1e-3, float(entropy_coef))
+
+            # 4) PPO across layers
             total_policy_loss = 0.0
             total_value_loss = 0.0
             total_head_loss = 0.0
             total_entropy = 0.0
 
-            entropy_coef = self._entropy_coef(int(current_steps))
+            # logging accumulators
+            total_u_mean = 0.0
+            total_wu_mean = 0.0
+            total_w_mean = 0.0
+
+            z_flat = z_seq.reshape(B * T, -1)
 
             for lid in range(L):
                 s_l = h_cpl[:, :, lid, :].reshape(B * T, -1)
-                z_flat = z_seq.reshape(B * T, -1)
 
                 act_l = actions[:, :, lid, :].reshape(B * T, -1)
                 logp_old_l = self._squeeze_last(log_probs_old[:, :, lid, :]).reshape(B * T)
@@ -456,35 +415,49 @@ class BHERA:
                 if self.norm_adv:
                     adv_l = (adv_l - adv_l.mean()) / (adv_l.std() + 1e-8)
 
-                # regime-balanced weight apply on advantage (weight detached)
-                adv_l = adv_l * w_flat.reshape(B * T)
-
+                # actor
                 mean, std = self._call_forward_actor(lid, s_l, z_flat)
                 std = torch.clamp(std, min=1e-6)
                 dist = Normal(mean, std)
 
-                logp = dist.log_prob(act_l).sum(dim=-1)         # [B*T]
-                entropy = dist.entropy().sum(dim=-1).mean()     # scalar
+                logp = dist.log_prob(act_l).sum(dim=-1)  # [B*T]
+                entropy = dist.entropy().sum(dim=-1).mean()  # scalar
 
                 ratio = torch.exp(logp - logp_old_l)
                 surr1 = ratio * adv_l
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv_l
-                policy_loss = -torch.min(surr1, surr2).mean()
+                surr = torch.min(surr1, surr2)  # [B*T]
 
-                # ensemble value
+                # critic ensemble
                 v_all = self._call_value_ensemble(lid, s_l, z_flat)  # [B*T,N]
                 v_mean = v_all.mean(dim=-1)  # [B*T]
 
+                # ===== Bootstrap 不确定性 u_t -> 可信权重 g(u)（detach 防作弊）=====
+                u = v_all.var(dim=-1, unbiased=False).detach()  # [B*T]
+                u_mean = u.mean().clamp(min=1e-8)
+                u_norm = u / u_mean  # [B*T]
+                w_u = 1.0 / (1.0 + self.u_weight_kappa * u_norm)  # [B*T]
+                w_u = w_u.clamp(min=self.u_weight_clip_min, max=self.u_weight_clip_max)
+
+                # ===== 合成权重：w = w(q) * g(u) =====
+                w = (w_q * w_u).clamp(min=0.0)  # [B*T]
+                if self.weight_normalize:
+                    w = w / (w.mean().detach() + 1e-8)  # 让均值≈1，稳定学习率尺度
+
+                # policy loss: sample-weighted
+                policy_loss = -(w * surr).mean()
+
+                # value loss: sample-weighted
                 if self.use_clipped_value_loss:
                     v_pred_clipped = v_old_l + torch.clamp(v_mean - v_old_l, -self.clip_param, self.clip_param)
                     v_losses = (v_mean - ret_l) ** 2
                     v_losses_clipped = (v_pred_clipped - ret_l) ** 2
-                    value_loss = 0.5 * torch.max(v_losses, v_losses_clipped).mean()
+                    value_loss = 0.5 * (w * torch.max(v_losses, v_losses_clipped)).mean()
                 else:
-                    value_loss = (0.5 * (ret_l - v_mean) ** 2).mean()
+                    value_loss = 0.5 * (w * (ret_l - v_mean) ** 2).mean()
 
-                # 同时让每个 head 都回归 return（否则 head 容易塌成一样）
-                mask = (torch.rand_like(v_all) < 0.8).float()  # 80% sample keep
+                # head loss（不加权：避免 head 通过“抬高 u”逃避约束）
+                mask = (torch.rand_like(v_all) < 0.8).float()
                 head_loss = (0.5 * ((v_all - ret_l.unsqueeze(-1)) ** 2) * mask).sum() / (mask.sum() + 1e-6)
 
                 total_policy_loss = total_policy_loss + policy_loss
@@ -492,19 +465,27 @@ class BHERA:
                 total_head_loss = total_head_loss + head_loss
                 total_entropy = total_entropy + entropy
 
+                # log
+                total_u_mean += float(u_mean.cpu().item())
+                total_wu_mean += float(w_u.mean().cpu().item())
+                total_w_mean += float(w.mean().detach().cpu().item())
+
             total_policy_loss = total_policy_loss / float(L)
             total_value_loss = total_value_loss / float(L)
             total_head_loss = total_head_loss / float(L)
             total_entropy = total_entropy / float(L)
 
-            # total loss (joint)
+            avg_u_mean = total_u_mean / float(L)
+            avg_wu_mean = total_wu_mean / float(L)
+            avg_w_mean = total_w_mean / float(L)
+
             loss = (
-                total_policy_loss
-                + self.value_loss_coef * total_value_loss
-                + total_head_loss
-                - entropy_coef * total_entropy
-                + self.decoder_coef * decoder_loss
-                + self.beta * kl_total
+                    total_policy_loss
+                    + self.value_loss_coef * total_value_loss
+                    + total_head_loss
+                    - entropy_coef * total_entropy
+                    + self.decoder_coef * decoder_loss
+                    + self.beta * kl_total
             )
 
             if lr is not None:
@@ -523,16 +504,19 @@ class BHERA:
                 "head_loss": float(total_head_loss.detach().cpu().item()),
                 "entropy": float(total_entropy.detach().cpu().item()),
                 "entropy_coef": float(entropy_coef),
+                "entropy_coef_base": float(base_entropy_coef),
                 "decoder_loss": float(decoder_loss.detach().cpu().item()),
                 "kl_slow": float(kl_slow.detach().cpu().item()),
                 "kl_fast": float(kl_fast.detach().cpu().item()),
                 "kl_total": float(kl_total.detach().cpu().item()),
                 "kl_ema": float(self.kl_ema.get()),
                 "beta": float(self.beta),
-                "q_mean": float(q_seq.detach().mean().cpu().item()),
+                "q_mean": float(q_mean),
+                "u_mean": float(avg_u_mean),
+                "w_u_mean": float(avg_wu_mean),
+                "w_mean": float(avg_w_mean),
             }
 
-        # optional tensorboard
         if self.writer is not None and self.global_step_ref is not None:
             gs = int(current_steps)
             for k, v in last_info.items():

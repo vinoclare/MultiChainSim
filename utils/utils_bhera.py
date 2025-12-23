@@ -278,11 +278,24 @@ class WindowBuffer:
         return window
 
     def get_with_mask(self, pad_value: float = 0.0):
-        window = self.get(pad_value=pad_value)  # [B,K,D]
-        B, K, _ = window.shape
-        t_len = min(len(self._tokens), K)
-        pad_len = K - t_len
-        mask = torch.zeros((B, K), dtype=torch.bool, device=window.device)
-        if pad_len > 0:
-            mask[:, :pad_len] = True  # True = PAD
-        return window, mask
+        """
+        Returns:
+            window: [B, K, D]
+            pad_mask: [B, K] bool, True for PAD positions
+        """
+        if len(self._tokens) == 0:
+            raise RuntimeError("WindowBuffer is empty. Append at least one token before get_with_mask().")
+
+        B, D = self._tokens[-1].shape
+        device = self._tokens[-1].device
+        dtype = self._tokens[-1].dtype
+        K = self.max_len
+
+        window = torch.full((B, K, D), fill_value=pad_value, device=device, dtype=dtype)
+        pad_mask = torch.ones((B, K), device=device, dtype=torch.bool)  # True=PAD
+
+        tokens = self._tokens[-K:]
+        t_len = len(tokens)
+        window[:, K - t_len: K, :] = torch.stack(tokens, dim=1)
+        pad_mask[:, K - t_len: K] = False
+        return window, pad_mask

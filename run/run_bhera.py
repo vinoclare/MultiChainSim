@@ -25,8 +25,8 @@ parser.add_argument("--num_workers", type=int, default=10, help="Parallel env wo
 
 parser.add_argument("--bhera_lambda_q", type=float, default=1.0)
 parser.add_argument("--bhera_decoder_coef", type=float, default=1.0)
-parser.add_argument("--bhera_decoder_sparse_weight", type=float, default=0.0)
-parser.add_argument("--bhera_n_step", type=int, default=10)
+parser.add_argument("--bhera_decoder_sparse_weight", type=float, default=1.0)
+parser.add_argument("--bhera_n_step", type=int, default=5)
 
 parser.add_argument("--bhera_beta_init", type=float, default=0.1)
 parser.add_argument("--bhera_kl_capacity", type=float, default=1.0)
@@ -358,8 +358,7 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             token_window = token_buf.get(pad_value=0.0)  # [1,K,token_dim]
 
             # belief slow/fast
-            token_window, pad_mask = token_buf.get_with_mask()
-            mu_s, logvar_s, z_s = alg.model.belief_slow(token_window, padding_mask=pad_mask)
+            mu_s, logvar_s, z_s = alg.model.belief_slow(token_window)  # [1,Ds]
             h_fast, mu_f, logvar_f, z_f = alg.model.belief_fast_step(token_t, h_fast, done_prev)  # [1,Hf], [1,Df]...
             z = torch.cat([z_s, z_f], dim=-1)  # [1,Z]
 
@@ -448,15 +447,15 @@ def main():
     eval_episodes = ppo_config["eval_episodes"]
     reset_schedule_interval = ppo_config["reset_schedule_interval"]
 
-    # ===== BHERA extra hparams =====
+    # ===== BHERA extra hparams（不强依赖 config，有默认值）=====
     obs_embed_dim = hidden_dim
     coupling_hidden = hidden_dim
     belief_in_dim = 128
 
-    slow_window_len = int(ppo_config.get("bhera_slow_window", 16))
-    slow_n_layers = int(ppo_config.get("bhera_slow_layers", 2))
-    slow_n_heads = int(ppo_config.get("bhera_slow_heads", 4))
-    slow_ff_dim = int(ppo_config.get("bhera_slow_ff_dim", 256))
+    slow_window_len = 16
+    slow_n_layers = 2
+    slow_n_heads = 4
+    slow_ff_dim = 256
 
     fast_hidden = 128
     z_slow_dim = 32
