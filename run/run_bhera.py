@@ -347,7 +347,8 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             token_window = token_buf.get(pad_value=0.0)  # [1,K,token_dim]
 
             # belief slow/fast
-            mu_s, logvar_s, z_s = alg.model.belief_slow(token_window)  # [1,Ds]
+            token_window, pad_mask = token_buf.get_with_mask()
+            mu_s, logvar_s, z_s = alg.model.belief_slow(token_window, padding_mask=pad_mask)
             h_fast, mu_f, logvar_f, z_f = alg.model.belief_fast_step(token_t, h_fast, done_prev)  # [1,Hf], [1,Df]...
             z = torch.cat([z_s, z_f], dim=-1)  # [1,Z]
 

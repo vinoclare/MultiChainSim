@@ -109,58 +109,27 @@ def build_belief_token(
 # 3) n-step return targets
 # ---------------------------
 
-def compute_nstep_return(
-    rewards: Tensor,
-    dones: Tensor,
-    gamma: float,
-    n_step: int,
-    time_dim: int = 0,
-) -> Tensor:
-    """
-    Compute n-step return target:
-        G_t^(n) = sum_{k=0..n-1} gamma^k * r_{t+k}
-    with termination handling via dones (1 means terminal at that step).
+def left_pad_last_k(seq_bt_d: torch.Tensor, k: int) -> torch.Tensor:
+    # seq: [B,T,D] -> [B,k,D] 右对齐，不足左侧补 0
+    B, T, D = seq_bt_d.shape
+    if T >= k:
+        return seq_bt_d[:, T - k:T, :]
+    pad = torch.zeros((B, k - T, D), dtype=seq_bt_d.dtype, device=seq_bt_d.device)
+    return torch.cat([pad, seq_bt_d], dim=1)
 
-    Supported shapes:
-        rewards: [T, B] if time_dim=0 (default), or [B, T] if time_dim=1
-        dones:   same shape as rewards, 0/1
 
-    Returns:
-        G: same shape as rewards (n-step truncated near end automatically).
-    """
-    assert rewards.shape == dones.shape, "rewards/dones shape mismatch"
-    assert n_step >= 1
-
-    if time_dim == 1:
-        rewards = rewards.transpose(0, 1)  # -> [T, B]
-        dones = dones.transpose(0, 1)
-
-    T, B = rewards.shape[0], rewards.shape[1]
-    device = rewards.device
-    dtype = rewards.dtype
-
-    G = torch.zeros((T, B), device=device, dtype=dtype)
-
-    # For each t, accumulate up to n steps, stop if done occurs
-    # Mask keeps track whether episode is still alive for each (t,b) accumulation.
+def compute_nstep_returns(rewards_bt: torch.Tensor, gamma: float, n_step: int) -> torch.Tensor:
+    # rewards_bt: [B,T,1] -> [B,T,1]
+    B, T, _ = rewards_bt.shape
+    out = torch.zeros_like(rewards_bt)
     for t in range(T):
-        g = torch.zeros((B,), device=device, dtype=dtype)
-        alive = torch.ones((B,), device=device, dtype=dtype)  # 1.0 if not terminated yet
-        discount = 1.0
+        g = torch.zeros((B, 1), dtype=rewards_bt.dtype, device=rewards_bt.device)
         for k in range(n_step):
-            tk = t + k
-            if tk >= T:
+            if t + k >= T:
                 break
-            r = rewards[tk]  # [B]
-            d = dones[tk].to(dtype)  # [B], 1 means terminal at tk
-            g = g + alive * (discount * r)
-            alive = alive * (1.0 - d)  # if done, future contributions are masked
-            discount *= gamma
-        G[t] = g
-
-    if time_dim == 1:
-        G = G.transpose(0, 1)  # back to [B, T]
-    return G
+            g = g + (gamma ** k) * rewards_bt[:, t + k, :]
+        out[:, t, :] = g
+    return out
 
 
 # ---------------------------
@@ -195,25 +164,22 @@ def kl_diag_gaussian_to_stdnormal(mu: Tensor, logvar: Tensor, reduce: str = "mea
 
 @dataclass
 class EMA:
-    """
-    Exponential Moving Average for scalars (torch tensors).
-    """
-    decay: float = 0.99
-    value: Optional[Tensor] = None
+    def __init__(self, decay=0.99, init=0.0):
+        self.decay = float(decay)
+        self.value = float(init)
+        self.inited = False
 
-    @torch.no_grad()
-    def update(self, x: Tensor) -> Tensor:
-        """
-        Update EMA with a scalar tensor x.
-        Returns updated value (tensor scalar).
-        """
-        if x.dim() != 0:
-            x = x.mean()
-        if self.value is None:
-            self.value = x.detach()
+    def update(self, x: float) -> float:
+        x = float(x)
+        if not self.inited:
+            self.value = x
+            self.inited = True
         else:
-            self.value = self.decay * self.value + (1.0 - self.decay) * x.detach()
+            self.value = self.decay * self.value + (1.0 - self.decay) * x
         return self.value
+
+    def get(self) -> float:
+        return float(self.value)
 
 
 @torch.no_grad()
@@ -310,3 +276,13 @@ class WindowBuffer:
         # right-align (most recent at end)
         window[:, K - t_len : K, :] = torch.stack(tokens, dim=1)  # [B, t_len, D]
         return window
+
+    def get_with_mask(self, pad_value: float = 0.0):
+        window = self.get(pad_value=pad_value)  # [B,K,D]
+        B, K, _ = window.shape
+        t_len = min(len(self._tokens), K)
+        pad_len = K - t_len
+        mask = torch.zeros((B, K), dtype=torch.bool, device=window.device)
+        if pad_len > 0:
+            mask[:, :pad_len] = True  # True = PAD
+        return window, mask

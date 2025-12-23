@@ -1,4 +1,3 @@
-# algs/wtoe.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -205,10 +204,6 @@ class WTOE:
             self.vae_optimizer = optim.Adam(self.vae.parameters(), lr=3e-4, eps=1e-5)
             return
 
-        # dynamic probe state_emb_dim with a small fake batch
-        # NOTE: 这里不依赖环境，靠输入 tensor shape 即可
-        # 但我们无法知道 task_input_dim 等，所以等第一次 learn/sample 时再 probe
-        # 因此先占位，第一次用到时再完成 init
         self._vae_pending_init = True
 
     def _ensure_vae_ready(self, task_obs, worker_loads, worker_profile, valid_mask):
@@ -364,6 +359,7 @@ class WTOE:
         advantages,     # [B,W]
         current_steps,
         lr=None,
+        do_vae_update=True,   # 关键：由 run_wtoe 控制是否做 VAE update
     ):
         device = self.device
         task_obs = task_obs.to(device)
@@ -391,73 +387,77 @@ class WTOE:
         else:
             entropy_coef = self.entropy_coef
 
+        # ---- 1) VAE update：改成可控（默认 True，但 run 里只在每次 rollout 的第一个 minibatch 做一次） ----
+        if do_vae_update:
+            vae_loss, vae_recon, vae_kl = self._vae_update(
+                task_obs, worker_loads, worker_profile, valid_mask,
+                macro_hist, actions, advantages
+            )
+        else:
+            vae_loss, vae_recon, vae_kl = 0.0, 0.0, 0.0
+
+        # ---- 2) PPO update：改成一次联合更新（不再 for w in range(num_workers)） ----
+        self.model.train()
+        policy_loss_total = 0.0
+        entropy_total = 0.0
+        value_loss_last = 0.0
+
         if lr is not None:
             for pg in self.optimizer.param_groups:
                 pg["lr"] = lr
 
-        # ---- 1) VAE update (once per minibatch) ----
-        vae_loss, vae_recon, vae_kl = self._vae_update(
-            task_obs, worker_loads, worker_profile, valid_mask,
-            macro_hist, actions, advantages
-        )
+        for _ in range(self.inner_k):
+            mean, std_base = self.model.forward_actor(task_obs, worker_loads, worker_profile, valid_mask)  # [B,W,T]
 
-        # ---- 2) PPO/HAPPO update (sequential workers, like your CRESCENT) ----
-        self.model.train()
-        num_workers = actions.size(1)
-        action_loss_total = 0.0
-        entropy_total = 0.0
-        value_loss_last = 0.0
+            # 推断策略只用于算 explore_prob，不走梯度
+            with torch.no_grad():
+                self.vae.eval()
+                state_emb = self._get_state_emb(task_obs, worker_loads, worker_profile, valid_mask)
+                mean_inf, std_inf, _, _ = self.vae(state_emb, macro_hist, valid_mask=valid_mask)  # [B,W,T]
+                p_exp, _ = self._compute_explore_prob(mean, std_base, mean_inf, std_inf)          # [B,W]
 
-        for w in range(num_workers):
-            for _ in range(self.inner_k):
-                mean_actor, std_base = self.model.forward_actor(task_obs, worker_loads, worker_profile, valid_mask)
+            std_scaled = std_base * (1.0 + self.explore_scale * p_exp.unsqueeze(-1))  # [B,W,T]
+            dist = Normal(mean, std_scaled)
 
-                with torch.no_grad():
-                    state_emb = self._get_state_emb(task_obs, worker_loads, worker_profile, valid_mask)
-                    mean_inf, std_inf, _, _ = self.vae(state_emb, macro_hist, valid_mask=valid_mask)
-                    p_exp, _ = self._compute_explore_prob(mean_actor, std_base, mean_inf, std_inf)
-                    p_exp = p_exp.detach()
+            log_probs = dist.log_prob(actions).sum(dim=2)     # [B,W]
+            entropy_vec = dist.entropy().sum(dim=2)           # [B,W]
 
-                std_scaled = std_base * (1.0 + self.explore_scale * p_exp.unsqueeze(-1))
-                dist = Normal(mean_actor, std_scaled)
+            ratio = torch.exp(log_probs - log_probs_old)      # [B,W]
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages
+            policy_loss = -torch.min(surr1, surr2).mean()
 
-                log_probs = dist.log_prob(actions).sum(dim=2)  # [B,W]
-                entropy_vec = dist.entropy().sum(dim=2)         # [B,W]
+            values = self.model.get_value(task_obs, worker_loads, worker_profile, valid_mask).view(-1)  # [B]
+            if self.use_clipped_value_loss:
+                value_pred_clipped = values_old + torch.clamp(
+                    values - values_old, -self.clip_param, self.clip_param
+                )
+                value_losses = (values - returns) ** 2
+                value_losses_clipped = (value_pred_clipped - returns) ** 2
+                value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
+            else:
+                value_loss = 0.5 * (returns - values).pow(2).mean()
 
-                ratio = torch.exp(log_probs[:, w] - log_probs_old[:, w])  # [B]
-                adv = advantages[:, w]
-                surr1 = ratio * adv
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * adv
-                action_loss = -torch.min(surr1, surr2).mean()
+            value_loss_last = float(value_loss.item())
 
-                values = self.model.get_value(task_obs, worker_loads, worker_profile, valid_mask).view(-1)
-                if self.use_clipped_value_loss:
-                    value_pred_clipped = values_old + torch.clamp(values - values_old, -self.clip_param, self.clip_param)
-                    value_losses = (values - returns) ** 2
-                    value_losses_clipped = (value_pred_clipped - returns) ** 2
-                    value_loss = 0.5 * torch.max(value_losses, value_losses_clipped).mean()
-                else:
-                    value_loss = 0.5 * (returns - values).pow(2).mean()
-                value_loss_last = float(value_loss.item())
+            # WToE：divergence 大时更想探索 => 给熵项加权（联合平均）
+            ent_w = (1.0 + self.entropy_boost * p_exp)         # [B,W]
+            entropy = (entropy_vec * ent_w).mean()
 
-                # WToE: divergence 大时更想探索 => 给熵项加权
-                ent_w = (1.0 + self.entropy_boost * p_exp[:, w])
-                entropy = (entropy_vec[:, w] * ent_w).mean()
+            loss = value_loss * self.value_loss_coef + policy_loss - entropy_coef * entropy
 
-                loss = value_loss * self.value_loss_coef + action_loss - entropy_coef * entropy
+            self.optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            self.optimizer.step()
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+            policy_loss_total += float(policy_loss.item())
+            entropy_total += float(entropy.item())
 
-                action_loss_total += float(action_loss.item())
-                entropy_total += float(entropy.item())
-
-        denom = num_workers * max(1, self.inner_k)
+        denom = max(1, self.inner_k)
         return {
             "value_loss": value_loss_last,
-            "policy_loss": action_loss_total / denom,
+            "policy_loss": policy_loss_total / denom,
             "entropy": entropy_total / denom,
             "vae_loss": vae_loss,
             "vae_recon": vae_recon,

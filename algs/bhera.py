@@ -1,54 +1,9 @@
-# algs/bhera.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.distributions import Normal
-
-
-try:
-    # 你前面让写的 utils_bhera.py（推荐用这个）
-    from utils.utils_bhera import EMA, compute_nstep_returns, left_pad_last_k
-except Exception:
-    # 极简兜底，避免你临时没放对位置直接炸
-    class EMA:
-        def __init__(self, decay=0.99, init=0.0):
-            self.decay = float(decay)
-            self.value = float(init)
-            self.inited = False
-
-        def update(self, x: float) -> float:
-            x = float(x)
-            if not self.inited:
-                self.value = x
-                self.inited = True
-            else:
-                self.value = self.decay * self.value + (1.0 - self.decay) * x
-            return self.value
-
-        def get(self) -> float:
-            return float(self.value)
-
-    def left_pad_last_k(seq_bt_d: torch.Tensor, k: int) -> torch.Tensor:
-        # seq: [B,T,D] -> [B,k,D] 右对齐，不足左侧补 0
-        B, T, D = seq_bt_d.shape
-        if T >= k:
-            return seq_bt_d[:, T - k:T, :]
-        pad = torch.zeros((B, k - T, D), dtype=seq_bt_d.dtype, device=seq_bt_d.device)
-        return torch.cat([pad, seq_bt_d], dim=1)
-
-    def compute_nstep_returns(rewards_bt: torch.Tensor, gamma: float, n_step: int) -> torch.Tensor:
-        # rewards_bt: [B,T,1] -> [B,T,1]
-        B, T, _ = rewards_bt.shape
-        out = torch.zeros_like(rewards_bt)
-        for t in range(T):
-            g = torch.zeros((B, 1), dtype=rewards_bt.dtype, device=rewards_bt.device)
-            for k in range(n_step):
-                if t + k >= T:
-                    break
-                g = g + (gamma ** k) * rewards_bt[:, t + k, :]
-            out[:, t, :] = g
-        return out
+from utils.utils_bhera import EMA, compute_nstep_returns, left_pad_last_k
 
 
 class BHERA:
@@ -292,10 +247,7 @@ class BHERA:
         token = torch.cat([x_pool, a_prev, r_prev, d_prev], dim=-1)  # [B,T,token_dim]
 
         # 5) slow infer (use last window, slow z constant for this sequence)
-        if hasattr(self.model, "slow_window"):
-            ks = int(self.model.slow_window)
-        else:
-            ks = min(32, T)  # 兜底：别太大
+        ks = int(self.model.slow_window_len)
         token_win = left_pad_last_k(token, ks)  # [B,ks,token_dim]
         mu_slow, logvar_slow, z_slow = self._call_slow_infer(token_win)  # [B,Ds], [B,Ds], [B,Ds]
         kl_slow = self._kl_standard_normal(mu_slow, logvar_slow).mean()
@@ -462,8 +414,9 @@ class BHERA:
 
             tgt = target_g.reshape(B * T, 1)
             if self.decoder_sparse_weight > 0:
-                w_sp = 1.0 + self.decoder_sparse_weight * (tgt.abs() > 0).float()
-                decoder_loss = (F.smooth_l1_loss(pred_g, tgt, reduction="none") * w_sp).mean()
+                q_flat = q_seq.reshape(B * T, 1).detach()
+                w_dec = 1.0 + self.decoder_sparse_weight * q_flat
+                decoder_loss = (F.smooth_l1_loss(pred_g, tgt, reduction="none") * w_dec).mean()
             else:
                 decoder_loss = F.smooth_l1_loss(pred_g, tgt)
 
@@ -521,7 +474,8 @@ class BHERA:
                     value_loss = (0.5 * (ret_l - v_mean) ** 2).mean()
 
                 # 同时让每个 head 都回归 return（否则 head 容易塌成一样）
-                head_loss = (0.5 * (v_all - ret_l.unsqueeze(-1)) ** 2).mean()
+                mask = (torch.rand_like(v_all) < 0.8).float()  # 80% sample keep
+                head_loss = (0.5 * ((v_all - ret_l.unsqueeze(-1)) ** 2) * mask).sum() / (mask.sum() + 1e-6)
 
                 total_policy_loss = total_policy_loss + policy_loss
                 total_value_loss = total_value_loss + value_loss

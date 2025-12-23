@@ -1,4 +1,3 @@
-# run/run_wtoe.py
 import torch
 import numpy as np
 import argparse
@@ -79,14 +78,10 @@ def build_struct_macro_feature(obs, num_layers, step_idx, max_steps):
         total_valid += num_valid
         total_slots += num_slots
 
+        # 只保留 mean，去掉 max/std（省时）
         worker_loads = layer_obs["worker_loads"]
         wl = worker_loads.reshape(-1).astype(np.float32)
-        if wl.size > 0:
-            feats.append(float(wl.mean()))
-            feats.append(float(wl.max()))
-            feats.append(float(wl.std()))
-        else:
-            feats.extend([0.0, 0.0, 0.0])
+        feats.append(float(wl.mean()) if wl.size > 0 else 0.0)
 
     feats.append(float(total_valid / (total_slots + 1e-8)) if total_slots > 0 else 0.0)
     feats.append(float(step_idx) / float(max_steps) if max_steps > 0 else 0.0)
@@ -106,17 +101,15 @@ def macro_hist_flatten(hist_deque, hist_len, macro_feat_dim):
     return buf.reshape(-1)
 
 
-def _snapshot_states(algs_dict):
-    """
-    需要把 actor(model) + vae 都传给 worker（采样时要用 divergence->explore_prob）
-    """
+def _snapshot_states(algs_dict, send_vae=True):
     out = {}
     for lid, alg in algs_dict.items():
         out[lid] = {
             "model": alg.model.state_dict(),
-            "vae": alg.vae.state_dict() if getattr(alg, "vae", None) is not None else None,
+            "vae": (alg.vae.state_dict() if (send_vae and getattr(alg, "vae", None) is not None) else None),
         }
     return out
+
 
 
 def _init_worker(dire, env_config_path, schedule_path, worker_config_path,
@@ -470,7 +463,7 @@ def main():
                 advs_w
             ))
 
-            for _ in range(update_epochs):
+            for epoch in range(update_epochs):
                 random.shuffle(dataset)
                 for i in range(0, len(dataset), batch_size):
                     batch = dataset[i:i + batch_size]
@@ -490,10 +483,15 @@ def main():
                     adv_t = torch.tensor(np.array(adv_b, dtype=np.float32))
 
                     current_steps = episode * steps_per_episode * args.num_workers
+
+                    # 关键：每次 rollout（本 layer 的这次 update）只做一次 VAE update
+                    do_vae_update = (epoch == 0 and i == 0)
+
                     stats = algs[lid].learn(
                         task_t, load_t, prof_t, mask_t,
                         mh_t, act_t, val_old_t, ret_t, logp_old_t, adv_t,
-                        current_steps
+                        current_steps,
+                        do_vae_update=do_vae_update
                     )
 
                     # logging (only lid=0 to reduce noise)
@@ -501,9 +499,12 @@ def main():
                         writer.add_scalar("train/value_loss", stats["value_loss"], current_steps)
                         writer.add_scalar("train/policy_loss", stats["policy_loss"], current_steps)
                         writer.add_scalar("train/entropy", stats["entropy"], current_steps)
-                        writer.add_scalar("train/vae_loss", stats["vae_loss"], current_steps)
-                        writer.add_scalar("train/vae_recon", stats["vae_recon"], current_steps)
-                        writer.add_scalar("train/vae_kl", stats["vae_kl"], current_steps)
+
+                        # VAE 指标只在真正更新时记录一次，避免大量 0 干扰
+                        if do_vae_update:
+                            writer.add_scalar("train/vae_loss", stats["vae_loss"], current_steps)
+                            writer.add_scalar("train/vae_recon", stats["vae_recon"], current_steps)
+                            writer.add_scalar("train/vae_kl", stats["vae_kl"], current_steps)
 
         # extra logs
         if episode % max(1, int(eval_interval)) == 0:
