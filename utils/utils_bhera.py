@@ -118,6 +118,39 @@ def left_pad_last_k(seq_bt_d: torch.Tensor, k: int) -> torch.Tensor:
     return torch.cat([pad, seq_bt_d], dim=1)
 
 
+def left_pad_sliding_k(seq_bt_d: torch.Tensor, k: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Build sliding left-padded windows for each timestep.
+
+    Args:
+        seq_bt_d: Tensor[B, T, D]
+        k: window length
+
+    Returns:
+        win: Tensor[B, T, k, D]  (for each t, take seq[max(0,t-k+1):t+1] left padded)
+        pad_mask: Tensor[B, T, k] bool, True means PAD
+    """
+    B, T, D = seq_bt_d.shape
+    if k <= 1:
+        win = seq_bt_d.unsqueeze(2)  # [B,T,1,D]
+        pad_mask = torch.zeros((B, T, 1), dtype=torch.bool, device=seq_bt_d.device)
+        return win, pad_mask
+
+    # left pad with (k-1) zeros so that unfold creates left-padded windows
+    pad = torch.zeros((B, k - 1, D), dtype=seq_bt_d.dtype, device=seq_bt_d.device)
+    seq_pad = torch.cat([pad, seq_bt_d], dim=1)  # [B, T+k-1, D]
+
+    win = seq_pad.unfold(dimension=1, size=k, step=1)  # [B, T, k, D]
+
+    # build pad mask: early timesteps have left padding
+    t_idx = torch.arange(T, device=seq_bt_d.device)  # [T]
+    pad_cnt = (k - 1 - t_idx).clamp(min=0)  # [T]
+    k_idx = torch.arange(k, device=seq_bt_d.device).unsqueeze(0)  # [1,k]
+    mask_tk = k_idx < pad_cnt.unsqueeze(1)  # [T,k]
+    pad_mask = mask_tk.unsqueeze(0).expand(B, -1, -1).contiguous()  # [B,T,k]
+    return win, pad_mask
+
+
 def compute_nstep_returns(rewards_bt: torch.Tensor, gamma: float, n_step: int) -> torch.Tensor:
     # rewards_bt: [B,T,1] -> [B,T,1]
     B, T, _ = rewards_bt.shape

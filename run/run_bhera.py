@@ -150,11 +150,11 @@ def _episode_worker(policy_state, with_new_schedule, seed):
             x_pool = h_cpl.mean(dim=1)                      # [1,D]
             token_t = build_belief_token(x_pool, a_prev_pool, r_prev, done_prev)  # [1,token_dim]
             token_buf.append(token_t.detach())
-            token_window = token_buf.get(pad_value=pad_value)  # [1,K,token_dim]
 
             # sample actions
+            token_window, pad_mask = token_buf.get_with_mask(pad_value=pad_value)
             actions_bla, logp_bl1, _, vmean_bl1, _, h_fast_new = g_alg.sample_joint(
-                obs_raw_bl, a_prev_pool, r_prev, done_prev, token_window, h_fast
+                obs_raw_bl, a_prev_pool, r_prev, done_prev, token_window, h_fast, pad_mask
             )
 
         actions_np = actions_bla[0].cpu().numpy().astype(np.float32)     # [L, act_dim]
@@ -309,21 +309,18 @@ def _init_worker(
 
 def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
     """
-    按 run_varibad.py 风格写 eval：
     - 每条 episode 重置 joint belief 状态
     - 动作使用 mean（deterministic）
     """
     total_reward, total_cost, total_utility, total_wait_penalty = 0, 0, 0, 0
 
     num_layers = env_config["num_layers"]
-    obs_space = eval_env.observation_space[0]
     act_space = eval_env.action_space[0]
     action_shape = act_space.shape
 
     device = torch.device(ppo_config["device"])
 
-    # token dim / window
-    token_dim = int(getattr(alg.model, "obs_embed_dim", ppo_config["hidden_dim"])) + int(np.prod(action_shape)) + 2
+    # window
     slow_window_len = int(getattr(alg.model, "slow_window_len", int(ppo_config.get("bhera_slow_window", 16))))
 
     for _ in range(num_episodes):
@@ -344,21 +341,35 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
                 task_obs = obs[lid]["task_queue"]
                 worker_loads = obs[lid]["worker_loads"]
                 profile = obs[lid]["worker_profile"]
+
+                # 你原来的逻辑：环境里没有 obs[lid]["valid_mask"]，所以这里自己算
                 valid_mask = task_obs[:, g_valid_index].astype(np.float32)
                 obs_raw_list.append(_build_raw_obs_vec(task_obs, worker_loads, profile, valid_mask))
 
-            obs_raw_bl = torch.tensor(np.stack(obs_raw_list, axis=0), dtype=torch.float32, device=device).unsqueeze(0)  # [1,L,obs_dim]
+            obs_raw_bl = torch.tensor(
+                np.stack(obs_raw_list, axis=0),
+                dtype=torch.float32,
+                device=device
+            ).unsqueeze(0)  # [1,L,obs_dim]
 
             # encode/couple + token window
             h = alg.model.encode_obs_stack(obs_raw_bl)   # [1,L,D]
             h_cpl = alg.model.couple_layers(h)          # [1,L,D]
             x_pool = h_cpl.mean(dim=1)                  # [1,D]
+
             token_t = build_belief_token(x_pool, a_prev_pool, r_prev, done_prev)  # [1,token_dim]
             token_buf.append(token_t.detach())
-            token_window = token_buf.get(pad_value=0.0)  # [1,K,token_dim]
 
-            # belief slow/fast
-            mu_s, logvar_s, z_s = alg.model.belief_slow(token_window)  # [1,Ds]
+            # ====== 只改这里：拿 window + padding mask ======
+            token_window, pad_mask = token_buf.get_with_mask(pad_value=0.0)  # [1,K,token_dim], [1,K] bool(True=PAD)
+
+            # belief slow/fast（只改这里：把 pad_mask 传进去）
+            try:
+                mu_s, logvar_s, z_s = alg.model.belief_slow(token_window, padding_mask=pad_mask)  # [1,Ds]
+            except TypeError:
+                # 如果你模型还没改到支持 padding_mask，至少别直接炸
+                mu_s, logvar_s, z_s = alg.model.belief_slow(token_window)  # [1,Ds]
+
             h_fast, mu_f, logvar_f, z_f = alg.model.belief_fast_step(token_t, h_fast, done_prev)  # [1,Hf], [1,Df]...
             z = torch.cat([z_s, z_f], dim=-1)  # [1,Z]
 
@@ -384,8 +395,12 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             r_global = 0.0
             for lid in range(num_layers):
                 r_global += float(reward_detail["layer_rewards"][lid]["reward"])
-            a_prev_pool = torch.tensor(np.mean(np.stack(actions_flat, axis=0), axis=0, keepdims=True),
-                                       dtype=torch.float32, device=device)
+
+            a_prev_pool = torch.tensor(
+                np.mean(np.stack(actions_flat, axis=0), axis=0, keepdims=True),
+                dtype=torch.float32,
+                device=device
+            )
             r_prev = torch.tensor([[r_global]], dtype=torch.float32, device=device)
             done_prev = torch.tensor([[float(done)]], dtype=torch.float32, device=device)
 

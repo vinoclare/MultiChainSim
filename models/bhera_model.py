@@ -117,6 +117,13 @@ class BHERAJointModel(nn.Module):
         )
         self.fast_mu = nn.Linear(self.fast_hidden, self.z_fast_dim)
         self.fast_logvar = nn.Linear(self.fast_hidden, self.z_fast_dim)
+        self.fast_slow_to_h = nn.Linear(self.z_slow_dim, self.fast_hidden)
+
+        self.fast_prior_net = nn.Sequential(
+            nn.Linear(self.z_fast_dim + self.z_slow_dim, max(64, self.z_fast_dim * 2)),
+            nn.ReLU(),
+            nn.Linear(max(64, self.z_fast_dim * 2), 2 * self.z_fast_dim),
+        )
 
         # -------------------- q head: p(sparse) --------------------
         self.q_head = nn.Sequential(
@@ -224,67 +231,90 @@ class BHERAJointModel(nn.Module):
 
     # -------------------- belief (slow/fast/q) --------------------
 
-    def belief_slow(
-        self,
-        token_window: torch.Tensor,
-        padding_mask: torch.Tensor = None,
-    ):
+    def fast_prior(self, z_fast_prev: torch.Tensor, z_slow: torch.Tensor):
         """
-        Slow posterior from a window of tokens (causal Transformer).
-
-        token_window:  [B, K, token_dim]  (K == slow_window_len recommended)
-        padding_mask:  [B, K] bool, True for PAD positions (optional)
-
-        return:
-          mu_slow:    [B, z_slow_dim]
-          logvar_slow:[B, z_slow_dim]
-          z_slow:     [B, z_slow_dim]
+        Conditional prior: p(z_fast_t | z_fast_{t-1}, z_slow)
+        return: mu_p, logvar_p [B, z_fast_dim]
         """
-        B, K, _ = token_window.shape
-        x = self.token_proj(token_window)  # [B, K, belief_in_dim]
+        x = torch.cat([z_fast_prev, z_slow], dim=-1)
+        out = self.fast_prior_net(x)
+        mu_p, logvar_p = torch.chunk(out, 2, dim=-1)
+        logvar_p = logvar_p.clamp(-10.0, 10.0)
+        mu_p = torch.nan_to_num(mu_p, nan=0.0, posinf=0.0, neginf=0.0)
+        logvar_p = torch.nan_to_num(logvar_p, nan=0.0, posinf=0.0, neginf=0.0)
+        return mu_p, logvar_p
 
-        attn_mask = self._causal_mask(K, device=x.device)  # [K, K]
-        # TransformerEncoder expects src_key_padding_mask with True=pad (if provided)
-        y = self.slow_transformer(
-            x,
-            mask=attn_mask,
-            src_key_padding_mask=padding_mask,
-        )  # [B, K, belief_in_dim]
+    def belief_slow(self, token_window: torch.Tensor, padding_mask: torch.Tensor = None):
+        """
+        token_window: [B, K, token_dim] (left padded)
+        padding_mask: [B, K] bool, True means PAD (optional)
+        return: mu, logvar, z each [B, z_slow_dim]
+        """
+        x = self.token_proj(token_window)  # [B,K,belief_in_dim]
+        B, K, D = x.shape
 
-        y_last = y[:, -1, :]  # take last token (right-aligned window recommended)
+        # causal mask for full length
+        if padding_mask is None or (not torch.any(padding_mask)):
+            attn_mask = self._causal_mask(K, device=x.device)  # [K,K]
+            y = self.slow_transformer(x, mask=attn_mask)  # [B,K,D]
+            y_last = y[:, -1, :]
+        else:
+            # robust path: strip PAD tokens per sample to avoid NaN with mask interaction
+            y_last_list = []
+            for b in range(B):
+                pm = padding_mask[b]  # [K]
+                valid_idx = torch.nonzero(~pm, as_tuple=False).squeeze(-1)
+                if valid_idx.numel() == 0:
+                    y_last_list.append(torch.zeros((D,), device=x.device, dtype=x.dtype))
+                    continue
+
+                xb = x[b:b + 1, valid_idx, :]  # [1,Kb,D]
+                Kb = xb.shape[1]
+                attn_b = self._causal_mask(Kb, device=x.device)
+                yb = self.slow_transformer(xb, mask=attn_b)  # [1,Kb,D]
+                y_last_list.append(yb[0, -1, :])
+
+            y_last = torch.stack(y_last_list, dim=0)  # [B,D]
+
         mu = self.slow_mu(y_last)
-        logvar = self.slow_logvar(y_last)
+        logvar = self.slow_logvar(y_last).clamp(-10.0, 10.0)
+
+        mu = torch.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
+        logvar = torch.nan_to_num(logvar, nan=0.0, posinf=0.0, neginf=0.0)
+
         z = self._reparam(mu, logvar)
         return mu, logvar, z
 
     def belief_fast_step(
-        self,
-        token_t: torch.Tensor,
-        h_prev: torch.Tensor,
-        done_prev: torch.Tensor = None,
+            self,
+            token_t: torch.Tensor,
+            h_prev: torch.Tensor,
+            done_prev: torch.Tensor = None,
+            z_slow: torch.Tensor = None,
     ):
         """
-        Fast posterior step update (GRUCell).
-
         token_t:   [B, token_dim]
         h_prev:    [B, fast_hidden]
-        done_prev: [B,1] or [B] (optional). If provided, reset hidden when done_prev==1.
-
-        return:
-          h_new:  [B, fast_hidden]
-          mu_f:   [B, z_fast_dim]
-          logvar_f:[B, z_fast_dim]
-          z_f:    [B, z_fast_dim]
+        done_prev: [B,1]
+        z_slow:    [B, z_slow_dim]  (conditions posterior emission)
         """
         if done_prev is not None:
-            if done_prev.dim() == 1:
-                done_prev = done_prev.unsqueeze(-1)
-            h_prev = h_prev * (1.0 - done_prev)
+            reset = (1.0 - done_prev.float()).clamp(0.0, 1.0)
+            h_prev = h_prev * reset
 
         x = self.token_proj(token_t)  # [B, belief_in_dim]
         h_new = self.fast_rnn(x, h_prev)
-        mu = self.fast_mu(h_new)
-        logvar = self.fast_logvar(h_new)
+
+        h_emit = h_new
+        if z_slow is not None:
+            h_emit = h_emit + self.fast_slow_to_h(z_slow)
+
+        mu = self.fast_mu(h_emit)
+        logvar = self.fast_logvar(h_emit).clamp(-10.0, 10.0)
+
+        mu = torch.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
+        logvar = torch.nan_to_num(logvar, nan=0.0, posinf=0.0, neginf=0.0)
+
         z = self._reparam(mu, logvar)
         return h_new, mu, logvar, z
 

@@ -1,10 +1,9 @@
-# algs/bhera.py
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.distributions import Normal
-from utils.utils_bhera import EMA, compute_nstep_returns, left_pad_last_k
+from utils.utils_bhera import EMA, compute_nstep_returns, left_pad_last_k, left_pad_sliding_k
 
 
 class BHERA:
@@ -127,11 +126,11 @@ class BHERA:
             y = x
         return y.reshape(B, T, L, D)
 
-    def _call_slow_infer(self, token_win_bk_d: torch.Tensor):
-        return self.model.belief_slow(token_win_bk_d)
+    def _call_slow_infer(self, token_win_bk_d: torch.Tensor, padding_mask: torch.Tensor = None):
+        return self.model.belief_slow(token_win_bk_d, padding_mask=padding_mask)
 
-    def _call_fast_step(self, token_b_d: torch.Tensor, h_prev: torch.Tensor, done_prev: torch.Tensor):
-        return self.model.belief_fast_step(token_b_d, h_prev, done_prev)
+    def _call_fast_step(self, token_b_d: torch.Tensor, h_prev: torch.Tensor, done_prev: torch.Tensor, z_slow = None):
+        return self.model.belief_fast_step(token_b_d, h_prev, done_prev, z_slow)
 
     def _call_q_head(self, z_bt_d: torch.Tensor) -> torch.Tensor:
         q_logits = self.model.q_head(z_bt_d)
@@ -180,31 +179,25 @@ class BHERA:
         actions : [B,T,L,act_dim]
         rewards : [B,T,L,1]
         dones   : [B,T,L,1]
-        return:
-          h_cpl  : [B,T,L,D]  (耦合后每层表征，给 actor/critic）
-          x_pool : [B,T,D]    (跨层 pooled，给 token/decoder）
-          a_pool : [B,T,A]    (跨层 pooled action）
-          z_seq  : [B,T,Z]
-          q_seq  : [B,T,1]
-          kl_slow, kl_fast (scalar tensors)
         """
         B, T, L, _ = obs_raw.shape
+        device = obs_raw.device
 
-        # 1) encode obs -> h: [B,T,L,D]
-        obs_flat = obs_raw.reshape(B * T * L, -1)
-        h_flat = self.model.encode_obs(obs_flat)
-        h = h_flat.reshape(B, T, L, -1)
+        # 1) encode + couple (按时间逐步，维度完全对齐)
+        h_list = []
+        for t in range(T):
+            h_t = self.model.encode_obs_stack(obs_raw[:, t])  # [B,L,D]
+            h_t = self.model.couple_layers(h_t)               # [B,L,D]
+            h_list.append(h_t)
+        h_cpl = torch.stack(h_list, dim=1)  # [B,T,L,D]
 
-        # 2) couple across layers at each time
-        h_cpl = self._call_couple_layers(h)  # [B,T,L,D]
-
-        # 3) pooled features for belief/decoder
-        x_pool = h_cpl.mean(dim=2)  # [B,T,D]
-        a_pool = actions.mean(dim=2)  # [B,T,A]
-        r_global = rewards.sum(dim=2)  # [B,T,1]
+        # 2) pool layers -> global token components
+        x_pool = h_cpl.mean(dim=2)          # [B,T,D]
+        a_pool = actions.mean(dim=2)        # [B,T,act_dim]
+        r_global = rewards.mean(dim=2)      # [B,T,1]
         d_global = dones.max(dim=2).values  # [B,T,1]
 
-        # 4) build token_t = [x_t, a_{t-1}, r_{t-1}, d_{t-1}]
+        # 3) build transition tokens (use prev a/r/d)
         a_prev = torch.zeros_like(a_pool)
         r_prev = torch.zeros_like(r_global)
         d_prev = torch.zeros_like(d_global)
@@ -212,60 +205,94 @@ class BHERA:
             a_prev[:, 1:] = a_pool[:, :-1]
             r_prev[:, 1:] = r_global[:, :-1]
             d_prev[:, 1:] = d_global[:, :-1]
+
         token = torch.cat([x_pool, a_prev, r_prev, d_prev], dim=-1)  # [B,T,token_dim]
 
-        # 5) slow infer (use last window, slow z constant for this sequence)
-        ks = self.model.slow_window_len
-        token_win = left_pad_last_k(token, ks)  # [B,ks,token_dim]
-        mu_slow, logvar_slow, z_slow = self._call_slow_infer(token_win)  # [B,Ds], [B,Ds], [B,Ds]
-        kl_slow = self._kl_standard_normal(mu_slow, logvar_slow).mean()
+        # 4) slow belief: sliding windows τ_{t-Ks:t}  (fix: not only last-K)
+        ks = int(getattr(self.model, "slow_window_len", 16))
+        token_win, pad_mask = left_pad_sliding_k(token, ks)  # [B,T,Ks,D], [B,T,Ks]
+        token_win_flat = token_win.reshape(B * T, ks, -1)
+        pad_flat = pad_mask.reshape(B * T, ks)
 
-        # 6) fast infer recurrently
-        fast_hidden = int(self.model.fast_hidden)
-        h_fast = torch.zeros((B, fast_hidden), dtype=torch.float32, device=self.device)
+        # run slow inference efficiently: split padded vs non-padded windows
+        need_pad = torch.any(pad_flat, dim=1)  # [B*T]
 
-        z_fast_list, mu_fast_list, logvar_fast_list = [], [], []
+        mu_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
+        logvar_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
+        z_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
+
+        if torch.any(~need_pad):
+            mu_np, logvar_np, z_np = self._call_slow_infer(token_win_flat[~need_pad], padding_mask=None)
+            mu_slow_flat[~need_pad] = mu_np
+            logvar_slow_flat[~need_pad] = logvar_np
+            z_slow_flat[~need_pad] = z_np
+
+        if torch.any(need_pad):
+            mu_p, logvar_p, z_p = self._call_slow_infer(token_win_flat[need_pad], padding_mask=pad_flat[need_pad])
+            mu_slow_flat[need_pad] = mu_p
+            logvar_slow_flat[need_pad] = logvar_p
+            z_slow_flat[need_pad] = z_p
+
+        z_slow_seq = z_slow_flat.reshape(B, T, -1)  # [B,T,Ds]
+        kl_slow = self._kl_standard_normal(mu_slow_flat, logvar_slow_flat).mean()
+
+        # 5) fast belief + conditional prior (condition on per-step z_slow_t)
+        h_fast = torch.zeros((B, self.model.fast_hidden), device=device)
+        z_prev = torch.zeros((B, self.model.z_fast_dim), device=device)
+
+        kl_fast_terms = []
+        z_fast_list = []
+
         for t in range(T):
-            dp = d_prev[:, t]  # done_{t-1}
-            if dp.dim() == 2:
-                h_fast = h_fast * (1.0 - dp)
-            else:
-                h_fast = h_fast * (1.0 - dp.unsqueeze(-1))
-            h_fast, mu_f, logvar_f, z_f = self._call_fast_step(token[:, t], h_fast, dp)
+            z_slow_t = z_slow_seq[:, t]  # [B,Ds]
+
+            mu_p, logvar_p = self.model.fast_prior(z_prev, z_slow_t)
+            h_fast, mu_f, logvar_f, z_f = self._call_fast_step(
+                token[:, t], h_fast, d_prev[:, t], z_slow=z_slow_t
+            )
+
+            var_q = torch.exp(logvar_f)
+            var_p = torch.exp(logvar_p)
+            kl_t = 0.5 * (
+                    (logvar_p - logvar_f)
+                    + (var_q + (mu_f - mu_p) ** 2) / (var_p + 1e-8)
+                    - 1.0
+            ).sum(dim=-1)
+
+            kl_fast_terms.append(kl_t)
             z_fast_list.append(z_f)
-            mu_fast_list.append(mu_f)
-            logvar_fast_list.append(logvar_f)
+            z_prev = z_f.detach()
 
-        z_fast = torch.stack(z_fast_list, dim=1)            # [B,T,Df]
-        mu_fast = torch.stack(mu_fast_list, dim=1)          # [B,T,Df]
-        logvar_fast = torch.stack(logvar_fast_list, dim=1)  # [B,T,Df]
-        kl_fast = self._kl_standard_normal(
-            mu_fast.reshape(B * T, -1),
-            logvar_fast.reshape(B * T, -1)
-        ).mean()
+        kl_fast = torch.stack(kl_fast_terms, dim=1).mean()
+        z_fast = torch.stack(z_fast_list, dim=1)  # [B,T,Df]
 
-        # 7) concat slow+fast -> z_t
-        z_slow_rep = z_slow.unsqueeze(1).expand(B, T, -1)
-        z_seq = torch.cat([z_slow_rep, z_fast], dim=-1)   # [B,T,Z]
-
-        # 8) q_t head
-        q_flat = self._call_q_head(z_seq.reshape(B * T, -1))  # [B*T,1]
-        q_seq = q_flat.reshape(B, T, 1)
+        z_seq = torch.cat([z_slow_seq, z_fast], dim=-1)  # [B,T,Ds+Df]
+        q_seq = self.model.q_head(z_seq).sigmoid()        # [B,T,1]
 
         return h_cpl, x_pool, a_pool, z_seq, q_seq, r_global, kl_slow, kl_fast
 
     # ------------------------- sampling (optional, for agent) -------------------------
 
     @torch.no_grad()
-    def sample_joint(self, obs_raw_bl, a_prev_pool, r_prev, done_prev, token_window_bk, h_fast_prev):
+    def sample_joint(
+            self,
+            obs_raw_bl,
+            a_prev_pool,
+            r_prev,
+            done_prev,
+            token_window_bk,
+            h_fast_prev,
+            padding_mask=None,
+    ):
         """
-        采样接口（可给 bhera_agent 用）：
+        采样接口（可给 bhera_agent / run_bhera 用）：
         obs_raw_bl     : [B,L,obs_dim]
         a_prev_pool    : [B,A]
         r_prev         : [B,1]     (global)
         done_prev      : [B,1]     (global)
         token_window_bk: [B,K,token_dim]   (给 slow transformer 的窗口)
         h_fast_prev    : [B,Hf]
+        padding_mask   : [B,K] bool, True=PAD (可选)
         return:
           actions   : [B,L,act_dim]
           logp      : [B,L,1]
@@ -280,6 +307,8 @@ class BHERA:
         done_prev = done_prev.to(self.device)
         token_window_bk = token_window_bk.to(self.device)
         h_fast_prev = h_fast_prev.to(self.device)
+        if padding_mask is not None:
+            padding_mask = padding_mask.to(self.device)
 
         B, L, _ = obs_raw_bl.shape
 
@@ -291,29 +320,41 @@ class BHERA:
         x_pool = h_cpl.mean(dim=1)  # [B,D]
         token_t = torch.cat([x_pool, a_prev_pool, r_prev, done_prev], dim=-1)  # [B,token_dim]
 
-        # slow / fast
-        mu_s, logvar_s, z_s = self._call_slow_infer(token_window_bk)  # [B,Ds]
+        # slow infer (Transformer) + padding mask（可选）
+        if padding_mask is None:
+            mu_s, logvar_s, z_s = self._call_slow_infer(token_window_bk)  # [B,Ds]
+        else:
+            mu_s, logvar_s, z_s = self.model.belief_slow(token_window_bk, padding_mask=padding_mask)  # [B,Ds]
+
+        # fast infer (GRU) + reset on done
         if done_prev.dim() == 2:
             h_fast_prev = h_fast_prev * (1.0 - done_prev)
         else:
             h_fast_prev = h_fast_prev * (1.0 - done_prev.unsqueeze(-1))
-        h_fast_new, mu_f, logvar_f, z_f = self._call_fast_step(token_t, h_fast_prev, done_prev)
+
+        h_fast_new, mu_f, logvar_f, z_f = self._call_fast_step(token_t, h_fast_prev, done_prev)  # [B,Hf],[B,Df]...
 
         z = torch.cat([z_s, z_f], dim=-1)  # [B,Z]
-        q = self._call_q_head(z)           # [B,1]
+        q = self._call_q_head(z)  # [B,1]
 
         # per-layer action/value
         actions, logps, ents, vmeans = [], [], [], []
         for lid in range(L):
-            mean, std = self._call_forward_actor(lid, h_cpl[:, lid, :], z)
+            # 你的 forward_actor 返回的是 (mean, std)
+            mean, std = self._call_forward_actor(lid, h_cpl[:, lid, :], z)  # [B,A],[B,A]
             std = torch.clamp(std, min=1e-6)
             dist = Normal(mean, std)
-            a = dist.sample()
-            logp = dist.log_prob(a).sum(dim=-1, keepdim=True)
-            ent = dist.entropy().sum(dim=-1, keepdim=True)
+
+            a = dist.sample()  # [B,A]
+            logp = dist.log_prob(a).sum(dim=-1, keepdim=True)  # [B,1]
+            ent = dist.entropy().sum(dim=-1, keepdim=True)  # [B,1]
 
             v_all = self._call_value_ensemble(lid, h_cpl[:, lid, :], z)  # [B,N]
-            v_mean = v_all.mean(dim=-1, keepdim=True)
+            if v_all.dim() == 2:
+                v_mean = v_all.mean(dim=-1, keepdim=True)  # [B,1]
+            else:
+                # 极端兜底：如果实现返回了 [B,1] 也能跑
+                v_mean = v_all
 
             actions.append(a)
             logps.append(logp)
@@ -321,9 +362,9 @@ class BHERA:
             vmeans.append(v_mean)
 
         actions = torch.stack(actions, dim=1)  # [B,L,A]
-        logps = torch.stack(logps, dim=1)      # [B,L,1]
-        ents = torch.stack(ents, dim=1)        # [B,L,1]
-        vmeans = torch.stack(vmeans, dim=1)    # [B,L,1]
+        logps = torch.stack(logps, dim=1)  # [B,L,1]
+        ents = torch.stack(ents, dim=1)  # [B,L,1]
+        vmeans = torch.stack(vmeans, dim=1)  # [B,L,1]
 
         return actions, logps, ents, vmeans, q, h_fast_new
 
