@@ -318,7 +318,7 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
     act_space = eval_env.action_space[0]
     action_shape = act_space.shape
 
-    device = torch.device(ppo_config["device"])
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     # window
     slow_window_len = int(getattr(alg.model, "slow_window_len", int(ppo_config.get("bhera_slow_window", 16))))
@@ -456,7 +456,7 @@ def main():
     gamma = ppo_config["gamma"]
     lam = ppo_config["lam"]
     hidden_dim = ppo_config["hidden_dim"]
-    device = ppo_config["device"]
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     log_interval = ppo_config["log_interval"]
     eval_interval = max(1, int(ppo_config["eval_interval"] / max(1, args.num_workers)))
     eval_episodes = ppo_config["eval_episodes"]
@@ -589,6 +589,18 @@ def main():
             continue
         T = min(lengths)
 
+        segments = env_config.get("sparse_reward_segments", [])
+        q_t = np.zeros((T,), dtype=np.float32)
+        for seg in segments:
+            if seg is None or len(seg) != 2:
+                continue
+            s, e = int(seg[0]), int(seg[1])
+            s = max(0, s)
+            e = min(T, e)
+            if e > s:
+                q_t[s:e] = 1.0  # 这里按 [start, end) 处理
+        q_labels = np.tile(q_t.reshape(1, T, 1), (B, 1, 1))  # [B,T,1]
+
         # pack joint tensors [B,T,L,*]
         obs_raw = np.zeros((B, T, num_layers, obs_dim_raw), dtype=np.float32)
         actions_flat = np.zeros((B, T, num_layers, action_dim), dtype=np.float32)
@@ -644,6 +656,7 @@ def main():
                     torch.tensor(advs[mb], dtype=torch.float32),
                     torch.tensor(rewards[mb], dtype=torch.float32),
                     torch.tensor(dones[mb], dtype=torch.float32),
+                    torch.tensor(q_labels[mb], dtype=torch.float32),
                     global_step
                 )
 

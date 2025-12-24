@@ -358,7 +358,7 @@ def main():
     ) if args.num_workers > 1 else None
 
     # ===== Training loop =====
-    for episode in range(int(num_episodes / args.num_workers)):
+    for episode in range(int(num_episodes / args.num_workers) + 1):
         if args.num_workers == 1:
             for lid in range(num_layers):
                 switchers[lid].reset_episode()

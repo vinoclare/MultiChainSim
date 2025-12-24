@@ -14,12 +14,13 @@
   "worker_task_capacity_range": [3, 10],
   "worker_total_capacity_range": [10, 20],
   "worker_failure_range": [0, 0],
-  "mode": "save",
+  "mode": "load",
   "alpha": 0.4,
   "beta": 0.6,
   "num_pad_tasks": 30,
   "assign_reward_coef": 0.5,
   "wait_penalty_coef": 0.01,
   "worker_type_probs": [0.2, 0.3, 0.3, 0.2],
-  "reset_schedule_interval": 100
+  "reset_schedule_interval": 100,
+  "sparse_reward_segments": [[0, 25], [50, 60]]
 }
