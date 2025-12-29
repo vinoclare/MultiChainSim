@@ -4,7 +4,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    "--alg", type=str, nargs="+", default=["crescent"], required=True,
+    "--alg", type=str, nargs="+", required=True,
     help="支持传入一个或多个算法名，例如: --alg crescent emu mimex"
 )
 parser.add_argument("--dire_list", nargs="+", default=["standard"], required=True)
