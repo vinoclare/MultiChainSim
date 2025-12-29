@@ -673,7 +673,7 @@ def main():
 
 
 if __name__ == "__main__":
-    log_dir = f"../logs/{alg_name}/{dire}/" + time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f"../logs/ablations/no_bootstrap/" + time.strftime("%Y%m%d-%H%M%S")
     writer = SummaryWriter(log_dir=log_dir)
 
     mp.set_start_method("spawn", force=True)
