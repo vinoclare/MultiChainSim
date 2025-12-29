@@ -363,11 +363,9 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             # ====== 只改这里：拿 window + padding mask ======
             token_window, pad_mask = token_buf.get_with_mask(pad_value=0.0)  # [1,K,token_dim], [1,K] bool(True=PAD)
 
-            # belief slow/fast（只改这里：把 pad_mask 传进去）
             try:
                 mu_s, logvar_s, z_s = alg.model.belief_slow(token_window, padding_mask=pad_mask)  # [1,Ds]
             except TypeError:
-                # 如果你模型还没改到支持 padding_mask，至少别直接炸
                 mu_s, logvar_s, z_s = alg.model.belief_slow(token_window)  # [1,Ds]
 
             h_fast, mu_f, logvar_f, z_f = alg.model.belief_fast_step(token_t, h_fast, done_prev)  # [1,Hf], [1,Df]...

@@ -270,7 +270,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
 
                 _, act, _, _ = agent_dict[lid].sample(
                     task_obs, worker_loads, profile,
-                    deterministic=True,
+                    deterministic=False,
                     return_belief=False
                 )
                 actions[lid] = act

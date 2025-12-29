@@ -346,7 +346,6 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
                 worker_loads = obs[lid]["worker_loads"]
                 profile = obs[lid]["worker_profile"]
 
-                # 你原来的逻辑：环境里没有 obs[lid]["valid_mask"]，所以这里自己算
                 valid_mask = task_obs[:, g_valid_index].astype(np.float32)
                 obs_raw_list.append(_build_raw_obs_vec(task_obs, worker_loads, profile, valid_mask))
 
@@ -364,14 +363,12 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             token_t = build_belief_token(x_pool, a_prev_pool, r_prev, done_prev)  # [1,token_dim]
             token_buf.append(token_t.detach())
 
-            # ====== 只改这里：拿 window + padding mask ======
             token_window, pad_mask = token_buf.get_with_mask(pad_value=0.0)  # [1,K,token_dim], [1,K] bool(True=PAD)
 
             # belief slow/fast（只改这里：把 pad_mask 传进去）
             try:
                 mu_s, logvar_s, z_s = alg.model.belief_slow(token_window, padding_mask=pad_mask)  # [1,Ds]
             except TypeError:
-                # 如果你模型还没改到支持 padding_mask，至少别直接炸
                 mu_s, logvar_s, z_s = alg.model.belief_slow(token_window)  # [1,Ds]
 
             h_fast, mu_f, logvar_f, z_f = alg.model.belief_fast_step(token_t, h_fast, done_prev)  # [1,Hf], [1,Df]...
@@ -382,7 +379,7 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             actions_flat = []
             for lid in range(num_layers):
                 mean, std = alg.model.forward_actor(lid, h_cpl[:, lid, :], z)
-                a = mean  # deterministic
+                a = mean + std * torch.randn_like(mean)
                 a_np = a[0].detach().cpu().numpy().astype(np.float32)
                 actions_flat.append(a_np)
                 actions[lid] = a_np.reshape(action_shape)

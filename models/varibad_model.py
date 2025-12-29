@@ -1,4 +1,3 @@
-# models/varibad_model.py
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
@@ -60,7 +59,6 @@ class VariBADIndustrialModel(nn.Module):
             nn.ReLU(),
         )
         self.policy_mean = nn.Linear(policy_hidden, self.action_dim)
-        # 这里保持与你 run_varibad.py / agent 的 deterministic 分支一致：使用可训练的全局 logstd
         self.policy_logstd = nn.Parameter(torch.zeros(self.action_dim))
 
         # -------------------- Value head: (s_embed, z) -> V --------------------
