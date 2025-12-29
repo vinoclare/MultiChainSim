@@ -16,16 +16,15 @@ from algs.bhera_belief_modes import BHERA
 from utils.utils_bhera import WindowBuffer, build_belief_token
 from utils.utils import RunningMeanStd
 
-
 # ===== Load configurations =====
 parser = argparse.ArgumentParser()
 parser.add_argument("--dire", type=str, default="standard")
 parser.add_argument("--alg_name", type=str, default="bhera")
-parser.add_argument("--belief_mode", type=str, default="both", choices=["both","fast","slow"],
+parser.add_argument("--belief_mode", type=str, default="both", choices=["both", "fast", "slow"],
                     help="Ablation: use only slow belief (slow), only fast belief (fast), or both (both)")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 
-parser.add_argument("--bhera_lambda_q", type=float, default=1.0)
+parser.add_argument("--bhera_lambda_q", type=float, default=10.0)
 parser.add_argument("--bhera_decoder_coef", type=float, default=1.0)
 parser.add_argument("--bhera_decoder_sparse_weight", type=float, default=1.0)
 parser.add_argument("--bhera_n_step", type=int, default=5)
@@ -142,14 +141,15 @@ def _episode_worker(policy_state, with_new_schedule, seed):
             raw_obs = _build_raw_obs_vec(task_obs, worker_loads, profile, valid_mask)
             obs_raw_list.append(raw_obs)
 
-        obs_raw_bl = torch.tensor(np.stack(obs_raw_list, axis=0), dtype=torch.float32, device=device).unsqueeze(0)  # [1,L,obs_dim]
+        obs_raw_bl = torch.tensor(np.stack(obs_raw_list, axis=0), dtype=torch.float32, device=device).unsqueeze(
+            0)  # [1,L,obs_dim]
 
         # build token_window for slow inference (we keep our own buffer)
         with torch.no_grad():
             # compute x_pool from current obs
-            h = g_alg.model.encode_obs_stack(obs_raw_bl)     # [1,L,D]
-            h_cpl = g_alg.model.couple_layers(h)            # [1,L,D]
-            x_pool = h_cpl.mean(dim=1)                      # [1,D]
+            h = g_alg.model.encode_obs_stack(obs_raw_bl)  # [1,L,D]
+            h_cpl = g_alg.model.couple_layers(h)  # [1,L,D]
+            x_pool = h_cpl.mean(dim=1)  # [1,D]
             token_t = build_belief_token(x_pool, a_prev_pool, r_prev, done_prev)  # [1,token_dim]
             token_buf.append(token_t.detach())
 
@@ -159,9 +159,9 @@ def _episode_worker(policy_state, with_new_schedule, seed):
                 obs_raw_bl, a_prev_pool, r_prev, done_prev, token_window, h_fast, pad_mask
             )
 
-        actions_np = actions_bla[0].cpu().numpy().astype(np.float32)     # [L, act_dim]
-        logp_np = logp_bl1[0, :, 0].cpu().numpy().astype(np.float32)     # [L]
-        v_np = vmean_bl1[0, :, 0].cpu().numpy().astype(np.float32)       # [L]
+        actions_np = actions_bla[0].cpu().numpy().astype(np.float32)  # [L, act_dim]
+        logp_np = logp_bl1[0, :, 0].cpu().numpy().astype(np.float32)  # [L]
+        v_np = vmean_bl1[0, :, 0].cpu().numpy().astype(np.float32)  # [L]
 
         # env actions need shape act_space.shape
         actions_env = {lid: actions_np[lid].reshape(g_action_shape) for lid in range(g_num_layers)}
@@ -196,36 +196,36 @@ def _episode_worker(policy_state, with_new_schedule, seed):
 
 
 def _init_worker(
-    dire,
-    env_config_path,
-    schedule_path,
-    worker_config_path,
-    # model hparams
-    obs_embed_dim,
-    coupling_hidden,
-    belief_in_dim,
-    slow_window_len,
-    slow_n_layers,
-    slow_n_heads,
-    slow_ff_dim,
-    fast_hidden,
-    z_slow_dim,
-    z_fast_dim,
-    policy_hidden,
-    value_hidden,
-    value_ensemble,
-    decoder_hidden,
-    # alg hparams
-    lambda_q,
-    decoder_coef,
-    decoder_sparse_weight,
-    gamma,
-    n_step,
-    beta_init,
-    kl_capacity,
-    beta_lr,
-    kl_ema_decay,
-    belief_mode,
+        dire,
+        env_config_path,
+        schedule_path,
+        worker_config_path,
+        # model hparams
+        obs_embed_dim,
+        coupling_hidden,
+        belief_in_dim,
+        slow_window_len,
+        slow_n_layers,
+        slow_n_heads,
+        slow_ff_dim,
+        fast_hidden,
+        z_slow_dim,
+        z_fast_dim,
+        policy_hidden,
+        value_hidden,
+        value_ensemble,
+        decoder_hidden,
+        # alg hparams
+        lambda_q,
+        decoder_coef,
+        decoder_sparse_weight,
+        gamma,
+        n_step,
+        beta_init,
+        kl_capacity,
+        beta_lr,
+        kl_ema_decay,
+        belief_mode,
 ):
     """
     每个子进程启动时调用一次：创建本进程持久复用的 env / alg（仅推理）
@@ -357,9 +357,9 @@ def evaluate_policy(alg, eval_env, num_episodes, writer, global_step):
             ).unsqueeze(0)  # [1,L,obs_dim]
 
             # encode/couple + token window
-            h = alg.model.encode_obs_stack(obs_raw_bl)   # [1,L,D]
-            h_cpl = alg.model.couple_layers(h)          # [1,L,D]
-            x_pool = h_cpl.mean(dim=1)                  # [1,D]
+            h = alg.model.encode_obs_stack(obs_raw_bl)  # [1,L,D]
+            h_cpl = alg.model.couple_layers(h)  # [1,L,D]
+            x_pool = h_cpl.mean(dim=1)  # [1,D]
 
             token_t = build_belief_token(x_pool, a_prev_pool, r_prev, done_prev)  # [1,token_dim]
             token_buf.append(token_t.detach())
@@ -576,7 +576,7 @@ def main():
         policy_state = _snapshot_policy_state(alg)
 
         if args.num_workers == 1:
-            result = _episode_worker(policy_state, with_new_schedule, seed=np.random.randint(0, 2**31 - 1))
+            result = _episode_worker(policy_state, with_new_schedule, seed=np.random.randint(0, 2 ** 31 - 1))
             results = [result]
         else:
             seeds = np.random.randint(0, 2 ** 31 - 1, size=args.num_workers).tolist()
