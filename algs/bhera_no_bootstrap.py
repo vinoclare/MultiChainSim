@@ -521,7 +521,8 @@ class BHERA:
                     mask = (torch.rand_like(v_all) < 0.8).float()
                     head_loss = (0.5 * ((v_all - ret_l.unsqueeze(-1)) ** 2) * mask).sum() / (mask.sum() + 1e-6)
                 else:
-                    head_loss = 0.0
+                    # keep type as tensor for logging (.detach())
+                    head_loss = torch.zeros((), device=v_mean.device)
 
                 total_policy_loss = total_policy_loss + policy_loss
                 total_value_loss = total_value_loss + value_loss
@@ -587,4 +588,3 @@ class BHERA:
                 self.writer.add_scalar(f"bhera/{k}", v, gs)
 
         return last_info
-

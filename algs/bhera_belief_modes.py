@@ -31,7 +31,7 @@ class BHERA:
             use_clipped_value_loss=True,
             norm_adv=True,
             # belief ablation
-            belief_mode=\"both\",  # \"both\" | \"fast\" | \"slow\"
+            belief_mode="both",  # "both" | "fast" | "slow"
             # regime-balanced
             lambda_q=1.0,
             # decoder / KL
@@ -68,6 +68,9 @@ class BHERA:
         self.use_clipped_value_loss = bool(use_clipped_value_loss)
         self.norm_adv = bool(norm_adv)
         self.inner_k = int(inner_k)
+
+        # belief ablation mode
+        self.belief_mode = str(belief_mode)
 
         self.lambda_q = float(lambda_q)
 
@@ -187,9 +190,9 @@ class BHERA:
         B, T, L, _ = obs_raw.shape
         device = obs_raw.device
 
-        mode = getattr(self, \"belief_mode\", \"both\")
-        if mode not in (\"both\", \"fast\", \"slow\"):
-            mode = \"both\"
+        mode = getattr(self, "belief_mode", "both")
+        if mode not in ("both", "fast", "slow"):
+            mode = "both"
 
         # 1) encode + couple (按时间逐步，维度完全对齐)
         h_list = []
@@ -222,32 +225,34 @@ class BHERA:
             z_slow_seq = torch.zeros((B, T, self.model.z_slow_dim), device=device)
             kl_slow = torch.tensor(0.0, device=device)
         else:
-                    ks = int(getattr(self.model, "slow_window_len", 16))
-                    token_win, pad_mask = left_pad_sliding_k(token, ks)  # [B,T,Ks,D], [B,T,Ks]
-                    token_win_flat = token_win.reshape(B * T, ks, -1)
-                    pad_flat = pad_mask.reshape(B * T, ks)
+            ks = int(getattr(self.model, "slow_window_len", 16))
+            token_win, pad_mask = left_pad_sliding_k(token, ks)  # [B,T,Ks,D], [B,T,Ks]
+            token_win_flat = token_win.reshape(B * T, ks, -1)
+            pad_flat = pad_mask.reshape(B * T, ks)
 
-                    # run slow inference efficiently: split padded vs non-padded windows
-                    need_pad = torch.any(pad_flat, dim=1)  # [B*T]
+            # run slow inference efficiently: split padded vs non-padded windows
+            need_pad = torch.any(pad_flat, dim=1)  # [B*T]
 
-                    mu_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
-                    logvar_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
-                    z_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
+            mu_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
+            logvar_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
+            z_slow_flat = torch.zeros((B * T, self.model.z_slow_dim), device=device)
 
-                    if torch.any(~need_pad):
-                        mu_np, logvar_np, z_np = self._call_slow_infer(token_win_flat[~need_pad], padding_mask=None)
-                        mu_slow_flat[~need_pad] = mu_np
-                        logvar_slow_flat[~need_pad] = logvar_np
-                        z_slow_flat[~need_pad] = z_np
+            if torch.any(~need_pad):
+                mu_np, logvar_np, z_np = self._call_slow_infer(token_win_flat[~need_pad], padding_mask=None)
+                mu_slow_flat[~need_pad] = mu_np
+                logvar_slow_flat[~need_pad] = logvar_np
+                z_slow_flat[~need_pad] = z_np
 
-                    if torch.any(need_pad):
-                        mu_p, logvar_p, z_p = self._call_slow_infer(token_win_flat[need_pad], padding_mask=pad_flat[need_pad])
-                        mu_slow_flat[need_pad] = mu_p
-                        logvar_slow_flat[need_pad] = logvar_p
-                        z_slow_flat[need_pad] = z_p
+            if torch.any(need_pad):
+                mu_p, logvar_p, z_p = self._call_slow_infer(
+                    token_win_flat[need_pad], padding_mask=pad_flat[need_pad]
+                )
+                mu_slow_flat[need_pad] = mu_p
+                logvar_slow_flat[need_pad] = logvar_p
+                z_slow_flat[need_pad] = z_p
 
-                    z_slow_seq = z_slow_flat.reshape(B, T, -1)  # [B,T,Ds]
-                    kl_slow = self._kl_standard_normal(mu_slow_flat, logvar_slow_flat).mean()
+            z_slow_seq = z_slow_flat.reshape(B, T, -1)  # [B,T,Ds]
+            kl_slow = self._kl_standard_normal(mu_slow_flat, logvar_slow_flat).mean()
 
         # 5) fast belief + conditional prior (condition on per-step z_slow_t)
         if mode == "slow":
@@ -255,34 +260,34 @@ class BHERA:
             kl_fast = torch.tensor(0.0, device=device)
             z_fast = torch.zeros((B, T, self.model.z_fast_dim), device=device)
         else:
-                    h_fast = torch.zeros((B, self.model.fast_hidden), device=device)
-                    z_prev = torch.zeros((B, self.model.z_fast_dim), device=device)
+            h_fast = torch.zeros((B, self.model.fast_hidden), device=device)
+            z_prev = torch.zeros((B, self.model.z_fast_dim), device=device)
 
-                    kl_fast_terms = []
-                    z_fast_list = []
+            kl_fast_terms = []
+            z_fast_list = []
 
-                    for t in range(T):
-                        z_slow_t = z_slow_seq[:, t]  # [B,Ds]
+            for t in range(T):
+                z_slow_t = z_slow_seq[:, t]  # [B,Ds]
 
-                        mu_p, logvar_p = self.model.fast_prior(z_prev, z_slow_t)
-                        h_fast, mu_f, logvar_f, z_f = self._call_fast_step(
-                            token[:, t], h_fast, d_prev[:, t], z_slow=z_slow_t
-                        )
+                mu_p, logvar_p = self.model.fast_prior(z_prev, z_slow_t)
+                h_fast, mu_f, logvar_f, z_f = self._call_fast_step(
+                    token[:, t], h_fast, d_prev[:, t], z_slow=z_slow_t
+                )
 
-                        var_q = torch.exp(logvar_f)
-                        var_p = torch.exp(logvar_p)
-                        kl_t = 0.5 * (
-                                (logvar_p - logvar_f)
-                                + (var_q + (mu_f - mu_p) ** 2) / (var_p + 1e-8)
-                                - 1.0
-                        ).sum(dim=-1)
+                var_q = torch.exp(logvar_f)
+                var_p = torch.exp(logvar_p)
+                kl_t = 0.5 * (
+                    (logvar_p - logvar_f)
+                    + (var_q + (mu_f - mu_p) ** 2) / (var_p + 1e-8)
+                    - 1.0
+                ).sum(dim=-1)
 
-                        kl_fast_terms.append(kl_t)
-                        z_fast_list.append(z_f)
-                        z_prev = z_f.detach()
+                kl_fast_terms.append(kl_t)
+                z_fast_list.append(z_f)
+                z_prev = z_f.detach()
 
-                    kl_fast = torch.stack(kl_fast_terms, dim=1).mean()
-                    z_fast = torch.stack(z_fast_list, dim=1)  # [B,T,Df]
+            kl_fast = torch.stack(kl_fast_terms, dim=1).mean()
+            z_fast = torch.stack(z_fast_list, dim=1)  # [B,T,Df]
 
         z_seq = torch.cat([z_slow_seq, z_fast], dim=-1)  # [B,T,Ds+Df]
         q_seq = self.model.q_head(z_seq).sigmoid()  # [B,T,1]
@@ -330,9 +335,9 @@ class BHERA:
 
         B, L, _ = obs_raw_bl.shape
 
-        mode = getattr(self, \"belief_mode\", \"both\")
-        if mode not in (\"both\", \"fast\", \"slow\"):
-            mode = \"both\"
+        mode = getattr(self, "belief_mode", "both")
+        if mode not in ("both", "fast", "slow"):
+            mode = "both"
 
         # encode & couple
         obs_flat = obs_raw_bl.reshape(B * L, -1)
@@ -347,16 +352,18 @@ class BHERA:
             # only fast belief: skip slow inference
             z_s = torch.zeros((B, self.model.z_slow_dim), device=self.device)
         else:
-                    if padding_mask is None:
-                        mu_s, logvar_s, z_s = self._call_slow_infer(token_window_bk)  # [B,Ds]
-                    else:
-                        mu_s, logvar_s, z_s = self.model.belief_slow(token_window_bk, padding_mask=padding_mask)  # [B,Ds]
+            if padding_mask is None:
+                mu_s, logvar_s, z_s = self._call_slow_infer(token_window_bk)  # [B,Ds]
+            else:
+                mu_s, logvar_s, z_s = self.model.belief_slow(token_window_bk, padding_mask=padding_mask)  # [B,Ds]
 
         # fast infer (GRU) + reset on done
         if done_prev.dim() == 2:
             h_fast_prev = h_fast_prev * (1.0 - done_prev)
         else:
-            h_fast_prev = h_fast_prev * (1.0 - done_prev.unsqueeze(-1))        if mode == "slow":
+            h_fast_prev = h_fast_prev * (1.0 - done_prev.unsqueeze(-1))
+
+        if mode == "slow":
             # only slow belief: skip fast belief update
             z_f = torch.zeros((B, self.model.z_fast_dim), device=self.device)
             h_fast_new = h_fast_prev
@@ -600,4 +607,3 @@ class BHERA:
                 self.writer.add_scalar(f"bhera/{k}", v, gs)
 
         return last_info
-
