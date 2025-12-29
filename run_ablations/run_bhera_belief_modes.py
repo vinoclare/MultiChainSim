@@ -24,7 +24,7 @@ parser.add_argument("--belief_mode", type=str, default="both", choices=["both", 
                     help="Ablation: use only slow belief (slow), only fast belief (fast), or both (both)")
 parser.add_argument("--num_workers", type=int, default=10, help="Parallel env workers for sampling")
 
-parser.add_argument("--bhera_lambda_q", type=float, default=10.0)
+parser.add_argument("--bhera_lambda_q", type=float, default=1.0)
 parser.add_argument("--bhera_decoder_coef", type=float, default=1.0)
 parser.add_argument("--bhera_decoder_sparse_weight", type=float, default=1.0)
 parser.add_argument("--bhera_n_step", type=int, default=5)
