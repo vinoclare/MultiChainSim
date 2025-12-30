@@ -270,7 +270,7 @@ def evaluate_policy(agent_dict, eval_env, num_episodes, writer, global_step):
 
                 _, act, _, _ = agent_dict[lid].sample(
                     task_obs, worker_loads, profile,
-                    deterministic=False,
+                    deterministic=True,
                     return_belief=False
                 )
                 actions[lid] = act
@@ -479,7 +479,7 @@ def main():
             ep_batch_size = max(1, min(ep_batch_size, B))
 
             idx = np.arange(B)
-            for _ in range(update_epochs):
+            for _ in range(1):
                 np.random.shuffle(idx)
                 for start in range(0, B, ep_batch_size):
                     mb = idx[start:start + ep_batch_size]

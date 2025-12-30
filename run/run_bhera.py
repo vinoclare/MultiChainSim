@@ -32,6 +32,7 @@ parser.add_argument("--bhera_beta_init", type=float, default=0.1)
 parser.add_argument("--bhera_kl_capacity", type=float, default=1.0)
 parser.add_argument("--bhera_beta_lr", type=float, default=1e-3)
 parser.add_argument("--bhera_kl_ema_decay", type=float, default=0.99)
+parser.add_argument("--bhera_slow_window_len", type=int, default=15)
 
 args, _ = parser.parse_known_args()
 
@@ -465,7 +466,7 @@ def main():
     coupling_hidden = hidden_dim
     belief_in_dim = 128
 
-    slow_window_len = 16
+    slow_window_len = args.bhera_slow_window_len
     slow_n_layers = 2
     slow_n_heads = 4
     slow_ff_dim = 256
