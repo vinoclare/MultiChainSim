@@ -91,7 +91,7 @@ for fac in FACTORS:
             ax.legend(loc='best', frameon=False, fontsize=10)
 
             fig.tight_layout()
-            fname = f'training_{fac}_{v}_{SHORT[metric]}.pdf'
+            fname = f'training_{fac}_{v}_{SHORT[metric]}.svg'
             fig.savefig(out_dir / fname, dpi=400, bbox_inches='tight')
             plt.close(fig)
             print(f'[Saved] {fname}')
