@@ -8,7 +8,9 @@ plt.rcParams.update({
     "axes.labelsize": 14,
     "xtick.labelsize": 12,
     "ytick.labelsize": 12,
-    "legend.fontsize": 12
+    "legend.fontsize": 12,
+    "pdf.fonttype": 42,   # 保证导出 PDF 时字体更友好
+    "ps.fonttype": 42
 })
 
 # === 子策略数 ===
@@ -40,34 +42,66 @@ policy_group_width = 2 * bar_width
 total_policies_width = num_policies * policy_group_width
 start_offset = -total_policies_width / 2 + bar_width / 2
 
-fig, ax = plt.subplots(figsize=(10, 6))
+# === 更学术化的配色方案 ===
+# Policy 0: 稳重蓝
+# Policy 1: 柔和砖红
+# Policy 2: 灰青色
+colors = ['#4E79A7', '#E15759', '#76B7B2']
 
-# 为每个 policy 固定颜色
-colors = plt.cm.tab10.colors
+fig, ax = plt.subplots(figsize=(10, 6), facecolor='white')
+ax.set_facecolor('white')
 
 for i in range(num_policies):
     offset = start_offset + i * policy_group_width
 
-    # Train 柱子（纯色）
-    ax.bar(x + offset - bar_width / 2, train_counts[:, i], bar_width,
-           label=f"Policy {i} (Train)", color=colors[i], alpha=0.9)
+    # Train 柱子：实心填充
+    ax.bar(
+        x + offset - bar_width / 2,
+        train_counts[:, i],
+        bar_width,
+        label=f"Policy {i} (Train)",
+        color=colors[i],
+        edgecolor='black',
+        linewidth=0.6
+    )
 
-    # Distill 柱子（相同颜色 + hatch）
-    ax.bar(x + offset + bar_width / 2, distill_counts[:, i], bar_width,
-           label=f"Policy {i} (Distill)", color=colors[i], hatch='//', alpha=0.7)
+    # Distill 柱子：白底 + 同色边框 + 斜线
+    ax.bar(
+        x + offset + bar_width / 2,
+        distill_counts[:, i],
+        bar_width,
+        label=f"Policy {i} (Distill)",
+        facecolor='white',
+        edgecolor=colors[i],
+        linewidth=1.0,
+        hatch='//'
+    )
 
+# === 坐标轴与网格 ===
 ax.set_ylabel("Selected Times")
 ax.set_xticks(x)
 ax.set_xticklabels(layer_names)
-ax.grid(axis='y', linestyle='--', alpha=0.5)
+ax.grid(axis='y', linestyle='--', linewidth=0.8, alpha=0.35)
+ax.set_axisbelow(True)
 
-# legend 放在顶部，分两行，防止遮挡
-ax.legend(ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.15))
+# 去掉上边和右边框，让图更清爽
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+
+# === 图例 ===
+ax.legend(
+    ncol=3,
+    loc='upper center',
+    bbox_to_anchor=(0.5, 1.16),
+    frameon=False
+)
 
 plt.tight_layout()
 
-# 保存
-plt.savefig("policy_selection_comparison.pdf", dpi=300, format="pdf")
-print("Figure saved to policy_selection_comparison.pdf")
+# === 保存 ===
+plt.savefig("policy_selection_comparison.pdf", dpi=300, format="pdf", bbox_inches="tight")
+plt.savefig("policy_selection_comparison.png", dpi=300, format="png", bbox_inches="tight")
+
+print("Figure saved to policy_selection_comparison.pdf and policy_selection_comparison.png")
 
 plt.show()

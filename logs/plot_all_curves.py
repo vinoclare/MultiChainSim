@@ -11,9 +11,9 @@ parser.add_argument('--ema', type=float, default=0.3, help='EMA 平滑系数')
 args = parser.parse_args()
 
 FACTORS = ['layer', 'task', 'worker', 'step']
-METRICS = ['eval_avg_cost', 'eval_avg_reward', 'eval_avg_utility']
-SHORT = {'eval_avg_cost': 'cost',
-         'eval_avg_reward': 'reward',
+METRICS = ['eval_avg_reward', 'eval_avg_cost', 'eval_avg_utility']
+SHORT = {'eval_avg_reward': 'reward',
+         'eval_avg_cost': 'cost',
          'eval_avg_utility': 'utility'}
 
 plt.rcParams.update({
@@ -124,7 +124,7 @@ fig.legend(all_handles.values(), all_handles.keys(),
            fontsize=18, frameon=False)
 
 fig.tight_layout(rect=[0, 0, 1, 0.95])  # 为上方 legend 留空间
-fig.savefig(out_dir / 'training_all_merged.pdf', dpi=400, bbox_inches='tight')
+fig.savefig(out_dir / 'training_all_merged.png', dpi=400, bbox_inches='tight')
 plt.close(fig)
 
 print(f'✅ 已生成 4x6 大图（全局 legend）: {out_dir / "training_all_merged.pdf"}')
